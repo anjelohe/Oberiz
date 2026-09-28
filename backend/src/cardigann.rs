@@ -10,7 +10,8 @@ use serde_yaml::Value;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    time::Duration,
+    sync::{Mutex, OnceLock},
+    time::{Duration, Instant},
 };
 use url::Url;
 
@@ -76,12 +77,80 @@ struct TemplateContext {
     categories: Vec<String>,
 }
 
+// A tracker can answer with HTTP 429 during login or searching. Remembering its
+// Retry-After window prevents Oberiz from immediately trying again on every
+// automated search or health check.
+static INDEXER_COOLDOWNS: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+
+fn cooldown_message(def: &Definition) -> Option<String> {
+    let now = Instant::now();
+    let mut guard = INDEXER_COOLDOWNS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .ok()?;
+    let until = *guard.get(&def.id)?;
+    if until <= now {
+        guard.remove(&def.id);
+        return None;
+    }
+    let seconds = until.duration_since(now).as_secs().max(1);
+    Some(format!(
+        "{} is temporarily rate limited. Oberiz will wait about {} before trying it again.",
+        def.name,
+        human_duration(seconds)
+    ))
+}
+
+fn response_error(def: &Definition, response: &reqwest::Response, context: &str) -> String {
+    if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        let seconds = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(300)
+            .clamp(30, 3600);
+        if let Ok(mut guard) = INDEXER_COOLDOWNS
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+        {
+            guard.insert(
+                def.id.clone(),
+                Instant::now() + Duration::from_secs(seconds),
+            );
+        }
+        return format!(
+            "{} limited requests (HTTP 429) during {}. Oberiz will pause this indexer for {}.",
+            def.name,
+            context,
+            human_duration(seconds)
+        );
+    }
+    format!(
+        "{} returned HTTP {} during {}",
+        def.name,
+        response.status(),
+        context
+    )
+}
+
+fn human_duration(seconds: u64) -> String {
+    if seconds >= 60 {
+        format!("{} min", (seconds + 59) / 60)
+    } else {
+        format!("{} s", seconds)
+    }
+}
+
 pub async fn search_indexer(
     state: &AppState,
     indexer_id: &str,
     ctx: &SearchContext,
 ) -> Result<Vec<ReleaseResult>, String> {
     let def = load_definition(state, indexer_id).await?;
+    if let Some(message) = cooldown_message(&def) {
+        return Err(message);
+    }
     let client = build_authenticated_client(&def).await?;
 
     let search = map_get(&def.yaml, "search").ok_or("La definición no contiene search")?;
@@ -179,7 +248,7 @@ pub async fn search_indexer(
         .map_err(|e| format!("Error HTTP en {}: {e}", def.name))?;
 
         if !response.status().is_success() {
-            return Err(format!("{} respondió HTTP {}", def.name, response.status()));
+            return Err(response_error(&def, &response, "search"));
         }
 
         let response_type = map_get(&path_block, "response")
@@ -409,6 +478,9 @@ fn push_release(
 
 pub async fn test_indexer(state: &AppState, indexer_id: &str) -> Result<String, String> {
     let def = load_definition(state, indexer_id).await?;
+    if let Some(message) = cooldown_message(&def) {
+        return Err(message);
+    }
     let client = build_authenticated_client(&def).await?;
 
     if let Some(login) = map_get(&def.yaml, "login") {
@@ -426,7 +498,7 @@ pub async fn test_indexer(state: &AppState, indexer_id: &str) -> Result<String, 
             )?;
             let response = client.get(url).send().await.map_err(|e| e.to_string())?;
             if !response.status().is_success() {
-                return Err(format!("HTTP {}", response.status()));
+                return Err(response_error(&def, &response, "login test"));
             }
             if let Some(sel) = yaml_string(map_get(test, "selector")) {
                 let html = response.text().await.map_err(|e| e.to_string())?;
@@ -449,7 +521,7 @@ pub async fn test_indexer(state: &AppState, indexer_id: &str) -> Result<String, 
     if response.status().is_success() {
         Ok(format!("{} · HTTP {}", def.name, response.status()))
     } else {
-        Err(format!("{} respondió HTTP {}", def.name, response.status()))
+        Err(response_error(&def, &response, "connection test"))
     }
 }
 
@@ -629,6 +701,9 @@ async fn load_definition(state: &AppState, indexer_id: &str) -> Result<Definitio
 }
 
 async fn build_authenticated_client(def: &Definition) -> Result<Client, String> {
+    if let Some(message) = cooldown_message(def) {
+        return Err(message);
+    }
     let mut default_headers = HeaderMap::new();
     let ctx = TemplateContext {
         config: def.config.clone(),
@@ -683,7 +758,7 @@ async fn build_authenticated_client(def: &Definition) -> Result<Client, String> 
                 }
                 .map_err(|e| e.to_string())?;
                 if !response.status().is_success() {
-                    return Err(format!("Login HTTP {}", response.status()));
+                    return Err(response_error(def, &response, "login"));
                 }
             }
         }

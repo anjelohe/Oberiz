@@ -375,8 +375,34 @@ pub async fn get_indexer(
             });
         }
     }
-    // RSS is an Oberiz capability, not a Cardigann definition field. Keeping it in the
-    // normal indexer configuration makes each feed explicit and preserves its credentials.
+    // These are Oberiz routing settings rather than fields defined by Cardigann.
+    // Keeping them alongside the definition settings means they travel with the
+    // indexer configuration without changing the upstream YAML file.
+    settings_out.push(IndexerSetting {
+        name: "oberiz_priority".into(),
+        label: "Search priority".into(),
+        field_type: "number".into(),
+        secret: false,
+        configured: current.contains_key("oberiz_priority"),
+        value: current.get("oberiz_priority").cloned(),
+        default: Some(serde_json::Value::from(100)),
+        options: vec![],
+    });
+    settings_out.push(IndexerSetting {
+        name: "oberiz_tag_name".into(),
+        label: "Custom qBittorrent tag (optional)".into(),
+        field_type: "text".into(),
+        secret: false,
+        configured: current
+            .get("oberiz_tag_name")
+            .and_then(|value| value.as_str())
+            .is_some_and(|value| !value.trim().is_empty()),
+        value: current.get("oberiz_tag_name").cloned(),
+        default: None,
+        options: vec![],
+    });
+    // RSS is an Oberiz capability, not a Cardigann definition field. It remains
+    // after routing, so priority is always visible before optional feed details.
     let rss_url = current
         .get("rss_url")
         .and_then(|v| v.as_str())
@@ -427,6 +453,39 @@ pub async fn save_indexer_config(
             continue;
         }
         merged.insert(k, v);
+    }
+    if let Some(tag) = merged
+        .get("oberiz_tag_name")
+        .and_then(|value| value.as_str())
+    {
+        let tag = tag.trim();
+        if tag.contains(',') || tag.contains('\n') || tag.contains('\r') {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "The custom qBittorrent tag cannot contain commas or line breaks".into(),
+            ));
+        }
+    }
+    if let Some(priority) = merged.get("oberiz_priority") {
+        let value = priority
+            .as_i64()
+            .or_else(|| {
+                priority
+                    .as_str()
+                    .and_then(|value| value.parse::<i64>().ok())
+            })
+            .ok_or_else(|| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    "Search priority must be a whole number".into(),
+                )
+            })?;
+        if !(0..=10_000).contains(&value) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "Search priority must be between 0 and 10000".into(),
+            ));
+        }
     }
     let json = serde_json::Value::Object(merged).to_string();
     sqlx::query(r#"INSERT INTO indexer_configs(indexer_id,enabled,config_json,updated_at)

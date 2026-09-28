@@ -112,7 +112,22 @@ pub(crate) async fn set_value(
 pub(crate) fn config_directory() -> PathBuf {
     std::env::var_os("OBERIZ_CONFIG_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("config"))
+        .unwrap_or_else(|| {
+            std::env::current_dir()
+                .map(|directory| directory.join("config"))
+                .unwrap_or_else(|_| PathBuf::from("config"))
+        })
+}
+
+fn absolute_directory(path: String) -> String {
+    let path = PathBuf::from(path);
+    if path.is_absolute() {
+        path.to_string_lossy().into_owned()
+    } else {
+        std::env::current_dir()
+            .map(|directory| directory.join(&path).to_string_lossy().into_owned())
+            .unwrap_or_else(|_| path.to_string_lossy().into_owned())
+    }
 }
 
 pub(crate) fn default_custom_indexers_path() -> String {
@@ -173,15 +188,22 @@ pub async fn get_settings(
     let downloads_path = text(&state.db, "paths.downloads", "").await?;
     let reseed_path = text(&state.db, "paths.reseed", "").await?;
     let custom_indexers_default = default_custom_indexers_path();
-    let custom_indexers_path =
-        text(&state.db, "paths.custom_indexers", &custom_indexers_default).await?;
+    let custom_indexers_path = absolute_directory(
+        text(&state.db, "paths.custom_indexers", &custom_indexers_default).await?,
+    );
     let upstream_indexers_default = default_upstream_indexers_path();
-    let upstream_indexers_path = text(
-        &state.db,
-        "paths.upstream_indexers",
-        &upstream_indexers_default,
-    )
-    .await?;
+    let upstream_indexers_path = absolute_directory(
+        text(
+            &state.db,
+            "paths.upstream_indexers",
+            &upstream_indexers_default,
+        )
+        .await?,
+    );
+    std::fs::create_dir_all(&custom_indexers_path)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    std::fs::create_dir_all(&upstream_indexers_path)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let automation_enabled = boolean(&state.db, "automation.enabled", false).await?;
     let automation_interval_minutes = get_value(&state.db, "automation.interval_minutes")
