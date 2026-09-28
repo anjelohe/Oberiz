@@ -101,6 +101,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: release-assets
+          pattern: oberiz-*
           merge-multiple: true
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
