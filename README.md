@@ -72,6 +72,12 @@ It installs Oberiz in `/opt/oberiz`, creates a persistent data directory at `/va
 
 The service uses the `oberiz` system account. Grant that account the required read/write permissions for the media, download and qBittorrent paths you configure in Settings.
 
+## Windows installation
+
+Download `oberiz-1.0.0-windows-x86_64.zip` from the release, extract it anywhere you want to keep Oberiz, then double-click `Start-Oberiz.bat`. It starts the included `Oberiz.exe` and opens `http://127.0.0.1:2032`.
+
+The `data` and `config` folders are created beside the executable, so the installation is portable and can be moved or backed up as one directory.
+
 ## Initial configuration
 
 1. Open **Settings** and add a TMDB credential.
