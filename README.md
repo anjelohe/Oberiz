@@ -56,7 +56,7 @@ docker compose up -d
 
 Open `http://localhost:2032`.
 
-`oberiz-data` stores the database and backups, while `oberiz-config` stores indexer definitions. Both survive container updates. Before starting, set `OBERIZ_MEDIA_PATH` in your shell or `.env` if Oberiz needs to import media files; it is mounted inside the container at `/media`.
+`oberiz-data` stores the database and backups, while `oberiz-config` stores indexer definitions. Both survive container updates. Before starting, set `OBERIZ_MEDIA_PATH` in your shell or `.env` if Oberiz needs to import media files; it is mounted inside the container at `/media`. The published image is downloaded automatically; no local build tools are needed.
 
 ## Linux installation
 
