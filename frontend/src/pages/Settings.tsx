@@ -205,6 +205,18 @@ export function Settings(){
           </label>
         </section>
 
+        <section className="settings-section card support-section">
+          <div className="settings-title"><div><h3>Support Oberiz</h3><span>Oberiz is free to use. Donations are entirely optional.</span></div></div>
+          <div className="support-content">
+            <img src="/paypal-donate-qr.png" alt="PayPal donation QR code for Oberiz" />
+            <div>
+              <p>If Oberiz is useful to you, you can support its development through PayPal.</p>
+              <a className="primary-button support-button" href="https://paypal.me/anjelohe" target="_blank" rel="noreferrer">Support via PayPal</a>
+              <small>TMDB is configured independently by each user with their own API credential and subject to TMDB’s terms.</small>
+            </div>
+          </div>
+        </section>
+
         <section className="settings-section card">
           <div className="settings-title"><div><h3>RSS Automation</h3><span>Process only new feed releases from configured indexers; each release is deduplicated before matching.</span></div><span className="connection">{data.rss_enabled?'● Enabled':'○ Disabled'}</span></div>
           <div className="form-grid automation-grid">
