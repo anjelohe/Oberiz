@@ -2,10 +2,23 @@ use sqlx::{
     SqlitePool,
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
 };
-use std::str::FromStr;
+use std::{path::PathBuf, str::FromStr};
+
+fn data_directory() -> PathBuf {
+    std::env::var_os("OBERIZ_DATA_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("data"))
+}
 
 pub async fn connect() -> anyhow::Result<SqlitePool> {
-    let options = SqliteConnectOptions::from_str("sqlite://oberiz.db")?
+    let data_directory = data_directory();
+    std::fs::create_dir_all(&data_directory)?;
+    let database_path = data_directory.join("oberiz.db");
+    let database_url = format!(
+        "sqlite://{}",
+        database_path.to_string_lossy().replace('\\', "/")
+    );
+    let options = SqliteConnectOptions::from_str(&database_url)?
         .create_if_missing(true)
         .foreign_keys(true);
 

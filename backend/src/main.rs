@@ -25,11 +25,16 @@ use automation::AutomationRuntime;
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, State},
+    http::StatusCode,
+    response::{Html, IntoResponse, Response},
     routing::{delete, get, post, put},
 };
 use serde::Serialize;
 use sqlx::SqlitePool;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::{
+    cors::{Any, CorsLayer},
+    services::{ServeDir, ServeFile},
+};
 
 #[derive(Clone)]
 struct AppState {
@@ -65,6 +70,21 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     })
 }
 
+async fn frontend_shell() -> Response {
+    let static_directory =
+        std::env::var("OBERIZ_STATIC_DIR").unwrap_or_else(|_| "frontend".to_string());
+    match tokio::fs::read_to_string(std::path::Path::new(&static_directory).join("index.html"))
+        .await
+    {
+        Ok(contents) => Html(contents).into_response(),
+        Err(_) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Oberiz web interface is not installed.",
+        )
+            .into_response(),
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
@@ -83,6 +103,11 @@ async fn main() -> anyhow::Result<()> {
     rss::spawn_scheduler(state.clone());
     importer::spawn_import_scheduler(state.clone());
     indexers::spawn_health_scheduler(state.clone());
+
+    let static_directory = std::path::PathBuf::from(
+        std::env::var("OBERIZ_STATIC_DIR").unwrap_or_else(|_| "frontend".to_string()),
+    );
+    let assets_directory = static_directory.join("assets");
 
     let app = Router::new()
         .route("/api/health", get(health))
@@ -298,7 +323,21 @@ async fn main() -> anyhow::Result<()> {
                 .allow_methods(Any)
                 .allow_headers(Any),
         )
-        .with_state(state);
+        .nest_service("/assets", ServeDir::new(assets_directory))
+        .route_service(
+            "/oberiz-logo.png",
+            ServeFile::new(static_directory.join("oberiz-logo.png")),
+        )
+        .route_service(
+            "/oberiz-logo-middle.png",
+            ServeFile::new(static_directory.join("oberiz-logo-middle.png")),
+        )
+        .route_service(
+            "/oberiz-logo-premium.png",
+            ServeFile::new(static_directory.join("oberiz-logo-premium.png")),
+        )
+        .with_state(state)
+        .fallback(get(frontend_shell));
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:2032").await?;
     println!(

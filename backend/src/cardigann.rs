@@ -544,11 +544,11 @@ async fn load_definition(state: &AppState, indexer_id: &str) -> Result<Definitio
     let custom = settings::get_value(&state.db, "paths.custom_indexers")
         .await
         .map_err(|e| e.to_string())?
-        .unwrap_or_else(|| "..\\config\\indexers\\custom".into());
+        .unwrap_or_else(settings::default_custom_indexers_path);
     let upstream = settings::get_value(&state.db, "paths.upstream_indexers")
         .await
         .map_err(|e| e.to_string())?
-        .unwrap_or_else(|| "..\\config\\indexers\\upstream".into());
+        .unwrap_or_else(settings::default_upstream_indexers_path);
 
     let mut chosen: Option<(PathBuf, Value)> = None;
     for folder in [PathBuf::from(custom), PathBuf::from(upstream)] {

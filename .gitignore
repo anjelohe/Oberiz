@@ -5,6 +5,7 @@ backend/.git-backup/
 backend/backups/
 backend/data/
 frontend/*.tsbuildinfo
+dist/
 
 .env
 .env.*

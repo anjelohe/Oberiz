@@ -42,26 +42,35 @@ For series, it manages seasons, episodes, monitoring and inherited profiles. Aut
 | Indexers | Cardigann definitions | `config/indexers/` |
 | Documentation | Product state, API, roadmap and history | `docs/` |
 
-The backend listens on `http://localhost:2032`. The development frontend listens on `http://localhost:5173` and proxies `/api` to the backend.
+Oberiz is served on `http://localhost:2032`. The web interface and API are delivered by the same service.
 
-## Run locally
+## Docker installation
 
-In one terminal:
+Install Docker Engine and the Docker Compose plugin, then run:
 
-```powershell
-cd backend
-cargo run
+```bash
+git clone https://github.com/anjelohe/Oberiz.git
+cd Oberiz
+docker compose up -d --build
 ```
 
-In another:
+Open `http://localhost:2032`.
 
-```powershell
-cd frontend
-npm install
-npm run dev
+`oberiz-data` stores the database and backups, while `oberiz-config` stores indexer definitions. Both survive container updates. Before starting, set `OBERIZ_MEDIA_PATH` in your shell or `.env` if Oberiz needs to import media files; it is mounted inside the container at `/media`.
+
+## Linux installation
+
+The Linux package targets 64-bit Linux distributions using systemd. Download `oberiz-1.0.0-linux-x86_64.tar.gz` from the release, extract it and run:
+
+```bash
+tar -xzf oberiz-1.0.0-linux-x86_64.tar.gz
+cd oberiz-1.0.0-linux-x86_64
+sudo ./install.sh
 ```
 
-Then open `http://localhost:5173`.
+It installs Oberiz in `/opt/oberiz`, creates a persistent data directory at `/var/lib/oberiz`, and starts the `oberiz` system service. Open `http://localhost:2032`. To remove the application while retaining its data, run `sudo ./uninstall.sh` from the extracted package.
+
+The service uses the `oberiz` system account. Grant that account the required read/write permissions for the media, download and qBittorrent paths you configure in Settings.
 
 ## Initial configuration
 
@@ -89,20 +98,8 @@ Cinetta uses the native API v1: it reads authenticated profiles and links every 
 
 `GET /api/diagnostics` reports the version, operating system, SQLite status, service configuration, indexers, automation and recent errors without exposing keys or passwords. RSS exposes `GET /api/rss/status` and can be run manually with `POST /api/rss/run`.
 
-From **Settings → Backup & Restore**, you can create and restore consistent SQLite snapshots. They are stored in `backend/backups` when Oberiz starts from `backend` and include pending WAL changes. Restoring reverts Oberiz data, but never modifies media files or qBittorrent torrents.
-
-## Verification
-
-```powershell
-cd backend
-cargo test
-
-cd ..\frontend
-npm run build
-```
-
-The test suite covers release parsing/scoring and the `Complete Series → Season Pack → Episode` decision. The manual end-to-end procedure is documented in `docs/Oberiz_Memoria_Actualizada.md`.
+From **Settings → Backup & Restore**, you can create and restore consistent SQLite snapshots. They are stored in the persistent Oberiz data directory and include pending WAL changes. Restoring reverts Oberiz data, but never modifies media files or qBittorrent torrents.
 
 ## Documentation
 
-Product documentation is stored in [`docs/README.md`](docs/README.md): technical state, API integration, importing, roadmap, RSS and version history. The repository root is intentionally limited to this README, the license, configuration and source code.
+Product documentation is stored in [`docs/README.md`](docs/README.md): technical state, API integration, importing, roadmap, RSS and version history.

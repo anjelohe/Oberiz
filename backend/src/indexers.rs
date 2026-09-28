@@ -774,7 +774,7 @@ async fn upstream_folder(state: &AppState) -> Result<PathBuf, (StatusCode, Strin
         settings::get_value(&state.db, "paths.upstream_indexers")
             .await
             .map_err(database_error)?
-            .unwrap_or_else(|| "..\\config\\indexers\\upstream".into()),
+            .unwrap_or_else(settings::default_upstream_indexers_path),
     ))
 }
 
@@ -783,7 +783,7 @@ async fn custom_folder(state: &AppState) -> Result<PathBuf, (StatusCode, String)
         settings::get_value(&state.db, "paths.custom_indexers")
             .await
             .map_err(database_error)?
-            .unwrap_or_else(|| "..\\config\\indexers\\custom".into()),
+            .unwrap_or_else(settings::default_custom_indexers_path),
     ))
 }
 

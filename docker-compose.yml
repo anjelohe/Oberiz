@@ -1,0 +1,19 @@
+services:
+  oberiz:
+    image: ghcr.io/anjelohe/oberiz:1.0.0
+    build: .
+    container_name: oberiz
+    restart: unless-stopped
+    ports:
+      - "${OBERIZ_PORT:-2032}:2032"
+    environment:
+      TZ: ${TZ:-Europe/Madrid}
+    volumes:
+      - oberiz-data:/data
+      - oberiz-config:/config
+      # Change the host path before starting if Oberiz must import media files.
+      - ${OBERIZ_MEDIA_PATH:-./media}:/media
+
+volumes:
+  oberiz-data:
+  oberiz-config:

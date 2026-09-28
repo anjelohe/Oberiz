@@ -46,7 +46,10 @@ fn internal(error: impl std::fmt::Display) -> (StatusCode, String) {
     (StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
 }
 fn backup_directory() -> Result<PathBuf, (StatusCode, String)> {
-    let directory = std::env::current_dir().map_err(internal)?.join("backups");
+    let directory = std::env::var_os("OBERIZ_DATA_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("data"))
+        .join("backups");
     std::fs::create_dir_all(&directory).map_err(internal)?;
     Ok(directory)
 }

@@ -1,5 +1,6 @@
 use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 use crate::AppState;
 
@@ -108,6 +109,37 @@ pub(crate) async fn set_value(
     Ok(())
 }
 
+pub(crate) fn config_directory() -> PathBuf {
+    std::env::var_os("OBERIZ_CONFIG_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("config"))
+}
+
+pub(crate) fn default_custom_indexers_path() -> String {
+    config_directory()
+        .join("indexers")
+        .join("custom")
+        .to_string_lossy()
+        .into_owned()
+}
+
+pub(crate) fn default_upstream_indexers_path() -> String {
+    config_directory()
+        .join("indexers")
+        .join("upstream")
+        .to_string_lossy()
+        .into_owned()
+}
+
+pub(crate) fn default_torrent_metadata_path() -> String {
+    std::env::var_os("OBERIZ_DATA_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("data"))
+        .join("torrents")
+        .to_string_lossy()
+        .into_owned()
+}
+
 async fn text(db: &sqlx::SqlitePool, key: &str, default: &str) -> Result<String, StatusCode> {
     Ok(get_value(db, key)
         .await
@@ -140,16 +172,14 @@ pub async fn get_settings(
     let series_path = text(&state.db, "paths.series", "").await?;
     let downloads_path = text(&state.db, "paths.downloads", "").await?;
     let reseed_path = text(&state.db, "paths.reseed", "").await?;
-    let custom_indexers_path = text(
-        &state.db,
-        "paths.custom_indexers",
-        "..\\config\\indexers\\custom",
-    )
-    .await?;
+    let custom_indexers_default = default_custom_indexers_path();
+    let custom_indexers_path =
+        text(&state.db, "paths.custom_indexers", &custom_indexers_default).await?;
+    let upstream_indexers_default = default_upstream_indexers_path();
     let upstream_indexers_path = text(
         &state.db,
         "paths.upstream_indexers",
-        "..\\config\\indexers\\upstream",
+        &upstream_indexers_default,
     )
     .await?;
 
@@ -194,8 +224,13 @@ pub async fn get_settings(
     .await?;
     let keep_reseed_metadata = boolean(&state.db, "import.keep_reseed_metadata", true).await?;
     let cleanup_after_seed = boolean(&state.db, "import.cleanup_after_seed", true).await?;
-    let torrent_metadata_path =
-        text(&state.db, "import.torrent_metadata_path", "./data/torrents").await?;
+    let torrent_metadata_default = default_torrent_metadata_path();
+    let torrent_metadata_path = text(
+        &state.db,
+        "import.torrent_metadata_path",
+        &torrent_metadata_default,
+    )
+    .await?;
 
     let ui_theme = match text(&state.db, "ui.theme", "dark").await?.as_str() {
         "light" => "light".to_string(),

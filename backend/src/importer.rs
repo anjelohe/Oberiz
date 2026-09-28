@@ -722,7 +722,7 @@ async fn save_torrent_metadata(
     let base = settings::get_value(&state.db, "import.torrent_metadata_path")
         .await
         .map_err(internal)?
-        .unwrap_or_else(|| "./data/torrents".into());
+        .unwrap_or_else(settings::default_torrent_metadata_path);
     fs::create_dir_all(&base).map_err(fs_error)?;
     let path = PathBuf::from(base).join(format!("{}-{}.torrent", job.id, hash));
     fs::write(&path, bytes).map_err(fs_error)?;
