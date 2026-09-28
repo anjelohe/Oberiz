@@ -9,6 +9,7 @@ use axum::{
     http::StatusCode,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Debug, Deserialize)]
 pub struct ReleaseSearchQuery {
@@ -235,14 +236,47 @@ pub(crate) async fn search_media_internal(
     state: &AppState,
     spec: &MediaSearchSpec,
 ) -> Result<AggregateSearchResponse, (StatusCode, String)> {
-    let ids: Vec<String> = if let Some(id) = &spec.indexer_id {
-        vec![id.clone()]
+    let indexers: Vec<(String, String)> = if let Some(id) = &spec.indexer_id {
+        let config = sqlx::query_scalar::<_, String>(
+            "SELECT config_json FROM indexer_configs WHERE indexer_id=?",
+        )
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(internal)?
+        .unwrap_or_else(|| "{}".into());
+        vec![(id.clone(), config)]
     } else {
-        sqlx::query_scalar::<_, String>("SELECT indexer_id FROM indexer_configs WHERE enabled=1")
-            .fetch_all(&state.db)
-            .await
-            .map_err(internal)?
+        sqlx::query_as::<_, (String, String)>(
+            "SELECT indexer_id,config_json FROM indexer_configs WHERE enabled=1",
+        )
+        .fetch_all(&state.db)
+        .await
+        .map_err(internal)?
     };
+    let mut prioritized = indexers
+        .into_iter()
+        .map(|(id, config)| {
+            let priority = serde_json::from_str::<serde_json::Value>(&config)
+                .ok()
+                .and_then(|value| value.get("oberiz_priority").cloned())
+                .and_then(|value| {
+                    value
+                        .as_i64()
+                        .or_else(|| value.as_str().and_then(|value| value.parse::<i64>().ok()))
+                })
+                .unwrap_or(100);
+            (id, priority)
+        })
+        .collect::<Vec<_>>();
+    prioritized.sort_by(|(left_id, left), (right_id, right)| {
+        left.cmp(right).then_with(|| left_id.cmp(right_id))
+    });
+    let ids = prioritized
+        .iter()
+        .map(|(id, _)| id.clone())
+        .collect::<Vec<_>>();
+    let priorities = prioritized.into_iter().collect::<HashMap<_, _>>();
 
     let profile = match spec.profile_id {
         Some(id) => Some(profiles::get_quality_profile_by_id(&state.db, id).await?),
@@ -312,6 +346,12 @@ pub(crate) async fn search_media_internal(
         b.accepted
             .cmp(&a.accepted)
             .then_with(|| b.score.cmp(&a.score))
+            .then_with(|| {
+                priorities
+                    .get(&a.indexer_id)
+                    .unwrap_or(&100)
+                    .cmp(priorities.get(&b.indexer_id).unwrap_or(&100))
+            })
             .then_with(|| b.seeders.unwrap_or(0).cmp(&a.seeders.unwrap_or(0)))
     });
     results.truncate(250);
@@ -377,9 +417,10 @@ pub(crate) async fn grab_internal(
         .as_ref()
         .map(|p| p.qbittorrent_tags_template.as_str())
         .unwrap_or("[tracker]");
+    let tag_name = configured_tag_name(state, &req.indexer_id, source).await?;
     let visible_tags = render_qb_tags(
         tags_template,
-        source,
+        &tag_name,
         &req.indexer_id,
         profile.as_ref().map(|p| p.name.as_str()).unwrap_or(""),
         media_type,
@@ -489,6 +530,28 @@ pub(crate) async fn grab_internal(
     )
     .await;
     Ok(())
+}
+
+async fn configured_tag_name(
+    state: &AppState,
+    indexer_id: &str,
+    fallback: &str,
+) -> Result<String, (StatusCode, String)> {
+    let custom = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT json_extract(config_json,'$.oberiz_tag_name') FROM indexer_configs WHERE indexer_id=?",
+    )
+    .bind(indexer_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(internal)?
+    .flatten()
+    .unwrap_or_default();
+    let custom = custom.trim();
+    Ok(if custom.is_empty() {
+        fallback.to_string()
+    } else {
+        custom.to_string()
+    })
 }
 
 async fn resolve_grab_profile(

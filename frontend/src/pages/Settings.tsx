@@ -205,19 +205,19 @@ export function Settings(){
           </label>
         </section>
 
-        <section className="settings-section card support-section">
+        <section className="settings-section card support-section settings-wide">
           <div className="settings-title"><div><h3>Support Oberiz</h3><span>Oberiz is free to use. Donations are entirely optional.</span></div></div>
           <div className="support-content">
             <img src="/paypal-donate-qr.png" alt="PayPal donation QR code for Oberiz" />
             <div>
               <p>If Oberiz is useful to you, you can support its development through PayPal.</p>
-              <a className="primary-button support-button" href="https://paypal.me/anjelohe" target="_blank" rel="noreferrer">Support via PayPal</a>
               <small>TMDB is configured independently by each user with their own API credential and subject to TMDB’s terms.</small>
             </div>
+            <a className="primary-button support-button" href="https://paypal.me/anjelohe" target="_blank" rel="noreferrer">Support via PayPal</a>
           </div>
         </section>
 
-        <section className="settings-section card">
+        <section className="settings-section card settings-wide">
           <div className="settings-title"><div><h3>RSS Automation</h3><span>Process only new feed releases from configured indexers; each release is deduplicated before matching.</span></div><span className="connection">{data.rss_enabled?'● Enabled':'○ Disabled'}</span></div>
           <div className="form-grid automation-grid">
             <label className="toggle-row"><input type="checkbox" checked={data.rss_enabled} onChange={e=>setData({...data,rss_enabled:e.target.checked})}/> Enable RSS feed sync</label>
@@ -233,7 +233,7 @@ export function Settings(){
           <label>Credential<input type="password" value={tmdb} onChange={e=>setTmdb(e.target.value)} placeholder={data.tmdb_api_key_set?'Leave blank to keep current':'API key or Read Access Token'}/></label>
         </section>
 
-        <section className="settings-section card">
+        <section className="settings-section card settings-wide">
           <div className="settings-title"><div className="service-logo qb">qb</div><div><h3>qBittorrent</h3><span>Download client</span></div></div>
           <div className="form-grid">
             <label>Host<input value={data.qbittorrent_host} onChange={e=>setData({...data,qbittorrent_host:e.target.value})}/></label>
@@ -254,7 +254,7 @@ export function Settings(){
           <div className="settings-actions"><span>{autoMessage}</span><button type="button" className="ghost-button" disabled={autoRunning} onClick={async()=>{try{setAutoRunning(true);setAutoMessage('Running automation and checking qBittorrent…');await saveSettings({automation_enabled:data.automation_enabled,automation_interval_minutes:data.automation_interval_minutes});const r=await runAutomationNow();const status=await getAutomationStatus();setAutoMessage(`Completed · ${r.reconciled_missing} missing · ${r.searched} searched · ${r.grabbed} grabbed · ${r.skipped} skipped · ${r.errors} errors · ${status.monitored_movies+status.monitored_series} monitored`) }catch(e){setAutoMessage(e instanceof Error?e.message:String(e))}finally{setAutoRunning(false)}}}>{autoRunning?'Running…':'Run Now'}</button></div>
         </section>
 
-        <section className="settings-section card">
+        <section className="settings-section card settings-full">
           <div className="settings-title"><div><h3>Import & Naming</h3><span>Completed downloads are imported without breaking active seeding.</span></div><span className="connection">{data.import_enabled?'● Enabled':'○ Disabled'}</span></div>
           <div className="settings-path-grid">
             <label className="toggle-row"><input type="checkbox" checked={data.import_enabled} onChange={e=>setData({...data,import_enabled:e.target.checked})}/> Import completed downloads</label>
@@ -275,7 +275,7 @@ export function Settings(){
           <small className="settings-help">Common tokens: {'{Title} {Year} {Resolution} {Source} {Codec} {HDR} {Audio} {Language}'}. Series also supports {'{Season} {Season:00} {Episode} {Episode:00} {EpisodeTitle}'}. Season packs are imported file-by-file when episode numbers can be detected.</small>
         </section>
 
-        <section className="settings-section card">
+        <section className="settings-section card settings-full">
           <div className="settings-title"><div><h3>Paths</h3><span>Media, downloads, reseed workspace and metadata.</span></div></div>
           <div className="settings-path-grid">
             <label>Movies<input value={data.movies_path} onChange={e=>setData({...data,movies_path:e.target.value})}/><FolderPicker value={data.movies_path} onChange={movies_path=>setData({...data,movies_path})}/></label>
@@ -288,7 +288,7 @@ export function Settings(){
           </div>
         </section>
 
-        <section className="settings-section card">
+        <section className="settings-section card settings-wide">
           <div className="settings-title"><div><h3>Library Maintenance</h3><span>Discover existing media files and rebuild real availability.</span></div></div>
           <div className="settings-actions settings-scan-actions">
             <span>{scanMessage}</span>
@@ -310,7 +310,7 @@ export function Settings(){
           </div>}
         </section>
 
-        <section className="settings-section card">
+        <section className="settings-section card settings-full">
           <div className="settings-title"><div><h3>Backup & Restore</h3><span>Consistent SQLite snapshots, including data currently in WAL.</span></div></div>
           <div className="form-grid automation-grid">
             <label className="toggle-row"><input type="checkbox" checked={data.backup_enabled} onChange={e=>setData({...data,backup_enabled:e.target.checked})}/> Schedule automatic backups</label>
@@ -325,7 +325,7 @@ export function Settings(){
           </div>}
         </section>
 
-        <section className="settings-section card api-key-section">
+        <section className="settings-section card api-key-section settings-full">
           <div className="settings-title"><div><h3>Public API v1</h3><span>Direct integration for your multimedia app or other request clients.</span></div><span className="connection">{data.api_enabled?'● Enabled':'○ Disabled'}</span></div>
           <label className="toggle-row"><input type="checkbox" checked={data.api_enabled} onChange={e=>setData({...data,api_enabled:e.target.checked})}/> Enable public request API</label>
 
@@ -347,10 +347,10 @@ export function Settings(){
           <div className="settings-actions"><span>{apiMessage}</span><button type="button" className="ghost-button" onClick={generateApiKey}>{data.api_key_set?'Regenerate key':'Generate key'}</button></div>
           <small className="settings-help">Clients send <b>X-Api-Key</b>. Endpoints: GET /api/v1/status, POST/GET /api/v1/requests, GET /api/v1/requests/:id.</small>
           <label className="toggle-row"><input type="checkbox" checked={data.overseerr_compat_enabled} onChange={e=>setData({...data,overseerr_compat_enabled:e.target.checked})}/> Enable Overseerr compatibility</label>
-          {data.overseerr_compat_enabled&&<small className="settings-help">Configure the same Oberiz URL twice in Overseerr: <b>http://host:2032/radarr</b> for Movies and <b>http://host:2032/sonarr</b> for Series. Use this API key in both.</small>}
+          {data.overseerr_compat_enabled&&<div className="overseerr-guide"><b>Configure Overseerr</b><span>Add Oberiz twice under <strong>Settings → Services</strong>, using the API key above:</span><code>Movies (Radarr): http://your-oberiz-host:2032/radarr</code><code>Series (Sonarr): http://your-oberiz-host:2032/sonarr</code><small>Use the same key in both services. The movie and series root folders and quality profiles come from Oberiz.</small></div>}
         </section>
 
-        <section className="settings-section card">
+        <section className="settings-section card settings-full">
           <div className="settings-title"><div><h3>Seed Policies</h3><span>Per-indexer cleanup rules. No policy means no automatic deletion.</span></div></div>
           {policies.length>0&&<div className="seed-policy-list">
             {policies.map(p=><button type="button" className="seed-policy-row" key={p.indexer_id} onClick={()=>setPolicy(p)}>
