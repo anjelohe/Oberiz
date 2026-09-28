@@ -13,7 +13,9 @@ import { Indexers } from './pages/Indexers'
 import { History } from './pages/History'
 import { Settings } from './pages/Settings'
 import { Calendar } from './pages/Calendar'
-import { getSettings, saveSettings } from './lib/api'
+import { Login } from './components/Login'
+import { Setup } from './components/Setup'
+import { AuthStatus, getAuthStatus, getSettings, saveSettings } from './lib/api'
 
 const components: Record<Page, React.ReactNode> = {
   dashboard: <Dashboard />,
@@ -51,6 +53,19 @@ function savedTheme():Theme|undefined{
 export default function App() {
   const [page,setPage]=useState<Page>(pageFromHash())
   const [theme,setTheme]=useState<Theme>(initialTheme())
+  const [authChecked,setAuthChecked]=useState(false)
+  const [authStatus,setAuthStatus]=useState<AuthStatus|null>(null)
+
+  function refreshAuthStatus(){
+    return getAuthStatus().then(setAuthStatus).catch(()=>{}).finally(()=>setAuthChecked(true))
+  }
+
+  useEffect(()=>{
+    refreshAuthStatus()
+    const onAuthRequired=()=>{void refreshAuthStatus()}
+    window.addEventListener('oberiz-auth-required',onAuthRequired)
+    return()=>window.removeEventListener('oberiz-auth-required',onAuthRequired)
+  },[])
 
   useEffect(()=>{
     document.documentElement.dataset.theme=theme
@@ -88,6 +103,10 @@ export default function App() {
     localStorage.setItem('oberiz.theme',next)
     try{await saveSettings({ui_theme:next})}catch{/* local preference still applies until backend is available */}
   }
+
+  if (!authChecked) return null
+  if (!authStatus || !authStatus.enabled) return <Setup onSuccess={()=>void refreshAuthStatus()} />
+  if (!authStatus.authenticated) return <Login onSuccess={()=>void refreshAuthStatus()} />
 
   return <Layout page={page} onPage={navigate} theme={theme} onTheme={changeTheme}>
     {components[page]}

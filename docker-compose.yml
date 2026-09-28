@@ -1,6 +1,6 @@
 services:
   oberiz:
-    image: ghcr.io/anjelohe/oberiz:1.0.0
+    image: ghcr.io/anjelohe/oberiz:v1.0.0
     container_name: oberiz
     restart: unless-stopped
     ports:

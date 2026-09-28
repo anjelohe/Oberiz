@@ -1,7 +1,7 @@
 import { ChangeEvent, FormEvent, useEffect, useState } from 'react'
 import {
-  backupDownloadUrl, createBackup, deleteBackup, getAutomationStatus, getBackups, getDiagnostics, getRssStatus, getSeedPolicies, getSettings, rescanLibrary, restoreBackup, runAutomationNow, runRssNow, saveSeedPolicy, uploadBackup,
-  saveSettings, BackupList, Diagnostics, RssStatus, SeedPolicy, Settings as SettingsType, testQBittorrent
+  backupDownloadUrl, createBackup, deleteBackup, getAuthStatus, getAutomationStatus, getBackups, getDiagnostics, getRssStatus, getSeedPolicies, getSettings, logout, rescanLibrary, restoreBackup, runAutomationNow, runRssNow, saveSeedPolicy, setAdminPassword, uploadBackup,
+  saveSettings, AuthStatus, BackupList, Diagnostics, RssStatus, SeedPolicy, Settings as SettingsType, testQBittorrent
 } from '../lib/api'
 import { Icon } from '../components/Icon'
 import { FolderPicker } from '../components/FolderPicker'
@@ -38,12 +38,18 @@ export function Settings(){
   const [rssStatus,setRssStatus]=useState<RssStatus|null>(null)
   const [backups,setBackups]=useState<BackupList|null>(null)
   const [backupMessage,setBackupMessage]=useState('')
+  const [authStatus,setAuthStatus]=useState<AuthStatus|null>(null)
+  const [authCurrentPassword,setAuthCurrentPassword]=useState('')
+  const [authNewPassword,setAuthNewPassword]=useState('')
+  const [authConfirmPassword,setAuthConfirmPassword]=useState('')
+  const [authMessage,setAuthMessage]=useState('')
 
   useEffect(()=>{
     getSettings().then(next=>{setData(next);setApiKey(next.api_key||'')}).catch(e=>setMessage(String(e)))
     getSeedPolicies().then(setPolicies).catch(()=>{})
     getRssStatus().then(setRssStatus).catch(()=>{})
     getBackups().then(setBackups).catch(e=>setBackupMessage(e instanceof Error?e.message:String(e)))
+    getAuthStatus().then(setAuthStatus).catch(()=>{})
   },[])
   useEffect(()=>{
     if(!autoRunning)return
@@ -155,6 +161,29 @@ export function Settings(){
     }catch{
       setApiMessage('Could not access clipboard. Select and copy the key manually.')
     }
+  }
+
+  async function saveAdminPassword(){
+    if(authNewPassword.length<8){setAuthMessage('Password must be at least 8 characters');return}
+    if(authNewPassword!==authConfirmPassword){setAuthMessage('Passwords do not match');return}
+    try{
+      setAuthMessage('Saving…')
+      await setAdminPassword(authStatus?.enabled?authCurrentPassword:null,authNewPassword)
+      setAuthCurrentPassword('');setAuthNewPassword('');setAuthConfirmPassword('')
+      setAuthStatus(await getAuthStatus())
+      setAuthMessage('Admin password saved. Use it next time Oberiz asks you to sign in.')
+    }catch(e){setAuthMessage(e instanceof Error?e.message:String(e))}
+  }
+
+  async function removeAdminPassword(){
+    if(!window.confirm("Remove the admin password? Oberiz will ask you to create a new one the next time it's opened; there is no way to leave it unprotected."))return
+    try{
+      setAuthMessage('Removing…')
+      await setAdminPassword(authCurrentPassword,null)
+      setAuthCurrentPassword('');setAuthNewPassword('');setAuthConfirmPassword('')
+      setAuthStatus(await getAuthStatus())
+      setAuthMessage('Admin password removed.')
+    }catch(e){setAuthMessage(e instanceof Error?e.message:String(e))}
   }
 
   async function loadDiagnostics(){
@@ -348,6 +377,22 @@ export function Settings(){
           <small className="settings-help">Clients send <b>X-Api-Key</b>. Endpoints: GET /api/v1/status, POST/GET /api/v1/requests, GET /api/v1/requests/:id.</small>
           <label className="toggle-row"><input type="checkbox" checked={data.overseerr_compat_enabled} onChange={e=>setData({...data,overseerr_compat_enabled:e.target.checked})}/> Enable Overseerr compatibility</label>
           {data.overseerr_compat_enabled&&<div className="overseerr-guide"><b>Configure Overseerr</b><span>Add Oberiz twice under <strong>Settings → Services</strong>, using the API key above:</span><code>Movies (Radarr): http://your-oberiz-host:2032/radarr</code><code>Series (Sonarr): http://your-oberiz-host:2032/sonarr</code><small>Use the same key in both services. The movie and series root folders and quality profiles come from Oberiz.</small></div>}
+        </section>
+
+        <section className="settings-section card settings-full">
+          <div className="settings-title"><div><h3>Admin Password</h3><span>Protects the whole Oberiz interface and API when it is reachable on your network.</span></div><span className="connection">{authStatus?.enabled?'● Enabled':'○ Disabled'}</span></div>
+          <div className="form-grid">
+            {authStatus?.enabled&&<label>Current password<input type="password" value={authCurrentPassword} onChange={e=>setAuthCurrentPassword(e.target.value)} autoComplete="current-password"/></label>}
+            <label>New password<input type="password" value={authNewPassword} onChange={e=>setAuthNewPassword(e.target.value)} placeholder="At least 8 characters" autoComplete="new-password"/></label>
+            <label>Confirm new password<input type="password" value={authConfirmPassword} onChange={e=>setAuthConfirmPassword(e.target.value)} autoComplete="new-password"/></label>
+          </div>
+          <div className="settings-actions">
+            <span>{authMessage}</span>
+            {authStatus?.enabled&&<button type="button" className="ghost-button" onClick={()=>void logout().then(()=>window.location.reload())}>Sign out</button>}
+            {authStatus?.enabled&&<button type="button" className="danger-button" onClick={()=>void removeAdminPassword()}>Remove password</button>}
+            <button type="button" className="primary-button" disabled={!authNewPassword} onClick={()=>void saveAdminPassword()}>{authStatus?.enabled?'Change password':'Set password'}</button>
+          </div>
+          <small className="settings-help">Required to use Oberiz. It keeps you signed in on this browser for 30 days; changing or removing it needs the current password.</small>
         </section>
 
         <section className="settings-section card settings-full">

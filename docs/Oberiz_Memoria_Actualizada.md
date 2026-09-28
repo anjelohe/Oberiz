@@ -3,9 +3,16 @@
 > Estado del proyecto, decisiones tomadas, trabajo realizado y roadmap previsto.
 
 **Fecha de esta memoria:** 28 de septiembre de 2026  
-**Estado actual:** Oberiz 1.0.0 operativo con biblioteca real, automatización de películas y series, RSS incremental, importación, Calendar, API pública v1, diagnóstico, backup/restore SQLite y pruebas de decisiones críticas.
+**Estado actual:** Oberiz v1.0.0 es la base pública vigente. Incluye biblioteca real, automatización de películas y series, RSS incremental, importación, Calendar, API pública v1, diagnóstico, backup/restore SQLite, perfiles iniciales refinados y acceso de administrador protegido.
 
 ---
+
+## Base pública v1.0.0 (2026-09-28)
+
+- La numeración pública se reinicia en **v1.0.0**; las publicaciones de prueba anteriores se retiran y esta versión pasa a ser la única referencia para Docker, Linux y Windows.
+- La autenticación administrativa usa Argon2id, sesiones opacas revocables almacenadas como hashes, cierre de sesión efectivo y revocación global al cambiar la contraseña.
+- El acceso aplica espera progresiva tras intentos fallidos. Para despliegues HTTPS existe `OBERIZ_COOKIE_SECURE=true`, que marca la cookie de sesión como exclusiva de HTTPS.
+- Las conexiones a TMDB, qBittorrent, API pública y las rutas de biblioteca no se distribuyen: cada instalación configura sus propias credenciales y rutas.
 
 ## Actualización Cinetta (2026-09-28)
 
@@ -25,7 +32,7 @@
 
 ## Cómo leer esta memoria
 
-Este documento conserva **todo el recorrido técnico** del proyecto. Las secciones iniciales y las fases antiguas describen decisiones tomadas en su momento; no deben interpretarse como el estado vigente si contradicen el resumen anterior. El estado actual es 0.9.0 y las secciones de evolución consolidada al final recogen los hitos por versión.
+Este documento conserva **todo el recorrido técnico** del proyecto. Las secciones iniciales y las fases antiguas describen decisiones tomadas en su momento; no deben interpretarse como el estado vigente si contradicen el resumen anterior. El estado actual es v1.0.0 y las secciones de evolución consolidada al final recogen los hitos por versión.
 
 ---
 
