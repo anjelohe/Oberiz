@@ -51,7 +51,7 @@ Install Docker Engine and the Docker Compose plugin, then run:
 ```bash
 git clone https://github.com/anjelohe/Oberiz.git
 cd Oberiz
-docker compose up -d --build
+docker compose up -d
 ```
 
 Open `http://localhost:2032`.
