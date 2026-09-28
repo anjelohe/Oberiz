@@ -58,7 +58,9 @@ jobs:
           Copy-Item frontend/dist "$staging/frontend" -Recurse
           Copy-Item config/* "$staging/config" -Recurse -Force
           Copy-Item packaging/windows/Start-Oberiz.bat "$staging/Start-Oberiz.bat"
+          Copy-Item packaging/windows/Start-Oberiz.vbs "$staging/Start-Oberiz.vbs"
           Copy-Item packaging/windows/Start-Oberiz-Installed.bat "$staging/Start-Oberiz-Installed.bat"
+          Copy-Item packaging/windows/Start-Oberiz-Installed.vbs "$staging/Start-Oberiz-Installed.vbs"
           Compress-Archive -Path $staging -DestinationPath "dist/$package.zip"
       - name: Build Windows setup executable
         shell: pwsh

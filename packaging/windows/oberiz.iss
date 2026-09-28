@@ -32,13 +32,14 @@ Source: "{#SourceRoot}\Oberiz.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceRoot}\frontend\*"; DestDir: "{app}\frontend"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SourceRoot}\config\*"; DestDir: "{localappdata}\Oberiz\config"; Flags: onlyifdoesntexist recursesubdirs createallsubdirs
 Source: "{#SourceRoot}\Start-Oberiz-Installed.bat"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceRoot}\Start-Oberiz-Installed.vbs"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{autoprograms}\Oberiz"; Filename: "{app}\Start-Oberiz-Installed.bat"; WorkingDir: "{app}"
-Name: "{autodesktop}\Oberiz"; Filename: "{app}\Start-Oberiz-Installed.bat"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{autoprograms}\Oberiz"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\Start-Oberiz-Installed.vbs"""; WorkingDir: "{app}"
+Name: "{autodesktop}\Oberiz"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\Start-Oberiz-Installed.vbs"""; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"
 
 [Run]
-Filename: "{app}\Start-Oberiz-Installed.bat"; Description: "Start Oberiz"; Flags: nowait postinstall skipifsilent
+Filename: "{sys}\wscript.exe"; Parameters: """{app}\Start-Oberiz-Installed.vbs"""; Description: "Start Oberiz"; Flags: nowait postinstall skipifsilent
