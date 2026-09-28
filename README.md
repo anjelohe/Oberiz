@@ -52,10 +52,10 @@ Every release provides ready-to-run packages. No Rust, Node.js or frontend build
 | --- | --- | --- |
 | Docker | `ghcr.io/anjelohe/oberiz:1.0.0` | `docker compose up -d` |
 | Linux x86_64 | `oberiz-1.0.0-linux-x86_64.tar.gz` | `sudo ./install.sh` |
-| Windows x86_64 (portable) | `oberiz-1.0.0-windows-x86_64.zip` | `Start-Oberiz.bat` |
-| Windows x86_64 (installer) | `oberiz-1.0.0-windows-x86_64-setup.exe` | Setup assistant |
+| Windows x86_64 (portable) | `oberiz-1.0.1-windows-x86_64.zip` | `Start-Oberiz.bat` |
+| Windows x86_64 (installer) | `oberiz-1.0.1-windows-x86_64-setup.exe` | Setup assistant |
 
-The Linux package is available from the [v1.0.0 release](https://github.com/anjelohe/Oberiz/releases/tag/v1.0.0). The release workflow also builds and attaches the Windows package whenever a version is published.
+The Linux package is available from the [v1.0.1 release](https://github.com/anjelohe/Oberiz/releases/tag/v1.0.1). The release workflow also builds and attaches the Windows package whenever a version is published.
 
 ## Docker installation
 
@@ -97,13 +97,13 @@ The service uses the `oberiz` system account. Grant that account the required re
 
 ## Windows portable installation
 
-Download `oberiz-1.0.0-windows-x86_64.zip` from the release, extract it anywhere you want to keep Oberiz, then double-click `Start-Oberiz.bat`. It starts the included `Oberiz.exe` and opens `http://127.0.0.1:2032`.
+Download `oberiz-1.0.1-windows-x86_64.zip` from the release, extract it anywhere you want to keep Oberiz, then double-click `Start-Oberiz.bat`. It starts the included `Oberiz.exe` invisibly in the background and opens `http://127.0.0.1:2032`.
 
 The `data` and `config` folders are created beside the executable, so the installation is portable and can be moved or backed up as one directory.
 
 ## Windows installer
 
-Download `oberiz-1.0.0-windows-x86_64-setup.exe` from the release and run it. The setup assistant installs Oberiz, creates Start Menu and optional desktop shortcuts, and offers to start it at the end.
+Download `oberiz-1.0.1-windows-x86_64-setup.exe` from the release and run it. The setup assistant installs Oberiz, creates Start Menu and optional desktop shortcuts, and offers to start it at the end. Oberiz then runs invisibly in the background.
 
 Application files are installed under `Program Files\Oberiz`. Your database, configuration and backups are stored separately in `%LOCALAPPDATA%\Oberiz`, so they survive application updates and uninstallation.
 
