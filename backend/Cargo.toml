@@ -21,3 +21,6 @@ regex = "1"
 url = "2"
 urlencoding = "2"
 html-escape = "0.2"
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
