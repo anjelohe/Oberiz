@@ -1,3 +1,4 @@
+mod auth;
 mod automation;
 mod backups;
 mod calendar;
@@ -109,8 +110,12 @@ async fn main() -> anyhow::Result<()> {
     );
     let assets_directory = static_directory.join("assets");
 
-    let app = Router::new()
+    let internal_router = Router::new()
         .route("/api/health", get(health))
+        .route("/api/auth/status", get(auth::status))
+        .route("/api/auth/login", post(auth::login))
+        .route("/api/auth/logout", post(auth::logout))
+        .route("/api/auth/password", post(auth::set_password))
         .route(
             "/api/filesystem/directories",
             get(filesystem::list_directories),
@@ -256,6 +261,27 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/library/scans", get(library::scan_history))
         .route("/api/library/summary", get(library::summary))
         .route("/api/calendar", get(calendar::list_calendar))
+        .nest_service("/assets", ServeDir::new(assets_directory))
+        .route_service(
+            "/oberiz-logo.png",
+            ServeFile::new(static_directory.join("oberiz-logo.png")),
+        )
+        .route_service(
+            "/oberiz-logo-middle.png",
+            ServeFile::new(static_directory.join("oberiz-logo-middle.png")),
+        )
+        .route_service(
+            "/oberiz-logo-premium.png",
+            ServeFile::new(static_directory.join("oberiz-logo-premium.png")),
+        )
+        .fallback(get(frontend_shell));
+
+    // Kept on a separate router with its own permissive CORS policy: these
+    // routes are meant to be called by external clients (Cinetta, Overseerr)
+    // from any origin, and are already gated by the `api.key` header check
+    // in `public_api` / `overseerr`, independently of the admin-password
+    // protection applied to `internal_router` below.
+    let public_router = Router::new()
         .route("/api/v1/status", get(public_api::status))
         .route(
             "/api/v1/quality-profiles",
@@ -322,22 +348,21 @@ async fn main() -> anyhow::Result<()> {
                 .allow_origin(Any)
                 .allow_methods(Any)
                 .allow_headers(Any),
-        )
-        .nest_service("/assets", ServeDir::new(assets_directory))
-        .route_service(
-            "/oberiz-logo.png",
-            ServeFile::new(static_directory.join("oberiz-logo.png")),
-        )
-        .route_service(
-            "/oberiz-logo-middle.png",
-            ServeFile::new(static_directory.join("oberiz-logo-middle.png")),
-        )
-        .route_service(
-            "/oberiz-logo-premium.png",
-            ServeFile::new(static_directory.join("oberiz-logo-premium.png")),
-        )
-        .with_state(state)
-        .fallback(get(frontend_shell));
+        );
+
+    // The internal API has no CORS headers of its own: the bundled frontend
+    // is always same-origin, so browsers need none, and this keeps random
+    // third-party web pages from reading responses cross-origin. On top of
+    // that, `auth::require_auth` gates every internal route behind the
+    // optional admin-password session once one has been configured; with no
+    // password set it is a no-op and behavior is unchanged from before.
+    let app = internal_router
+        .merge(public_router)
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_auth,
+        ))
+        .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:2032").await?;
     println!(
@@ -348,6 +373,10 @@ async fn main() -> anyhow::Result<()> {
         "Movies, Series, Profiles, Automation, Importer/Reseed, Downloads, Indexers and History enabled"
     );
 
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }

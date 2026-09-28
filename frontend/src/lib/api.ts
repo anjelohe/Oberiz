@@ -1,3 +1,46 @@
+// Every response is inspected for the 401 the backend sends when no admin
+// password has been created yet ("setup_required") or the session cookie is
+// missing/expired ("authentication_required"); the app-level gate re-checks
+// /api/auth/status on this event instead of every call site having to
+// special-case it.
+const nativeFetch = window.fetch.bind(window)
+window.fetch = async (...args: Parameters<typeof fetch>) => {
+  const response = await nativeFetch(...args)
+  if (response.status === 401) {
+    try {
+      const body = await response.clone().json()
+      if (body && (body.error === 'authentication_required' || body.error === 'setup_required')) {
+        window.dispatchEvent(new CustomEvent('oberiz-auth-required'))
+      }
+    } catch { /* not a JSON body, ignore */ }
+  }
+  return response
+}
+
+export type AuthStatus = { enabled: boolean; authenticated: boolean }
+
+export async function getAuthStatus(): Promise<AuthStatus> {
+  const res = await fetch('/api/auth/status')
+  if (!res.ok) throw new Error(await parseError(res))
+  return res.json()
+}
+export async function login(password: string): Promise<void> {
+  const res = await fetch('/api/auth/login', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password }),
+  })
+  if (!res.ok) throw new Error(await parseError(res))
+}
+export async function logout(): Promise<void> {
+  await fetch('/api/auth/logout', { method: 'POST' })
+}
+export async function setAdminPassword(currentPassword: string | null, newPassword: string | null): Promise<void> {
+  const res = await fetch('/api/auth/password', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+  })
+  if (!res.ok) throw new Error(await parseError(res))
+}
+
 export type Movie = {
   id: number; tmdb_id: number; title: string; original_title?: string | null;
   year?: number | null; overview?: string | null; poster_path?: string | null;
