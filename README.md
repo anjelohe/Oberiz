@@ -1,59 +1,59 @@
 # Oberiz
 
-Servidor autoalojado de automatización multimedia para películas y series. Oberiz centraliza metadata, indexadores, perfiles de calidad, búsquedas, qBittorrent, importación y biblioteca real en una sola aplicación.
+Self-hosted media automation for movies and series. Oberiz brings metadata, indexers, quality profiles, searches, qBittorrent, importing and the real library together in one application.
 
-**Versión actual: 0.9.0 — Automatización continua mediante RSS.**
+**Current version: 1.0.0 — continuous RSS-based automation.**
 
-## Estado actual
+## What it does
 
-Oberiz ya cubre el flujo completo:
+Oberiz covers the complete workflow:
 
 ```text
-Añadir contenido desde TMDB
-→ perfil de calidad e idioma
-→ búsqueda en indexadores Cardigann
-→ scoring y selección de release
-→ qBittorrent: categoría, etiquetas y hash verificados
-→ descarga e importación
-→ renombrado, biblioteca, rescan, upgrades e historial
+Add media from TMDB
+→ apply quality and language profile
+→ search Cardigann indexers
+→ score and select a release
+→ send to qBittorrent with verified category, tags and hash
+→ download and import
+→ rename, rescan, upgrade and record history
 ```
 
-Para series maneja temporadas, episodios, monitorización y perfiles heredados. La automatización prioriza una serie completa cuando procede; si no es válida, prueba un pack de temporada y finalmente episodios individuales. Los grabs equivalentes activos se evitan mediante el estado de los trabajos y el infohash de los magnets.
+For series, it manages seasons, episodes, monitoring and inherited profiles. Automation prefers a complete-series release when appropriate, then a season pack, then individual episodes. Active duplicate grabs are prevented through job state and magnet infohash tracking.
 
-## Funcionalidades incluidas
+## Included features
 
-- Películas y series con metadata de TMDB.
-- Library real: archivos indexados, disponibilidad, rescan y upgrades por puntuación.
-- Quality Profiles y Language Profiles; perfiles predeterminados por tipo de medio.
-- Indexadores Cardigann, catálogo upstream y definiciones privadas locales.
-- qBittorrent: conexión, categorías reales, tags por perfil, progreso y operación de torrents.
-- Automation periódica, importación, hardlinks/copia/movimiento, reseed y políticas de seed.
-- RSS por indexador: sincronización incremental, deduplicación persistente, matching con Wanted, scoring y grab automático trazable.
-- Calendar, History, Dashboard con datos reales y Public API v1 para Cinetta.
-- Compatibilidad opcional Radarr/Sonarr para clientes como Overseerr, separada de la API nativa.
-- Diagnóstico local sin secretos y pruebas automáticas del motor de selección.
+- Movies and series with TMDB metadata.
+- A real library with indexed files, availability, rescans and score-based upgrades.
+- Quality Profiles and Language Profiles, with default profiles per media type.
+- Cardigann indexers, an upstream catalogue and local private definitions.
+- qBittorrent integration: connection checks, real categories, profile tags, progress and torrent controls.
+- Scheduled automation, importing, hardlinks/copy/move, reseeding and seed policies.
+- Per-indexer RSS: incremental sync, persistent deduplication, Wanted matching, scoring and traceable automatic grabs.
+- Calendar, History, Dashboard with real data and a Public API v1 for Cinetta.
+- Optional Radarr/Sonarr compatibility for clients such as Overseerr, isolated from the native API.
+- Local diagnostics without secrets and automated release-selection tests.
 
-## Arquitectura
+## Architecture
 
-| Parte | Tecnología | Ubicación |
+| Component | Technology | Location |
 | --- | --- | --- |
-| Backend | Rust, Axum, Tokio, SQLx y SQLite | `backend/` |
-| Frontend | React, TypeScript y Vite | `frontend/` |
-| Indexadores | Definiciones Cardigann | `config/indexers/` |
-| Documentación | Estado, API, roadmap e historial | `docs/` |
+| Backend | Rust, Axum, Tokio, SQLx and SQLite | `backend/` |
+| Frontend | React, TypeScript and Vite | `frontend/` |
+| Indexers | Cardigann definitions | `config/indexers/` |
+| Documentation | Product state, API, roadmap and history | `docs/` |
 
-El backend escucha en `http://localhost:2032`. El frontend de desarrollo escucha en `http://localhost:5173` y redirige `/api` al backend.
+The backend listens on `http://localhost:2032`. The development frontend listens on `http://localhost:5173` and proxies `/api` to the backend.
 
-## Arranque local
+## Run locally
 
-En una terminal:
+In one terminal:
 
 ```powershell
 cd backend
 cargo run
 ```
 
-En otra:
+In another:
 
 ```powershell
 cd frontend
@@ -61,21 +61,21 @@ npm install
 npm run dev
 ```
 
-Después abre `http://localhost:5173`.
+Then open `http://localhost:5173`.
 
-## Configuración inicial
+## Initial configuration
 
-1. Abre **Settings** y añade la credencial de TMDB.
-2. Configura qBittorrent y pulsa **Test Connection**.
-3. Define las rutas de películas, series y descargas.
-4. Sincroniza o añade indexadores y configura perfiles de calidad.
-5. Añade una película o una serie y usa Automation cuando la configuración esté verificada.
+1. Open **Settings** and add a TMDB credential.
+2. Configure qBittorrent and select **Test Connection**.
+3. Define movie, series and download paths.
+4. Sync or add indexers, then configure quality profiles.
+5. Add a movie or series and run Automation once the configuration is verified.
 
-Las definiciones privadas van en `config/indexers/custom/`. Las bases SQLite, secretos, definiciones privadas y artefactos de compilación están excluidos del control de versiones.
+Private definitions belong in `config/indexers/custom/`. SQLite databases, secrets, private definitions and build artifacts are excluded from version control.
 
-## API y diagnóstico
+## API and diagnostics
 
-La API interna vive bajo `/api`. La API pública v1 se habilita desde Settings y usa la cabecera `X-Api-Key`:
+The internal API is served below `/api`. Public API v1 is enabled in Settings and uses the `X-Api-Key` header:
 
 ```text
 GET  /api/v1/status
@@ -85,13 +85,13 @@ POST /api/v1/requests
 GET  /api/v1/requests/{id}
 ```
 
-Cinetta usa la API v1 nativa: consulta perfiles autenticados y enlaza cada petición con un identificador de cliente idempotente. Cada perfil declara explícitamente si recibe peticiones estándar o 4K, de modo que Cinetta solo ofrece destinos de la calidad solicitada. La compatibilidad para Overseerr se activa aparte y expone `/radarr/api/v3/*` y `/sonarr/api/v3/*`; no sustituye ni condiciona la integración nativa.
+Cinetta uses the native API v1: it reads authenticated profiles and links every request with an idempotent client identifier. Each profile explicitly declares whether it accepts standard or 4K requests, so Cinetta only offers destinations matching the requested quality. Overseerr compatibility is enabled separately and exposes `/radarr/api/v3/*` and `/sonarr/api/v3/*`; it does not replace or constrain the native integration.
 
-`GET /api/diagnostics` aporta versión, sistema, estado de SQLite, configuración de servicios, indexadores, automatización y errores recientes sin exponer claves ni contraseñas. RSS expone `GET /api/rss/status` y puede sincronizarse manualmente con `POST /api/rss/run`.
+`GET /api/diagnostics` reports the version, operating system, SQLite status, service configuration, indexers, automation and recent errors without exposing keys or passwords. RSS exposes `GET /api/rss/status` and can be run manually with `POST /api/rss/run`.
 
-Desde **Settings → Backup & Restore** se pueden crear y restaurar snapshots consistentes de SQLite. Se guardan en `backend/backups` cuando Oberiz se inicia desde `backend`; incluyen los cambios que estén en WAL. Restaurar revierte los datos de Oberiz, pero no modifica archivos multimedia ni torrents de qBittorrent.
+From **Settings → Backup & Restore**, you can create and restore consistent SQLite snapshots. They are stored in `backend/backups` when Oberiz starts from `backend` and include pending WAL changes. Restoring reverts Oberiz data, but never modifies media files or qBittorrent torrents.
 
-## Verificación
+## Verification
 
 ```powershell
 cd backend
@@ -101,8 +101,8 @@ cd ..\frontend
 npm run build
 ```
 
-La suite cubre el parser/scoring de releases y la decisión `Complete Series → Season Pack → Episode`. El procedimiento manual de extremo a extremo está documentado en `docs/Oberiz_Memoria_Actualizada.md`.
+The test suite covers release parsing/scoring and the `Complete Series → Season Pack → Episode` decision. The manual end-to-end procedure is documented in `docs/Oberiz_Memoria_Actualizada.md`.
 
-## Documentación
+## Documentation
 
-La documentación se conserva exclusivamente en [`docs/README.md`](docs/README.md): estado técnico, integración API, importación, roadmap, RSS 0.9.0 e historial de versiones. La raíz se mantiene deliberadamente limitada a este README, licencia, configuración y código.
+Product documentation is stored in [`docs/README.md`](docs/README.md): technical state, API integration, importing, roadmap, RSS and version history. The repository root is intentionally limited to this README, the license, configuration and source code.
