@@ -71,13 +71,7 @@ Open `http://localhost:2032`.
 
 `oberiz-data` stores the database and backups, while `oberiz-config` stores indexer definitions. Both survive container updates. Before starting, set `OBERIZ_MEDIA_PATH` in your shell or `.env` if Oberiz needs to import media files; it is mounted inside the container at `/media`. The published image is downloaded automatically; no local build tools are needed.
 
-While the repository or package is private, authenticate Docker before starting:
-
-```bash
-docker login ghcr.io -u anjelohe
-```
-
-Use a GitHub personal access token with the `read:packages` permission as the password. Once the package is public, this step is not required.
+The published Docker image is public and does not require a GitHub account. If GitHub ever returns a permissions error while pulling it, authenticate with `docker login ghcr.io -u anjelohe` and use a personal access token with the `read:packages` permission.
 
 ## LXC installation
 
