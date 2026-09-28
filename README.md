@@ -44,6 +44,18 @@ For series, it manages seasons, episodes, monitoring and inherited profiles. Aut
 
 Oberiz is served on `http://localhost:2032`. The web interface and API are delivered by the same service.
 
+## Prebuilt downloads
+
+Every release provides ready-to-run packages. No Rust, Node.js or frontend build tools are required on the target machine.
+
+| Platform | Download | Starts with |
+| --- | --- | --- |
+| Docker | `ghcr.io/anjelohe/oberiz:1.0.0` | `docker compose up -d` |
+| Linux x86_64 | `oberiz-1.0.0-linux-x86_64.tar.gz` | `sudo ./install.sh` |
+| Windows x86_64 | `oberiz-1.0.0-windows-x86_64.zip` | `Start-Oberiz.bat` |
+
+The Linux package is available from the [v1.0.0 release](https://github.com/anjelohe/Oberiz/releases/tag/v1.0.0). The release workflow also builds and attaches the Windows package whenever a version is published.
+
 ## Docker installation
 
 Install Docker Engine and the Docker Compose plugin, then run:
@@ -57,6 +69,22 @@ docker compose up -d
 Open `http://localhost:2032`.
 
 `oberiz-data` stores the database and backups, while `oberiz-config` stores indexer definitions. Both survive container updates. Before starting, set `OBERIZ_MEDIA_PATH` in your shell or `.env` if Oberiz needs to import media files; it is mounted inside the container at `/media`. The published image is downloaded automatically; no local build tools are needed.
+
+While the repository or package is private, authenticate Docker before starting:
+
+```bash
+docker login ghcr.io -u anjelohe
+```
+
+Use a GitHub personal access token with the `read:packages` permission as the password. Once the package is public, this step is not required.
+
+## LXC installation
+
+Docker is the recommended way to run Oberiz in an LXC. Create a 64-bit Debian or Ubuntu LXC with enough disk space for the application data and media mounts, enable Docker support for the container (in Proxmox, enable **Nesting**), then follow the Docker installation above.
+
+Open Oberiz from another device with `http://LXC_IP:2032`. If the LXC is unprivileged, make sure its mapped user can read and write any host folders mounted for media and downloads.
+
+For an LXC without Docker, use the Linux package instead. It requires a distribution with systemd; system containers without systemd should use Docker.
 
 ## Linux installation
 
