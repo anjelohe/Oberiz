@@ -3,9 +3,13 @@
 > Estado del proyecto, decisiones tomadas, trabajo realizado y roadmap previsto.
 
 **Fecha de esta memoria:** 28 de septiembre de 2026  
-**Estado actual:** Oberiz v1.0.3 es la versión pública vigente. Incluye biblioteca real, automatización de películas y series, RSS incremental, importación, Calendar, API pública v1, diagnóstico, backup/restore SQLite, perfiles refinados y acceso de administrador protegido.
+**Estado actual:** Oberiz v1.0.4 es la versión pública vigente. Incluye biblioteca real, automatización de películas y series, RSS incremental, importación, Calendar, API pública v1, diagnóstico, backup/restore SQLite, perfiles refinados y acceso de administrador protegido.
 
 ---
+
+## v1.0.4 — Arranque desde el acceso directo de Windows (2026-09-30)
+
+- El acceso directo instalado inicia el servicio si estaba detenido, espera a que responda `127.0.0.1:2032` y abre entonces el navegador.
 
 ## v1.0.3 — Corrección del menú de bandeja de Windows (2026-09-30)
 
