@@ -1,6 +1,6 @@
 [package]
 name = "oberiz"
-version = "1.0.5"
+version = "1.0.6"
 edition = "2024"
 license = "AGPL-3.0-or-later"
 
@@ -37,5 +37,6 @@ windows-sys = { version = "0.61", features = [
   "Win32_Graphics_Gdi",
   "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",
+  "Win32_System_Threading",
 ] }
 windows-service = "0.7"
