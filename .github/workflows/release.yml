@@ -11,6 +11,11 @@ on:
         required: true
         default: v1.0.0
         type: string
+      windows_only:
+        description: Build and publish only the Windows portable ZIP and installer
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -22,6 +27,7 @@ permissions:
 # Dependabot (.github/dependabot.yml) opens a PR to bump these.
 jobs:
   linux-package:
+    if: ${{ inputs.windows_only != true }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -103,6 +109,7 @@ jobs:
             dist/SHA256SUMS-windows.txt
 
   docker-image:
+    if: ${{ inputs.windows_only != true }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -134,6 +141,7 @@ jobs:
 
   publish-release:
     needs: [linux-package, windows-package, docker-image]
+    if: ${{ always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -144,8 +152,8 @@ jobs:
       - name: Merge platform checksum files
         run: |
           cd release-assets
-          cat SHA256SUMS-linux.txt SHA256SUMS-windows.txt > SHA256SUMS.txt
-          rm SHA256SUMS-linux.txt SHA256SUMS-windows.txt
+          cat SHA256SUMS-*.txt > SHA256SUMS.txt
+          rm SHA256SUMS-*.txt
       - name: Publish GitHub release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:

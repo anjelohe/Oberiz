@@ -43,6 +43,10 @@ const STOP_SERVICE: usize = 4;
 const CLOSE_SERVICE_AND_EXIT: usize = 5;
 const WINDOW_CLASS: &str = "OberizTrayWindow";
 
+fn notification_event(l_param: LPARAM) -> u32 {
+    l_param as u32 & 0xffff
+}
+
 /// Set once before the message loop starts; `window_proc` is a plain Win32
 /// callback with no way to capture state, so this is the simplest way to let
 /// it know which of the two menus/behaviors is active. There is only ever
@@ -132,8 +136,14 @@ unsafe extern "system" fn window_proc(
     l_param: LPARAM,
 ) -> LRESULT {
     match message {
-        TRAY_CALLBACK if l_param as u32 == WM_LBUTTONUP || l_param as u32 == WM_RBUTTONUP => {
-            if l_param as u32 == WM_LBUTTONUP {
+        TRAY_CALLBACK
+            if notification_event(l_param) == WM_LBUTTONUP
+                || notification_event(l_param) == WM_RBUTTONUP =>
+        {
+            // With NOTIFYICON_VERSION_4 Windows stores the notification event
+            // in the low word and the icon ID in the high word of lParam.
+            // Comparing the complete value made right-clicks look unknown.
+            if notification_event(l_param) == WM_LBUTTONUP {
                 open_oberiz();
             } else {
                 show_menu(window);
@@ -250,5 +260,16 @@ fn wide(value: &str) -> Vec<u16> {
 fn copy_wide(destination: &mut [u16], value: &str) {
     for (slot, character) in destination.iter_mut().zip(value.encode_utf16()) {
         *slot = character;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tray_notification_event_ignores_the_icon_id_in_the_high_word() {
+        let right_click_for_icon_one = ((1_u32 << 16) | WM_RBUTTONUP) as LPARAM;
+        assert_eq!(notification_event(right_click_for_icon_one), WM_RBUTTONUP);
     }
 }

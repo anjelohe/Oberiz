@@ -3,9 +3,13 @@
 > Estado del proyecto, decisiones tomadas, trabajo realizado y roadmap previsto.
 
 **Fecha de esta memoria:** 28 de septiembre de 2026  
-**Estado actual:** Oberiz v1.0.2 es la versión pública vigente. Incluye biblioteca real, automatización de películas y series, RSS incremental, importación, Calendar, API pública v1, diagnóstico, backup/restore SQLite, perfiles refinados y acceso de administrador protegido.
+**Estado actual:** Oberiz v1.0.3 es la versión pública vigente. Incluye biblioteca real, automatización de películas y series, RSS incremental, importación, Calendar, API pública v1, diagnóstico, backup/restore SQLite, perfiles refinados y acceso de administrador protegido.
 
 ---
+
+## v1.0.3 — Corrección del menú de bandeja de Windows (2026-09-30)
+
+- El icono de bandeja interpreta correctamente los clics de Windows con `NOTIFYICON_VERSION_4`: clic izquierdo abre Oberiz y clic derecho muestra el menú contextual.
 
 ## v1.0.2 — Menú de bandeja de Windows (2026-09-30)
 
