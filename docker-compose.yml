@@ -1,12 +1,29 @@
 services:
   oberiz:
-    image: ghcr.io/anjelohe/oberiz:v1.0.0
+    # Pin an exact version and bump it deliberately: set OBERIZ_VERSION in
+    # .env rather than tracking a moving tag in production.
+    image: ghcr.io/anjelohe/oberiz:${OBERIZ_VERSION:-v1.0.1}
     container_name: oberiz
     restart: unless-stopped
+    # The container's own filesystem needs nothing writable: SQLite, indexer
+    # definitions and backups all live under the two volumes below, and
+    # anything a dependency might still want a scratch directory for gets the
+    # tmpfs. If you change library/download paths to somewhere outside
+    # /data, /config or /media, make sure that path is its own volume too.
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp
     ports:
       - "${OBERIZ_PORT:-2032}:2032"
     environment:
       TZ: ${TZ:-Europe/Madrid}
+      # Uncomment to fence the Settings folder-picker in to these paths
+      # instead of letting it browse the whole container filesystem:
+      # OBERIZ_FS_ALLOWED_ROOTS: /media,/data,/config
     volumes:
       - oberiz-data:/data
       - oberiz-config:/config

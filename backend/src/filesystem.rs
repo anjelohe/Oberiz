@@ -34,6 +34,12 @@ pub async fn list_directories(
             format!("Cannot open folder: {error}"),
         )
     })?;
+    if !within_allowed_roots(&canonical) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "That folder is outside the directories Oberiz is allowed to browse".into(),
+        ));
+    }
     let mut directories = std::fs::read_dir(&canonical)
         .map_err(|error| {
             (
@@ -67,15 +73,44 @@ fn display_path(path: &std::path::Path) -> String {
         .to_string()
 }
 
+/// `OBERIZ_FS_ALLOWED_ROOTS`: an optional comma-separated allow-list of base
+/// directories (e.g. `/media,/downloads,/config` in Docker). Unset by
+/// default, so a native install can still browse the whole machine to pick
+/// any folder — this is meant for container/appliance deployments that want
+/// to fence the picker in to the paths they actually mounted.
+fn allowed_roots() -> Option<Vec<PathBuf>> {
+    let raw = std::env::var("OBERIZ_FS_ALLOWED_ROOTS").ok()?;
+    let roots = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .filter_map(|value| std::fs::canonicalize(value).ok())
+        .collect::<Vec<_>>();
+    (!roots.is_empty()).then_some(roots)
+}
+
+fn within_allowed_roots(path: &std::path::Path) -> bool {
+    match allowed_roots() {
+        None => true,
+        Some(roots) => roots.iter().any(|root| path.starts_with(root)),
+    }
+}
+
 fn roots() -> Vec<String> {
+    if let Some(configured) = allowed_roots() {
+        return configured
+            .into_iter()
+            .map(|root| display_path(&root))
+            .collect();
+    }
     #[cfg(windows)]
     {
-        return (b'A'..=b'Z')
+        (b'A'..=b'Z')
             .filter_map(|letter| {
                 let root = format!("{}:\\", letter as char);
                 PathBuf::from(&root).is_dir().then_some(root)
             })
-            .collect();
+            .collect()
     }
     #[cfg(not(windows))]
     {
@@ -84,6 +119,11 @@ fn roots() -> Vec<String> {
 }
 
 fn default_directory() -> String {
+    if let Some(roots) = allowed_roots()
+        && let Some(first) = roots.into_iter().next()
+    {
+        return first.display().to_string();
+    }
     std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
         .unwrap_or_else(|_| {

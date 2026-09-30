@@ -16,34 +16,48 @@ permissions:
   contents: write
   packages: write
 
+# Actions are pinned by commit SHA rather than a floating tag (a tag can be
+# moved to point at different, potentially compromised code; a commit SHA
+# cannot) — the version is left in a trailing comment for readability.
+# Dependabot (.github/dependabot.yml) opens a PR to bump these.
 jobs:
   linux-package:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, as of 2026-09
       - name: Build Linux installer
         run: bash scripts/build-linux-package.sh
-      - uses: actions/upload-artifact@v4
+      - name: Generate SBOM (CycloneDX, backend dependency tree)
+        run: |
+          cargo install cargo-cyclonedx --locked
+          cargo cyclonedx --manifest-path backend/Cargo.toml --format json
+          cp backend/oberiz.cdx.json dist/oberiz-sbom.cdx.json
+      - name: Checksum release assets
+        run: (cd dist && sha256sum *.tar.gz oberiz-sbom.cdx.json > SHA256SUMS-linux.txt)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: oberiz-linux-installer
-          path: dist/*.tar.gz
+          path: |
+            dist/*.tar.gz
+            dist/oberiz-sbom.cdx.json
+            dist/SHA256SUMS-linux.txt
 
   windows-package:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, as of 2026-09
       - name: Build Windows package
         shell: pwsh
         run: |
@@ -61,6 +75,7 @@ jobs:
           Copy-Item packaging/windows/Start-Oberiz.vbs "$staging/Start-Oberiz.vbs"
           Copy-Item packaging/windows/Start-Oberiz-Installed.bat "$staging/Start-Oberiz-Installed.bat"
           Copy-Item packaging/windows/Start-Oberiz-Installed.vbs "$staging/Start-Oberiz-Installed.vbs"
+          Copy-Item packaging/windows/Start-Oberiz-Tray.vbs "$staging/Start-Oberiz-Tray.vbs"
           Copy-Item packaging/windows/oberiz.ico "$staging/oberiz.ico"
           Compress-Archive -Path $staging -DestinationPath "dist/$package.zip"
       - name: Build Windows setup executable
@@ -72,27 +87,47 @@ jobs:
           $sourceRoot = (Resolve-Path "dist/$package").Path
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           & $iscc "/DSourceRoot=$sourceRoot" "/DMyAppVersion=$version" packaging/windows/oberiz.iss
-      - uses: actions/upload-artifact@v4
+      - name: Checksum release assets
+        shell: pwsh
+        run: |
+          Get-ChildItem dist/*.zip, dist/*-setup.exe | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+            "$hash  $($_.Name)" | Out-File -Append -Encoding utf8 dist/SHA256SUMS-windows.txt
+          }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: oberiz-windows-installer
           path: |
             dist/*.zip
             dist/*-setup.exe
+            dist/SHA256SUMS-windows.txt
 
   docker-image:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/build-push-action@v6
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
+          # amd64 is native on this runner; arm64 (Raspberry Pi, ARM NAS,
+          # Apple Silicon hosts) is cross-built under QEMU emulation, so it
+          # takes noticeably longer than an amd64-only build.
+          platforms: linux/amd64,linux/arm64
           push: true
+          # BuildKit-native attestations: an SBOM and build provenance get
+          # attached to the published image itself (inspect with `docker
+          # buildx imagetools inspect --format '{{ json .SBOM }}' <image>` or
+          # `docker scout`), on top of the CycloneDX file shipped with the
+          # Linux/Windows packages above.
+          sbom: true
+          provenance: true
           tags: |
             ghcr.io/${{ github.repository_owner }}/oberiz:${{ inputs.release_version || github.ref_name }}
             ghcr.io/${{ github.repository_owner }}/oberiz:latest
@@ -101,13 +136,18 @@ jobs:
     needs: [linux-package, windows-package, docker-image]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: release-assets
           pattern: oberiz-*
           merge-multiple: true
+      - name: Merge platform checksum files
+        run: |
+          cd release-assets
+          cat SHA256SUMS-linux.txt SHA256SUMS-windows.txt > SHA256SUMS.txt
+          rm SHA256SUMS-linux.txt SHA256SUMS-windows.txt
       - name: Publish GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: ${{ inputs.release_version || github.ref_name }}
           target_commitish: ${{ github.sha }}

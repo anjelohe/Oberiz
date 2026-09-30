@@ -3,7 +3,29 @@
 > Estado del proyecto, decisiones tomadas, trabajo realizado y roadmap previsto.
 
 **Fecha de esta memoria:** 28 de septiembre de 2026  
-**Estado actual:** Oberiz v1.0.0 es la base pública vigente. Incluye biblioteca real, automatización de películas y series, RSS incremental, importación, Calendar, API pública v1, diagnóstico, backup/restore SQLite, perfiles iniciales refinados y acceso de administrador protegido.
+**Estado actual:** Oberiz v1.0.1 es la versión pública vigente. Incluye biblioteca real, automatización de películas y series, RSS incremental, importación, Calendar, API pública v1, diagnóstico, backup/restore SQLite, perfiles refinados y acceso de administrador protegido.
+
+---
+
+## v1.0.1 — Búsqueda y selección de releases (2026-09-29)
+
+### Búsqueda e indexadores
+
+- La búsqueda Cardigann conserva el intento inicial con el título de metadata y aplica alternativas solo cuando no obtiene resultados: sin el año final y, después, mediante título original. En series se preserva el identificador de temporada en esas alternativas.
+- La capa de compatibilidad Cardigann expone a las definiciones las variables de búsqueda disponibles (`TMDBID`, IMDb completo y corto, año, temporada y episodio). Los identificadores no disponibles permanecen vacíos en lugar de inventarse.
+- TVDB es una integración opcional para series: con una clave configurada en Settings, Oberiz solicita un token temporal y resuelve un ID de serie antes de consultar definiciones que usan `TVDBID`. Si TVDB no está configurado o no responde, la búsqueda continúa sin ese dato.
+- El lector HTML de resultados ignora cabeceras y filas no publicables cuando un selector amplio coincide con tablas de filtros o con avisos de “sin resultados”. La ausencia normal de releases es diagnóstico de nivel `debug`; los fallos reales de autenticación, red o descarga continúan visibles.
+- La prioridad de un indexador se consulta en orden ascendente y se usa para desempatar releases ya aceptadas con la misma puntuación de calidad. Cada perfil puede activar **Prioritize indexer**: en ese caso, tras aceptar una release, la prioridad del indexador prevalece sobre la puntuación de calidad. La tabla de indexadores muestra ese valor; `100` es el valor predeterminado y un número menor es preferente.
+
+### Perfiles de calidad y series
+
+- Se puede clonar un perfil de calidad para crear variantes sin reconfigurar reglas, rutas ni etiquetas manualmente.
+- Las búsquedas dirigidas a una temporada descartan releases de otra temporada explícita. Se reconocen las notaciones habituales (`S03E07`, `3x07`, `Season` y `Temporada`).
+- El perfil puede preferir packs de temporada/serie completa, incluyendo publicaciones marcadas como `PACK`.
+- Para series existen dos límites máximos de tamaño: uno para capítulos individuales y otro específico para temporadas o packs completos. Un release con `S03E07`, `3x07`, `Episode` o `Episodio` usa el límite de capítulo; `S03`, `Temporada 3`, `PACK` o `Complete` sin episodio explícito usa el límite de pack. Si el límite de pack no se configura, se conserva el máximo general como respaldo.
+- Los términos de rechazo se comparan como tokens de release. Por ejemplo, bloquear `CAM` sigue bloqueando `CAM.1080p`, sin rechazar títulos que contengan esa secuencia dentro de una palabra.
+
+Los YAML concretos de trackers privados, sus URL, credenciales y registros operativos se mantienen fuera del repositorio. Las notas privadas se guardan localmente y no forman parte de Git.
 
 ---
 

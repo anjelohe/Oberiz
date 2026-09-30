@@ -7,6 +7,7 @@ use scraper::{ElementRef, Html, Selector};
 use serde::Serialize;
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use serde_yaml::Value;
+use sha1::{Digest, Sha1};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -54,9 +55,14 @@ pub struct SearchFailure {
 #[derive(Debug, Clone)]
 pub struct SearchContext {
     pub keywords: String,
+    pub alternate_keywords: Option<String>,
     pub tmdb_id: Option<String>,
     pub imdb_id: Option<String>,
+    pub tvdb_id: Option<String>,
     pub media_type: String,
+    pub year: Option<i32>,
+    pub season: Option<i32>,
+    pub episode: Option<i32>,
 }
 
 #[derive(Debug, Clone)]
@@ -136,7 +142,7 @@ fn response_error(def: &Definition, response: &reqwest::Response, context: &str)
 
 fn human_duration(seconds: u64) -> String {
     if seconds >= 60 {
-        format!("{} min", (seconds + 59) / 60)
+        format!("{} min", seconds.div_ceil(60))
     } else {
         format!("{} s", seconds)
     }
@@ -153,16 +159,95 @@ pub async fn search_indexer(
     }
     let client = build_authenticated_client(&def).await?;
 
+    let mut output = search_query_with_year_fallback(&def, &client, ctx, &ctx.keywords).await?;
+    if output.is_empty()
+        && let Some(alternate) = ctx
+            .alternate_keywords
+            .as_deref()
+            .filter(|query| !query.eq_ignore_ascii_case(&ctx.keywords))
+    {
+        tracing::debug!(
+            indexer = %def.name,
+            initial_query = %ctx.keywords,
+            alternate_query = %alternate,
+            "retrying empty indexer search with original title"
+        );
+        output = search_query_with_year_fallback(&def, &client, ctx, alternate).await?;
+    }
+    Ok(output)
+}
+
+async fn search_query_with_year_fallback(
+    def: &Definition,
+    client: &Client,
+    ctx: &SearchContext,
+    keywords: &str,
+) -> Result<Vec<ReleaseResult>, String> {
+    let mut output = search_indexer_once(def, client, ctx, keywords).await?;
+    // Tracker release names often omit the TMDB year or use the original
+    // release year. Preserve the precise first search, then only retry a
+    // completely empty result set with its trailing year removed.
+    if output.is_empty()
+        && let Some(fallback_keywords) = without_trailing_year(keywords)
+    {
+        tracing::debug!(
+            indexer = %def.name,
+            initial_query = %keywords,
+            fallback_query = %fallback_keywords,
+            "retrying empty indexer search without trailing year"
+        );
+        output = search_indexer_once(def, client, ctx, &fallback_keywords).await?;
+    }
+    Ok(output)
+}
+
+async fn search_indexer_once(
+    def: &Definition,
+    client: &Client,
+    ctx: &SearchContext,
+    keywords: &str,
+) -> Result<Vec<ReleaseResult>, String> {
     let search = map_get(&def.yaml, "search").ok_or("La definición no contiene search")?;
     let rows = map_get(search, "rows").ok_or("search.rows no existe")?;
     let fields = map_get(search, "fields").ok_or("search.fields no existe")?;
 
+    let imdb_id = ctx.imdb_id.clone().unwrap_or_default();
+    let imdb_id_short = imdb_id
+        .strip_prefix("tt")
+        .or_else(|| imdb_id.strip_prefix("TT"))
+        .unwrap_or(&imdb_id)
+        .to_string();
+    let episode_search = match (ctx.season, ctx.episode) {
+        (Some(season), Some(episode)) => format!("S{season:02}E{episode:02}"),
+        (Some(season), None) => format!("S{season:02}"),
+        _ => String::new(),
+    };
     let mut template = TemplateContext {
-        keywords: ctx.keywords.clone(),
+        keywords: keywords.to_string(),
         config: def.config.clone(),
         query: HashMap::from([
             ("TMDBID".into(), ctx.tmdb_id.clone().unwrap_or_default()),
-            ("IMDBID".into(), ctx.imdb_id.clone().unwrap_or_default()),
+            ("TVDBID".into(), ctx.tvdb_id.clone().unwrap_or_default()),
+            ("IMDBID".into(), imdb_id),
+            ("IMDBIDShort".into(), imdb_id_short),
+            (
+                "Year".into(),
+                ctx.year.map(|value| value.to_string()).unwrap_or_default(),
+            ),
+            (
+                "Season".into(),
+                ctx.season
+                    .map(|value| value.to_string())
+                    .unwrap_or_default(),
+            ),
+            (
+                "Ep".into(),
+                ctx.episode
+                    .map(|value| value.to_string())
+                    .unwrap_or_default(),
+            ),
+            ("Episode".into(), episode_search),
+            ("Q".into(), keywords.to_string()),
         ]),
         result: HashMap::new(),
         categories: category_ids_for_media(&def.yaml, &ctx.media_type),
@@ -232,12 +317,12 @@ pub async fn search_indexer(
                 }
             }
             let mut final_url = parsed.to_string();
-            if let Some((_, raw)) = inputs.iter().find(|(k, _)| k == "$raw") {
-                if !raw.is_empty() {
-                    let sep = if final_url.contains('?') { "&" } else { "?" };
-                    final_url.push_str(sep);
-                    final_url.push_str(raw.trim_start_matches('?').trim_start_matches('&'));
-                }
+            if let Some((_, raw)) = inputs.iter().find(|(k, _)| k == "$raw")
+                && !raw.is_empty()
+            {
+                let sep = if final_url.contains('?') { "&" } else { "?" };
+                final_url.push_str(sep);
+                final_url.push_str(raw.trim_start_matches('?').trim_start_matches('&'));
             }
             let mut req = client.get(final_url);
             for (k, v) in &headers {
@@ -292,7 +377,31 @@ fn parse_html_rows(
     let row_selector = forgiving_selector(&row_selector_rendered)
         .ok_or_else(|| format!("Selector de filas no compatible: {row_selector_rendered}"))?;
 
-    for row in doc.select(&row_selector).take(100) {
+    let mut used_row_fallback = false;
+    let mut selected_rows = doc.select(&row_selector).take(100).collect::<Vec<_>>();
+    // Some older tracker templates emit malformed table markup. html5ever then
+    // fosters their <tr>s outside the table, making a Cardigann selector such
+    // as `table > tbody > tr:has(...)` match nothing. For those definitions,
+    // fall back to every table row; the existing, tracker-specific field
+    // selectors still decide whether a row yields a release.
+    if selected_rows.is_empty() && row_selector_rendered.contains(":has(") {
+        let fallback = Selector::parse("tr").expect("static selector is valid");
+        // Exclude header-only rows. Apart from avoiding a false release such
+        // as "Name", this keeps the fallback equivalent to a normal table
+        // result set: actual rows contain at least one data cell (`td`).
+        let data_cell = Selector::parse("td").expect("static selector is valid");
+        selected_rows = doc
+            .select(&fallback)
+            .filter(|row| row.select(&data_cell).next().is_some())
+            .take(150)
+            .collect();
+        used_row_fallback = true;
+    }
+    let before = output.len();
+    let mut first_row_fields = None;
+    let mut rows_with_title = 0usize;
+    let first_row_structure = selected_rows.first().map(row_structure_signature);
+    for row in selected_rows.iter() {
         template.result.clear();
         let mut extracted: HashMap<String, String> = HashMap::new();
 
@@ -308,9 +417,78 @@ fn parse_html_rows(
                 }
             }
         }
+        if extracted
+            .get("title")
+            .or_else(|| extracted.get("title_default"))
+            .or_else(|| extracted.get("name"))
+            .is_some_and(|title| !title.trim().is_empty())
+        {
+            rows_with_title += 1;
+        }
+        if first_row_fields.is_none() {
+            let mut names = extracted.keys().cloned().collect::<Vec<_>>();
+            names.sort();
+            first_row_fields = Some(names.join(","));
+        }
         push_release(def, extracted, output);
     }
+    if output.len() == before {
+        // A tracker returning no matches is normal. Keep the detailed markup
+        // diagnostic available with RUST_LOG=debug without alarming ordinary
+        // local runs; real login, HTTP and download failures still use warn.
+        tracing::debug!(
+            indexer = %def.name,
+            query_title = %template.keywords,
+            query_categories = ?template.categories,
+            selector = %row_selector_rendered,
+            matched_rows = selected_rows.len(),
+            used_row_fallback,
+            rows_with_title,
+            first_row_fields = first_row_fields.as_deref().unwrap_or(""),
+            first_row_structure = first_row_structure.as_deref().unwrap_or(""),
+            page_has_download_link = body.contains("/download"),
+            page_has_login_form = body.contains("/login") || body.contains("name=\"password\""),
+            "indexer HTML search produced no releases"
+        );
+    } else {
+        tracing::debug!(
+            indexer = %def.name,
+            selector = %row_selector_rendered,
+            matched_rows = selected_rows.len(),
+            used_row_fallback,
+            releases = output.len().saturating_sub(before),
+            "indexer HTML parsed"
+        );
+    }
     Ok(())
+}
+
+/// A privacy-safe summary for diagnosing changed tracker markup. It contains
+/// element names, CSS classes and URL paths only — never release text, query
+/// strings, cookies or submitted credentials.
+fn row_structure_signature(row: &ElementRef<'_>) -> String {
+    let link_selector = Selector::parse("a").expect("static selector is valid");
+    let class_selector = Selector::parse("[class]").expect("static selector is valid");
+    let links = row
+        .select(&link_selector)
+        .take(8)
+        .filter_map(|link| {
+            let href = link.value().attr("href")?;
+            let path = href.split('?').next().unwrap_or(href);
+            let class = link.value().attr("class").unwrap_or("");
+            Some(format!("a({class})={path}"))
+        })
+        .collect::<Vec<_>>();
+    let classes = row
+        .select(&class_selector)
+        .take(12)
+        .filter_map(|element| element.value().attr("class"))
+        .collect::<Vec<_>>();
+    format!(
+        "links:[{}] classes:[{}]",
+        links.join("|"),
+        classes.join("|")
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -400,11 +578,11 @@ fn parse_json_rows(
         }
         push_release(def, extracted, output);
     }
-    eprintln!(
-        "[INDEXER] {} · JSON rows={} releases={}",
-        def.name,
-        selected_count,
-        output.len().saturating_sub(before)
+    tracing::debug!(
+        indexer = %def.name,
+        json_rows = selected_count,
+        releases = output.len().saturating_sub(before),
+        "indexer json parsed"
     );
     Ok(())
 }
@@ -425,19 +603,19 @@ fn push_release(
 
     // JSON APIs such as TPB often expose only an infohash. Turn it into a
     // magnet so qBittorrent can receive the result directly.
-    if !extracted.contains_key("magnet") && !extracted.contains_key("download") {
-        if let Some(hash) = pick_field(&extracted, &["infohash", "info_hash"]) {
-            if !hash.trim().is_empty() {
-                extracted.insert(
-                    "magnet".into(),
-                    format!(
-                        "magnet:?xt=urn:btih:{}&dn={}",
-                        hash.trim(),
-                        urlencoding::encode(&title)
-                    ),
-                );
-            }
-        }
+    if !extracted.contains_key("magnet")
+        && !extracted.contains_key("download")
+        && let Some(hash) = pick_field(&extracted, &["infohash", "info_hash"])
+        && !hash.trim().is_empty()
+    {
+        extracted.insert(
+            "magnet".into(),
+            format!(
+                "magnet:?xt=urn:btih:{}&dn={}",
+                hash.trim(),
+                urlencoding::encode(&title)
+            ),
+        );
     }
 
     let download_url = pick_field(&extracted, &["magnet", "download"])
@@ -483,34 +661,58 @@ pub async fn test_indexer(state: &AppState, indexer_id: &str) -> Result<String, 
     }
     let client = build_authenticated_client(&def).await?;
 
-    if let Some(login) = map_get(&def.yaml, "login") {
-        if let Some(test) = map_get(login, "test") {
-            let path = yaml_string(map_get(test, "path")).unwrap_or_default();
-            let url = absolute_url(
-                &def.base_url,
-                &render_template(
-                    &path,
-                    &TemplateContext {
-                        config: def.config.clone(),
-                        ..Default::default()
-                    },
-                ),
-            )?;
-            let response = client.get(url).send().await.map_err(|e| e.to_string())?;
-            if !response.status().is_success() {
-                return Err(response_error(&def, &response, "login test"));
-            }
-            if let Some(sel) = yaml_string(map_get(test, "selector")) {
-                let html = response.text().await.map_err(|e| e.to_string())?;
-                let doc = Html::parse_document(&html);
-                let selector = forgiving_selector(&sel)
-                    .ok_or_else(|| format!("Selector de test no compatible: {sel}"))?;
-                if doc.select(&selector).next().is_none() {
-                    return Err("El login respondió, pero el selector de prueba no apareció".into());
-                }
-            }
-            return Ok(format!("{} · login OK", def.name));
+    if let Some(login) = map_get(&def.yaml, "login")
+        && let Some(test) = map_get(login, "test")
+    {
+        let path = yaml_string(map_get(test, "path")).unwrap_or_default();
+        let url = absolute_url(
+            &def.base_url,
+            &render_template(
+                &path,
+                &TemplateContext {
+                    config: def.config.clone(),
+                    ..Default::default()
+                },
+            ),
+        )?;
+        let response = client.get(url).send().await.map_err(|e| e.to_string())?;
+        if !response.status().is_success() {
+            return Err(response_error(&def, &response, "login test"));
         }
+        if let Some(sel) = yaml_string(map_get(test, "selector")) {
+            let html = response.text().await.map_err(|e| e.to_string())?;
+            let doc = Html::parse_document(&html);
+            let selector = forgiving_selector(&sel)
+                .ok_or_else(|| format!("Selector de test no compatible: {sel}"))?;
+            if doc.select(&selector).next().is_none() {
+                let login_form =
+                    Selector::parse("form[action*='login'], form#login, input[type='password']")
+                        .ok()
+                        .and_then(|selector| doc.select(&selector).next())
+                        .is_some();
+                return Err(if login_form {
+                    "El servidor devolvió la página de login: la cookie de Xbytes fue rechazada o ha caducado".into()
+                } else {
+                    "La sesión respondió, pero el selector de prueba no apareció; la definición necesita actualizarse".into()
+                });
+            }
+        }
+        return Ok(format!("{} · login OK", def.name));
+    }
+
+    // API definitions commonly authenticate on their search endpoint through
+    // headers (for example `Authorization: Bearer ...`), rather than on the
+    // base URL. Testing the base URL in that case produces a misleading 403
+    // even when a valid API key has been configured.
+    if let Some(response) = test_search_endpoint(&def, &client).await? {
+        if !response.status().is_success() {
+            return Err(response_error(
+                &def,
+                &response,
+                "search authentication test",
+            ));
+        }
+        return Ok(format!("{} · API authentication OK", def.name));
     }
 
     let response = client
@@ -525,62 +727,142 @@ pub async fn test_indexer(state: &AppState, indexer_id: &str) -> Result<String, 
     }
 }
 
+async fn test_search_endpoint(
+    def: &Definition,
+    client: &Client,
+) -> Result<Option<reqwest::Response>, String> {
+    let Some(search) = map_get(&def.yaml, "search") else {
+        return Ok(None);
+    };
+    let Some(path_block) = search_paths(search).into_iter().next() else {
+        return Ok(None);
+    };
+
+    let template = TemplateContext {
+        config: def.config.clone(),
+        categories: Vec::new(),
+        ..Default::default()
+    };
+    let headers = rendered_headers(map_get(search, "headers"), &template)
+        .into_iter()
+        .chain(rendered_headers(map_get(&path_block, "headers"), &template))
+        .collect::<Vec<_>>();
+    if headers.is_empty() {
+        return Ok(None);
+    }
+
+    let raw_path = yaml_string(map_get(&path_block, "path")).unwrap_or_default();
+    let url = absolute_url(&def.base_url, &render_template(&raw_path, &template))?;
+    let method = yaml_string(map_get(&path_block, "method"))
+        .unwrap_or_else(|| "get".into())
+        .to_lowercase();
+    let mut inputs = yaml_mapping_strings(map_get(search, "inputs"), &template);
+    if !map_get(&path_block, "inheritinputs")
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
+    {
+        inputs.clear();
+    }
+    inputs.extend(yaml_mapping_strings(
+        map_get(&path_block, "inputs"),
+        &template,
+    ));
+
+    let response = if method == "post" {
+        let mut request = client.post(url).form(
+            &inputs
+                .iter()
+                .filter(|(key, _)| key != "$raw")
+                .cloned()
+                .collect::<Vec<_>>(),
+        );
+        for (key, value) in &headers {
+            request = request.header(key, value);
+        }
+        request.send().await
+    } else {
+        let mut parsed = Url::parse(&url).map_err(|e| e.to_string())?;
+        {
+            let mut query = parsed.query_pairs_mut();
+            for (key, value) in &inputs {
+                if key != "$raw" && !value.is_empty() {
+                    query.append_pair(key, value);
+                }
+            }
+        }
+        let mut final_url = parsed.to_string();
+        if let Some((_, raw)) = inputs.iter().find(|(key, _)| key == "$raw")
+            && !raw.is_empty()
+        {
+            final_url.push(if final_url.contains('?') { '&' } else { '?' });
+            final_url.push_str(raw.trim_start_matches('?').trim_start_matches('&'));
+        }
+        let mut request = client.get(final_url);
+        for (key, value) in &headers {
+            request = request.header(key, value);
+        }
+        request.send().await
+    }
+    .map_err(|error| format!("Error HTTP en {}: {error}", def.name))?;
+
+    Ok(Some(response))
+}
+
 pub async fn fetch_release_bytes_or_url(
     state: &AppState,
     indexer_id: &str,
     direct_url: Option<&str>,
     details_url: Option<&str>,
 ) -> Result<GrabPayload, String> {
-    if let Some(url) = direct_url.filter(|x| !x.trim().is_empty()) {
-        if url.starts_with("magnet:") {
-            return Ok(GrabPayload::Url(url.to_string()));
-        }
+    if let Some(url) = direct_url.filter(|x| !x.trim().is_empty())
+        && url.starts_with("magnet:")
+    {
+        return Ok(GrabPayload::Url(url.to_string()));
     }
 
     let def = load_definition(state, indexer_id).await?;
     let client = build_authenticated_client(&def).await?;
+    let download_headers = download_request_headers(&def);
 
     let mut candidate = direct_url.map(str::to_string);
 
-    if candidate.is_none() {
-        if let Some(details) = details_url {
-            if let Some(download) = map_get(&def.yaml, "download") {
-                let response = client
-                    .get(details)
-                    .send()
-                    .await
-                    .map_err(|e| e.to_string())?;
-                if !response.status().is_success() {
-                    return Err(format!("Página de detalle HTTP {}", response.status()));
-                }
-                let body = response.text().await.map_err(|e| e.to_string())?;
-                let doc = Html::parse_document(&body);
+    if candidate.is_none()
+        && let Some(details) = details_url
+        && let Some(download) = map_get(&def.yaml, "download")
+    {
+        let mut request = client.get(details);
+        for (key, value) in &download_headers {
+            request = request.header(key, value);
+        }
+        let response = request.send().await.map_err(|e| e.to_string())?;
+        if !response.status().is_success() {
+            return Err(format!("Página de detalle HTTP {}", response.status()));
+        }
+        let body = response.text().await.map_err(|e| e.to_string())?;
+        let doc = Html::parse_document(&body);
 
-                if let Some(selectors) = map_get(download, "selectors").and_then(Value::as_sequence)
-                {
-                    for block in selectors {
-                        let Some(sel_raw) = yaml_string(map_get(block, "selector")) else {
-                            continue;
-                        };
-                        let ctx = TemplateContext {
-                            config: def.config.clone(),
-                            ..Default::default()
-                        };
-                        let sel_rendered = render_template(&sel_raw, &ctx);
-                        let Some(sel) = forgiving_selector(&sel_rendered) else {
-                            continue;
-                        };
-                        if let Some(el) = doc.select(&sel).next() {
-                            let attr = yaml_string(map_get(block, "attribute"))
-                                .unwrap_or_else(|| "href".into());
-                            if let Some(v) = el.value().attr(&attr) {
-                                let mut found = v.to_string();
-                                found = apply_filters(found, map_get(block, "filters"));
-                                candidate = make_absolute_maybe(&def.base_url, &found);
-                                if candidate.is_some() {
-                                    break;
-                                }
-                            }
+        if let Some(selectors) = map_get(download, "selectors").and_then(Value::as_sequence) {
+            for block in selectors {
+                let Some(sel_raw) = yaml_string(map_get(block, "selector")) else {
+                    continue;
+                };
+                let ctx = TemplateContext {
+                    config: def.config.clone(),
+                    ..Default::default()
+                };
+                let sel_rendered = render_template(&sel_raw, &ctx);
+                let Some(sel) = forgiving_selector(&sel_rendered) else {
+                    continue;
+                };
+                if let Some(el) = doc.select(&sel).next() {
+                    let attr =
+                        yaml_string(map_get(block, "attribute")).unwrap_or_else(|| "href".into());
+                    if let Some(v) = el.value().attr(&attr) {
+                        let mut found = v.to_string();
+                        found = apply_filters(found, map_get(block, "filters"));
+                        candidate = make_absolute_maybe(&def.base_url, &found);
+                        if candidate.is_some() {
+                            break;
                         }
                     }
                 }
@@ -596,7 +878,11 @@ pub async fn fetch_release_bytes_or_url(
         return Ok(GrabPayload::Url(url));
     }
 
-    let response = client.get(&url).send().await.map_err(|e| e.to_string())?;
+    let mut request = client.get(&url);
+    for (key, value) in &download_headers {
+        request = request.header(key, value);
+    }
+    let response = request.send().await.map_err(|e| e.to_string())?;
     if !response.status().is_success() {
         return Err(format!(
             "La descarga del .torrent devolvió HTTP {}",
@@ -604,7 +890,149 @@ pub async fn fetch_release_bytes_or_url(
         ));
     }
     let bytes = response.bytes().await.map_err(|e| e.to_string())?;
+    if let Err(reason) = validate_torrent_metainfo(&bytes) {
+        return Err(format!(
+            "{} no devolvió un archivo .torrent válido ({reason}); no se envió a qBittorrent",
+            def.name,
+        ));
+    }
     Ok(GrabPayload::Torrent(bytes.to_vec()))
+}
+
+/// Check the small, essential part of bencoded torrent metainfo before passing
+/// it to qBittorrent. A response page from a tracker can also start with `d`,
+/// so checking just its first byte is not enough.
+fn validate_torrent_metainfo(bytes: &[u8]) -> Result<(), &'static str> {
+    if bytes.first() != Some(&b'd') {
+        return Err("no empieza por un diccionario bencode");
+    }
+
+    let mut pos = 1;
+    let mut has_info_dictionary = false;
+    while pos < bytes.len() && bytes[pos] != b'e' {
+        let key = read_bencode_string(bytes, &mut pos)?;
+        let info_value_is_dictionary = key == b"info" && bytes.get(pos) == Some(&b'd');
+        skip_bencode_value(bytes, &mut pos)?;
+        has_info_dictionary |= info_value_is_dictionary;
+    }
+    if bytes.get(pos) != Some(&b'e') {
+        return Err("el diccionario superior no termina");
+    }
+    pos += 1;
+    if pos != bytes.len() {
+        return Err("contiene datos después del diccionario superior");
+    }
+    if !has_info_dictionary {
+        return Err("no contiene el diccionario info");
+    }
+    Ok(())
+}
+
+/// The v1 torrent identity is the SHA-1 digest of the *raw* bencoded `info`
+/// dictionary. Keeping the original byte range matters: re-serializing it can
+/// produce a different hash. Hybrid torrents also expose this v1 identity.
+pub(crate) fn torrent_v1_info_hash(bytes: &[u8]) -> Option<String> {
+    let mut pos = 1;
+    if bytes.first() != Some(&b'd') {
+        return None;
+    }
+    while pos < bytes.len() && bytes[pos] != b'e' {
+        let key = read_bencode_string(bytes, &mut pos).ok()?;
+        let value_start = pos;
+        skip_bencode_value(bytes, &mut pos).ok()?;
+        if key == b"info" && bytes.get(value_start) == Some(&b'd') {
+            let mut digest = Sha1::new();
+            digest.update(bytes.get(value_start..pos)?);
+            return Some(format!("{:x}", digest.finalize()));
+        }
+    }
+    None
+}
+
+fn read_bencode_string<'a>(bytes: &'a [u8], pos: &mut usize) -> Result<&'a [u8], &'static str> {
+    let start = *pos;
+    while let Some(byte) = bytes.get(*pos) {
+        if *byte == b':' {
+            break;
+        }
+        if !byte.is_ascii_digit() {
+            return Err("longitud de cadena bencode inválida");
+        }
+        *pos += 1;
+    }
+    if bytes.get(*pos) != Some(&b':') || *pos == start {
+        return Err("cadena bencode sin separador");
+    }
+    let len = std::str::from_utf8(&bytes[start..*pos])
+        .ok()
+        .and_then(|n| n.parse::<usize>().ok())
+        .ok_or("longitud de cadena bencode inválida")?;
+    *pos += 1;
+    let end = pos
+        .checked_add(len)
+        .ok_or("cadena bencode demasiado larga")?;
+    let value = bytes.get(*pos..end).ok_or("cadena bencode truncada")?;
+    *pos = end;
+    Ok(value)
+}
+
+fn skip_bencode_value(bytes: &[u8], pos: &mut usize) -> Result<(), &'static str> {
+    match bytes.get(*pos).copied() {
+        Some(b'0'..=b'9') => {
+            read_bencode_string(bytes, pos)?;
+            Ok(())
+        }
+        Some(b'i') => {
+            *pos += 1;
+            let start = *pos;
+            while let Some(byte) = bytes.get(*pos) {
+                if *byte == b'e' {
+                    break;
+                }
+                if !byte.is_ascii_digit() && !(*byte == b'-' && *pos == start) {
+                    return Err("entero bencode inválido");
+                }
+                *pos += 1;
+            }
+            if *pos == start || bytes.get(*pos) != Some(&b'e') {
+                return Err("entero bencode sin terminar");
+            }
+            *pos += 1;
+            Ok(())
+        }
+        Some(b'l') => {
+            *pos += 1;
+            while bytes.get(*pos) != Some(&b'e') {
+                skip_bencode_value(bytes, pos)?;
+            }
+            *pos += 1;
+            Ok(())
+        }
+        Some(b'd') => {
+            *pos += 1;
+            while bytes.get(*pos) != Some(&b'e') {
+                read_bencode_string(bytes, pos)?;
+                skip_bencode_value(bytes, pos)?;
+            }
+            *pos += 1;
+            Ok(())
+        }
+        _ => Err("valor bencode inválido o truncado"),
+    }
+}
+
+fn download_request_headers(def: &Definition) -> Vec<(String, String)> {
+    let context = TemplateContext {
+        config: def.config.clone(),
+        ..Default::default()
+    };
+    let mut headers = map_get(&def.yaml, "search")
+        .map(|search| rendered_headers(map_get(search, "headers"), &context))
+        .unwrap_or_default();
+    if let Some(download) = map_get(&def.yaml, "download") {
+        headers.extend(rendered_headers(map_get(download, "headers"), &context));
+    }
+    headers
 }
 
 pub enum GrabPayload {
@@ -713,13 +1141,13 @@ async fn build_authenticated_client(def: &Definition) -> Result<Client, String> 
     if let Some(login) = map_get(&def.yaml, "login") {
         if yaml_string(map_get(login, "method")).as_deref() == Some("cookie") {
             let inputs = yaml_mapping_strings(map_get(login, "inputs"), &ctx);
-            if let Some((_, cookie)) = inputs.iter().find(|(k, _)| k == "cookie") {
-                if !cookie.trim().is_empty() {
-                    default_headers.insert(
-                        COOKIE,
-                        HeaderValue::from_str(cookie).map_err(|e| e.to_string())?,
-                    );
-                }
+            if let Some((_, cookie)) = inputs.iter().find(|(k, _)| k == "cookie")
+                && !cookie.trim().is_empty()
+            {
+                default_headers.insert(
+                    COOKIE,
+                    HeaderValue::from_str(cookie).map_err(|e| e.to_string())?,
+                );
             }
         }
         for (k, v) in rendered_headers(map_get(login, "headers"), &ctx) {
@@ -736,7 +1164,11 @@ async fn build_authenticated_client(def: &Definition) -> Result<Client, String> 
         .cookie_store(true)
         .default_headers(default_headers)
         .timeout(Duration::from_secs(18))
-        .user_agent("Mozilla/5.0 (compatible; Oberiz/0.4)")
+        .user_agent(concat!(
+            "Mozilla/5.0 (compatible; Oberiz/",
+            env!("CARGO_PKG_VERSION"),
+            ")"
+        ))
         .build()
         .map_err(|e| e.to_string())?;
 
@@ -745,26 +1177,266 @@ async fn build_authenticated_client(def: &Definition) -> Result<Client, String> 
             .unwrap_or_default()
             .to_lowercase();
         if matches!(method.as_str(), "form" | "post" | "get" | "oneurl") {
+            let page_path = yaml_string(map_get(login, "path")).unwrap_or_default();
             let path = yaml_string(map_get(login, "submitpath"))
-                .or_else(|| yaml_string(map_get(login, "path")))
+                .or_else(|| (!page_path.is_empty()).then_some(page_path.clone()))
                 .unwrap_or_default();
             if !path.is_empty() {
-                let url = absolute_url(&def.base_url, &render_template(&path, &ctx))?;
-                let inputs = yaml_mapping_strings(map_get(login, "inputs"), &ctx);
-                let response = if method == "get" {
-                    client.get(url).query(&inputs).send().await
+                let mut url = absolute_url(&def.base_url, &render_template(&path, &ctx))?;
+                let mut inputs = yaml_mapping_strings(map_get(login, "inputs"), &ctx);
+                let mut form_referer = None;
+                if map_get(login, "selectorinputs").is_some() || map_get(login, "form").is_some() {
+                    let form_url = absolute_url(
+                        &def.base_url,
+                        &render_template(
+                            if page_path.is_empty() {
+                                &path
+                            } else {
+                                &page_path
+                            },
+                            &ctx,
+                        ),
+                    )?;
+                    let page = client
+                        .get(&form_url)
+                        .send()
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    if !page.status().is_success() {
+                        return Err(response_error(def, &page, "login form"));
+                    }
+                    let html = page.text().await.map_err(|e| e.to_string())?;
+                    if let Some(form_selector) = yaml_string(map_get(login, "form")) {
+                        let (form_inputs, action) = form_input_values(&form_selector, &html)?;
+                        merge_missing_inputs(&mut inputs, form_inputs);
+                        if map_get(login, "submitpath").is_none()
+                            && let Some(action) = action.filter(|value| !value.trim().is_empty())
+                        {
+                            url = absolute_url(&def.base_url, &action)?;
+                        }
+                    }
+                    if let Some(selector_inputs) = map_get(login, "selectorinputs") {
+                        for (name, value) in selector_input_values(selector_inputs, &html, &ctx)? {
+                            set_input(&mut inputs, name, value);
+                        }
+                    }
+                    form_referer = Some(form_url);
+                }
+                // Unit3D-style API definitions put their Bearer credential on
+                // `search.headers`, even though their login check is a GET to
+                // an API path. Reuse those headers only for that API-style GET
+                // so conventional form logins retain their original behavior.
+                let api_headers = if method == "get" {
+                    map_get(&def.yaml, "search")
+                        .map(|search| rendered_headers(map_get(search, "headers"), &ctx))
+                        .unwrap_or_default()
                 } else {
-                    client.post(url).form(&inputs).send().await
+                    Vec::new()
+                };
+                let response = if method == "get" {
+                    let mut request = client.get(url).query(&inputs);
+                    for (key, value) in &api_headers {
+                        request = request.header(key, value);
+                    }
+                    request.send().await
+                } else {
+                    let mut request = client.post(url).form(&inputs);
+                    // Match the browser context of the page from which we
+                    // extracted CSRF fields. Laravel/Unit3D deployments can
+                    // otherwise accept the POST but decline to establish a
+                    // session for the following request.
+                    if let Some(referer) = form_referer {
+                        if let Ok(parsed) = Url::parse(&referer) {
+                            request = request.header(
+                                reqwest::header::ORIGIN,
+                                parsed.origin().ascii_serialization(),
+                            );
+                        }
+                        request = request.header(reqwest::header::REFERER, referer);
+                    }
+                    request.send().await
                 }
                 .map_err(|e| e.to_string())?;
                 if !response.status().is_success() {
                     return Err(response_error(def, &response, "login"));
+                }
+                if matches!(method.as_str(), "form" | "post") {
+                    let body = response.text().await.map_err(|e| e.to_string())?;
+                    if let Some(message) = login_page_error(login, &body) {
+                        return Err(format!("{} rechazó el login: {message}", def.name));
+                    }
+                    if page_has_login_form(&body) {
+                        return Err(format!(
+                            "{} devolvió el formulario de login después de autenticar; la sesión no se creó",
+                            def.name
+                        ));
+                    }
                 }
             }
         }
     }
 
     Ok(client)
+}
+
+/// Return the tracker-provided form error without retaining any submitted
+/// values. Cardigann definitions normally identify it under `login.error`.
+fn login_page_error(login: &Value, html: &str) -> Option<String> {
+    let document = Html::parse_document(html);
+    let errors = map_get(login, "error")?.as_sequence()?;
+    for rule in errors {
+        let selector_raw = yaml_string(map_get(rule, "selector"))?;
+        let selector = forgiving_selector(&selector_raw)?;
+        let message = document
+            .select(&selector)
+            .next()
+            .map(|element| element.text().collect::<Vec<_>>().join(" "))?;
+        let trimmed = message.split_whitespace().collect::<Vec<_>>().join(" ");
+        if !trimmed.is_empty() {
+            return Some(trimmed);
+        }
+        return Some("el sitio indicó un error sin mensaje".into());
+    }
+    None
+}
+
+fn page_has_login_form(html: &str) -> bool {
+    Selector::parse("form[action*='login'], form#login, input[type='password']")
+        .ok()
+        .is_some_and(|selector| {
+            Html::parse_document(html)
+                .select(&selector)
+                .next()
+                .is_some()
+        })
+}
+
+fn selector_input_values(
+    selector_inputs: &Value,
+    html: &str,
+    ctx: &TemplateContext,
+) -> Result<Vec<(String, String)>, String> {
+    let Some(entries) = selector_inputs.as_mapping() else {
+        return Ok(Vec::new());
+    };
+    let document = Html::parse_document(html);
+    let mut values = Vec::new();
+    for (name, rule) in entries {
+        let Some(name) = name.as_str() else {
+            continue;
+        };
+        let Some(raw_selector) = yaml_string(map_get(rule, "selector")) else {
+            continue;
+        };
+        let selector = render_template(&raw_selector, ctx);
+        let selector = forgiving_selector(&selector)
+            .ok_or_else(|| format!("Selector de campo de login no compatible: {raw_selector}"))?;
+        let value = document.select(&selector).next().and_then(|element| {
+            if let Some(attribute) = yaml_string(map_get(rule, "attribute")) {
+                element.value().attr(&attribute).map(str::to_string)
+            } else {
+                Some(element.text().collect::<String>())
+            }
+        });
+        match value {
+            Some(value) => values.push((
+                name.to_string(),
+                apply_filters_ctx(value, map_get(rule, "filters"), ctx),
+            )),
+            None if map_get(rule, "optional")
+                .and_then(Value::as_bool)
+                .unwrap_or(false) => {}
+            None => {
+                return Err(format!(
+                    "No se encontró el campo de login requerido: {name}"
+                ));
+            }
+        }
+    }
+    Ok(values)
+}
+
+/// Browser form submissions include hidden fields in addition to the explicit
+/// credentials in an indexer definition. Preserve those defaults, while the
+/// definition itself remains authoritative for username/password and any
+/// explicitly selected CSRF field.
+fn form_input_values(
+    form_selector_raw: &str,
+    html: &str,
+) -> Result<(Vec<(String, String)>, Option<String>), String> {
+    let document = Html::parse_document(html);
+    let form_selector = forgiving_selector(form_selector_raw)
+        .ok_or_else(|| format!("Selector de formulario no compatible: {form_selector_raw}"))?;
+    let form = document
+        .select(&form_selector)
+        .next()
+        .ok_or_else(|| format!("No se encontró el formulario de login: {form_selector_raw}"))?;
+    let action = form.value().attr("action").map(str::to_string);
+    let control_selector = Selector::parse("input[name], select[name], textarea[name]")
+        .expect("static selector is valid");
+    let option_selector =
+        Selector::parse("option[selected], option").expect("static selector is valid");
+    let mut values = Vec::new();
+
+    for control in form.select(&control_selector) {
+        if control.value().attr("disabled").is_some() {
+            continue;
+        }
+        let Some(name) = control.value().attr("name") else {
+            continue;
+        };
+        let value = match control.value().name() {
+            "input" => {
+                let input_type = control
+                    .value()
+                    .attr("type")
+                    .unwrap_or("text")
+                    .to_ascii_lowercase();
+                if matches!(
+                    input_type.as_str(),
+                    "submit" | "button" | "reset" | "image" | "file"
+                ) {
+                    continue;
+                }
+                if matches!(input_type.as_str(), "checkbox" | "radio")
+                    && control.value().attr("checked").is_none()
+                {
+                    continue;
+                }
+                control.value().attr("value").unwrap_or("").to_string()
+            }
+            "textarea" => control.text().collect::<String>(),
+            "select" => {
+                let options = control.select(&option_selector).collect::<Vec<_>>();
+                let selected = options
+                    .iter()
+                    .find(|option| option.value().attr("selected").is_some())
+                    .or_else(|| options.first());
+                let Some(option) = selected else { continue };
+                option
+                    .value()
+                    .attr("value")
+                    .map(str::to_string)
+                    .unwrap_or_else(|| option.text().collect::<String>())
+            }
+            _ => continue,
+        };
+        values.push((name.to_string(), value));
+    }
+    Ok((values, action))
+}
+
+fn merge_missing_inputs(target: &mut Vec<(String, String)>, defaults: Vec<(String, String)>) {
+    for (name, value) in defaults {
+        if !target.iter().any(|(existing, _)| existing == &name) {
+            target.push((name, value));
+        }
+    }
+}
+
+fn set_input(target: &mut Vec<(String, String)>, name: String, value: String) {
+    target.retain(|(existing, _)| existing != &name);
+    target.push((name, value));
 }
 
 fn extract_field(
@@ -792,10 +1464,10 @@ fn extract_field(
         None
     };
 
-    if value.is_none() {
-        if let Some(default) = yaml_string(map_get(block, "default")) {
-            value = Some(render_template(&default, &local_ctx));
-        }
+    if value.is_none()
+        && let Some(default) = yaml_string(map_get(block, "default"))
+    {
+        value = Some(render_template(&default, &local_ctx));
     }
 
     let mut value = value?;
@@ -829,14 +1501,14 @@ fn apply_filters_ctx(mut value: String, filters: Option<&Value>, ctx: &TemplateC
                 }
             }
             "regexp" if !args.is_empty() => {
-                if let Ok(re) = Regex::new(&args[0]) {
-                    if let Some(c) = re.captures(&value) {
-                        value = c
-                            .get(1)
-                            .or_else(|| c.get(0))
-                            .map(|m| m.as_str().to_string())
-                            .unwrap_or_default();
-                    }
+                if let Ok(re) = Regex::new(&args[0])
+                    && let Some(c) = re.captures(&value)
+                {
+                    value = c
+                        .get(1)
+                        .or_else(|| c.get(0))
+                        .map(|m| m.as_str().to_string())
+                        .unwrap_or_default();
                 }
             }
             "split" if args.len() >= 2 => {
@@ -885,22 +1557,22 @@ fn extract_json_field(
         None
     };
 
-    if let Some(case_map) = map_get(block, "case").and_then(Value::as_mapping) {
-        if let Some(current) = value.as_deref() {
-            let mapped = case_map
-                .get(Value::String(current.to_string()))
-                .or_else(|| case_map.get(Value::String("*".to_string())))
-                .and_then(|v| yaml_string(Some(v)));
-            if mapped.is_some() {
-                value = mapped;
-            }
+    if let Some(case_map) = map_get(block, "case").and_then(Value::as_mapping)
+        && let Some(current) = value.as_deref()
+    {
+        let mapped = case_map
+            .get(Value::String(current.to_string()))
+            .or_else(|| case_map.get(Value::String("*".to_string())))
+            .and_then(|v| yaml_string(Some(v)));
+        if mapped.is_some() {
+            value = mapped;
         }
     }
 
-    if value.is_none() {
-        if let Some(default) = yaml_string(map_get(block, "default")) {
-            value = Some(render_template(&default, &local_ctx));
-        }
+    if value.is_none()
+        && let Some(default) = yaml_string(map_get(block, "default"))
+    {
+        value = Some(render_template(&default, &local_ctx));
     }
 
     let mut value = value?;
@@ -1159,15 +1831,20 @@ fn category_ids_for_media(root: &Value, media_type: &str) -> Vec<String> {
             } else {
                 cat.starts_with("movies")
             };
-            if ok {
-                if let Some(id) = yaml_string(map_get(row, "id")) {
-                    out.push(id);
-                }
+            if ok && let Some(id) = yaml_string(map_get(row, "id")) {
+                out.push(id);
             }
         }
     }
     out
 }
+
+fn without_trailing_year(query: &str) -> Option<String> {
+    let year = Regex::new(r"(?i)\s+\b(?:19|20)\d{2}\b\s*$").expect("static regex is valid");
+    let stripped = year.replace(query, "").trim().to_string();
+    (!stripped.is_empty() && stripped != query.trim()).then_some(stripped)
+}
+
 fn forgiving_selector(raw: &str) -> Option<Selector> {
     if let Ok(s) = Selector::parse(raw) {
         return Some(s);

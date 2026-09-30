@@ -112,6 +112,7 @@ export type QualityRules = {
   allow_unknown_resolution: boolean
   allow_unknown_source: boolean
   series_prefer_pack: boolean
+  prefer_indexer_priority: boolean
   series_accept_complete: boolean
 }
 
@@ -125,6 +126,7 @@ export type QualityProfile = {
   min_seeders: number
   min_size_mb: number | null
   max_size_mb: number | null
+  max_season_pack_size_mb: number | null
   language_profile_id: number | null
   language_profile_name: string | null
   qbittorrent_category: string
@@ -173,6 +175,7 @@ export type RssStatus = { enabled:boolean; interval_minutes:number; configured_f
 
 export type Settings = {
   tmdb_api_key_set: boolean;
+  tvdb_api_key_set: boolean;
   qbittorrent_host: string;
   qbittorrent_port: number;
   qbittorrent_username: string;
@@ -204,7 +207,6 @@ export type Settings = {
   ui_theme: 'dark'|'middle'|'light';
   api_enabled:boolean;
   api_key_set:boolean;
-  api_key:string;
   overseerr_compat_enabled:boolean;
 }
 

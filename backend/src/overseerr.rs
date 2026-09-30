@@ -21,7 +21,7 @@ async fn authorize(
         .map_err(internal)?
         .as_deref()
         == Some("true");
-    let expected = settings::get_value(&state.db, "api.key")
+    let expected_hash = settings::get_value(&state.db, "api.key_hash")
         .await
         .map_err(internal)?
         .unwrap_or_default();
@@ -42,7 +42,10 @@ async fn authorize(
             "Overseerr compatibility is disabled".into(),
         ));
     }
-    if expected.is_empty() || actual != expected {
+    if expected_hash.is_empty()
+        || actual.is_empty()
+        || settings::hash_api_key(actual) != expected_hash
+    {
         return Err((StatusCode::UNAUTHORIZED, "Invalid API key".into()));
     }
     Ok(())

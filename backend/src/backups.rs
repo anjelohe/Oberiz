@@ -102,7 +102,7 @@ pub async fn list_backups(
             backups.push(backup_info(&path)?);
         }
     }
-    backups.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+    backups.sort_by_key(|backup| std::cmp::Reverse(backup.created_at));
     Ok(Json(BackupList {
         directory: directory.display().to_string(),
         backups,
@@ -140,7 +140,7 @@ async fn apply_retention(state: &AppState) -> Result<(), (StatusCode, String)> {
             rows.push((backup_info(&path)?, path));
         }
     }
-    rows.sort_by(|left, right| right.0.created_at.cmp(&left.0.created_at));
+    rows.sort_by_key(|(backup, _)| std::cmp::Reverse(backup.created_at));
     for (_, path) in rows.into_iter().skip(keep) {
         std::fs::remove_file(path).map_err(internal)?;
     }
@@ -260,18 +260,16 @@ pub fn spawn_scheduler(state: AppState) {
                 .flatten()
                 .as_deref()
                 == Some("true");
-            if enabled {
-                if let Ok(backup) = create_backup_file(&state).await {
-                    let _ = apply_retention(&state).await;
-                    history::record(
-                        &state.db,
-                        "backup_scheduled",
-                        "Scheduled database backup created",
-                        Some(&backup.filename),
-                        "info",
-                    )
-                    .await;
-                }
+            if enabled && let Ok(backup) = create_backup_file(&state).await {
+                let _ = apply_retention(&state).await;
+                history::record(
+                    &state.db,
+                    "backup_scheduled",
+                    "Scheduled database backup created",
+                    Some(&backup.filename),
+                    "info",
+                )
+                .await;
             }
         }
     });
@@ -318,6 +316,18 @@ pub async fn restore_backup(
     if !path.is_file() {
         return Err((StatusCode::NOT_FOUND, "Backup not found".to_owned()));
     }
+    // A safety net for the classic self-hosted mistake of restoring the wrong
+    // file: always leave a way back, even if the chosen backup turns out to
+    // be the wrong one. Abort rather than restore if it can't be created.
+    let safety_backup = create_backup_file(&state).await?;
+    history::record(
+        &state.db,
+        "backup_created",
+        "Pre-restore safety backup created",
+        Some(&safety_backup.filename),
+        "info",
+    )
+    .await;
     let mut connection = state.db.acquire().await.map_err(internal)?;
     let result = async {
         sqlx::query("PRAGMA foreign_keys = OFF").execute(&mut *connection).await.map_err(internal)?;

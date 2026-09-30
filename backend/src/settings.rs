@@ -1,12 +1,23 @@
 use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 
 use crate::AppState;
 
+/// The public API key is a bearer secret, so it is never stored (or returned)
+/// in a readable form — only its hash, compared against what a client sends.
+pub(crate) fn hash_api_key(key: &str) -> String {
+    Sha256::digest(key.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 #[derive(Debug, Serialize)]
 pub struct SettingsResponse {
     pub tmdb_api_key_set: bool,
+    pub tvdb_api_key_set: bool,
     pub qbittorrent_host: String,
     pub qbittorrent_port: u16,
     pub qbittorrent_username: String,
@@ -38,13 +49,13 @@ pub struct SettingsResponse {
     pub ui_theme: String,
     pub api_enabled: bool,
     pub api_key_set: bool,
-    pub api_key: String,
     pub overseerr_compat_enabled: bool,
 }
 
 #[derive(Debug, Deserialize, Default)]
 pub struct UpdateSettingsRequest {
     pub tmdb_api_key: Option<String>,
+    pub tvdb_api_key: Option<String>,
     pub qbittorrent_host: Option<String>,
     pub qbittorrent_port: Option<u16>,
     pub qbittorrent_username: Option<String>,
@@ -107,6 +118,45 @@ pub(crate) async fn set_value(
     .execute(db)
     .await?;
     Ok(())
+}
+
+/// Upgrade installations created before API keys were stored as hashes.
+///
+/// A legacy `api.key` must keep working after update, but it must not remain
+/// in the database once its hash has been persisted. If a hash already exists
+/// it is authoritative, and the old readable value is still removed.
+pub(crate) async fn migrate_legacy_api_key(db: &sqlx::SqlitePool) -> Result<(), sqlx::Error> {
+    let mut transaction = db.begin().await?;
+    let legacy = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key='api.key'")
+        .fetch_optional(&mut *transaction)
+        .await?;
+    let configured_hash =
+        sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key='api.key_hash'")
+            .fetch_optional(&mut *transaction)
+            .await?;
+
+    if configured_hash.as_deref().is_none_or(str::is_empty)
+        && let Some(key) = legacy
+            .as_deref()
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+    {
+        sqlx::query(
+            r#"
+            INSERT INTO settings (key, value, updated_at)
+            VALUES ('api.key_hash', ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+            "#,
+        )
+        .bind(hash_api_key(key))
+        .execute(&mut *transaction)
+        .await?;
+    }
+
+    sqlx::query("DELETE FROM settings WHERE key='api.key'")
+        .execute(&mut *transaction)
+        .await?;
+    transaction.commit().await
 }
 
 pub(crate) fn config_directory() -> PathBuf {
@@ -173,6 +223,7 @@ pub async fn get_settings(
     State(state): State<AppState>,
 ) -> Result<Json<SettingsResponse>, StatusCode> {
     let tmdb_api_key = text(&state.db, "tmdb.api_key", "").await?;
+    let tvdb_api_key = text(&state.db, "tvdb.api_key", "").await?;
     let qbittorrent_host = text(&state.db, "qbittorrent.host", "127.0.0.1").await?;
     let qbittorrent_port = get_value(&state.db, "qbittorrent.port")
         .await
@@ -260,11 +311,12 @@ pub async fn get_settings(
         _ => "dark".to_string(),
     };
     let api_enabled = boolean(&state.db, "api.enabled", false).await?;
-    let api_key = text(&state.db, "api.key", "").await?;
+    let api_key_hash = text(&state.db, "api.key_hash", "").await?;
     let overseerr_compat_enabled = boolean(&state.db, "overseerr.compat_enabled", false).await?;
 
     Ok(Json(SettingsResponse {
         tmdb_api_key_set: !tmdb_api_key.is_empty(),
+        tvdb_api_key_set: !tvdb_api_key.is_empty(),
         qbittorrent_host,
         qbittorrent_port,
         qbittorrent_username,
@@ -293,8 +345,7 @@ pub async fn get_settings(
         torrent_metadata_path,
         ui_theme,
         api_enabled,
-        api_key_set: !api_key.is_empty(),
-        api_key,
+        api_key_set: !api_key_hash.is_empty(),
         overseerr_compat_enabled,
     }))
 }
@@ -323,6 +374,7 @@ pub async fn update_settings(
     }
 
     set_text!(payload.tmdb_api_key, "tmdb.api_key");
+    set_text!(payload.tvdb_api_key, "tvdb.api_key");
     set_text!(payload.qbittorrent_host, "qbittorrent.host");
     if let Some(value) = payload.qbittorrent_port {
         set_value(&state.db, "qbittorrent.port", &value.to_string())
@@ -413,8 +465,43 @@ pub async fn update_settings(
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     }
     set_bool!(payload.api_enabled, "api.enabled");
-    set_text!(payload.api_key, "api.key");
+    if let Some(value) = payload.api_key {
+        set_value(&state.db, "api.key_hash", &hash_api_key(&value))
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
     set_bool!(payload.overseerr_compat_enabled, "overseerr.compat_enabled");
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::SqlitePool;
+
+    async fn test_database() -> SqlitePool {
+        let db = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::query(
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT)",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        db
+    }
+
+    #[tokio::test]
+    async fn legacy_api_key_is_hashed_and_removed() {
+        let db = test_database().await;
+        set_value(&db, "api.key", "old-secret").await.unwrap();
+
+        migrate_legacy_api_key(&db).await.unwrap();
+
+        assert_eq!(get_value(&db, "api.key").await.unwrap(), None);
+        assert_eq!(
+            get_value(&db, "api.key_hash").await.unwrap().as_deref(),
+            Some(hash_api_key("old-secret").as_str())
+        );
+    }
 }

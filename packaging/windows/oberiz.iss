@@ -31,17 +31,27 @@ SetupIconFile={#SourceRoot}\oberiz.ico
 [Files]
 Source: "{#SourceRoot}\Oberiz.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceRoot}\frontend\*"; DestDir: "{app}\frontend"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#SourceRoot}\config\*"; DestDir: "{localappdata}\Oberiz\config"; Flags: onlyifdoesntexist recursesubdirs createallsubdirs
+Source: "{#SourceRoot}\config\*"; DestDir: "{commonappdata}\Oberiz\config"; Flags: onlyifdoesntexist recursesubdirs createallsubdirs
 Source: "{#SourceRoot}\Start-Oberiz-Installed.bat"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceRoot}\Start-Oberiz-Installed.vbs"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceRoot}\Start-Oberiz-Tray.vbs"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceRoot}\oberiz.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\Oberiz"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\Start-Oberiz-Installed.vbs"""; WorkingDir: "{app}"; IconFilename: "{app}\oberiz.ico"
 Name: "{autodesktop}\Oberiz"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\Start-Oberiz-Installed.vbs"""; WorkingDir: "{app}"; IconFilename: "{app}\oberiz.ico"; Tasks: desktopicon
+Name: "{userstartup}\Oberiz Tray"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\Start-Oberiz-Tray.vbs"""; WorkingDir: "{app}"; IconFilename: "{app}\oberiz.ico"
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"
 
 [Run]
-Filename: "{sys}\wscript.exe"; Parameters: """{app}\Start-Oberiz-Installed.vbs"""; Description: "Start Oberiz"; Flags: nowait postinstall skipifsilent
+; Registers and starts the Oberiz Windows Service (runs at boot, no login
+; required) and grants the logged-in user's tray icon start/stop rights.
+Filename: "{app}\Oberiz.exe"; Parameters: "--install-service"; StatusMsg: "Installing the Oberiz service..."; Flags: runhidden
+; The tray helper for this session, without waiting for the next logon.
+Filename: "{sys}\wscript.exe"; Parameters: """{app}\Start-Oberiz-Tray.vbs"""; WorkingDir: "{app}"; Flags: nowait runhidden
+Filename: "{sys}\wscript.exe"; Parameters: """{app}\Start-Oberiz-Installed.vbs"""; Description: "Open Oberiz"; Flags: nowait postinstall skipifsilent
+
+[UninstallRun]
+Filename: "{app}\Oberiz.exe"; Parameters: "--uninstall-service"; Flags: runhidden

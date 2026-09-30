@@ -53,7 +53,7 @@ export function Layout({
       <button className="topbar-logo" onClick={()=>navigate('dashboard')} aria-label="Go to dashboard"><img src={theme==='middle'?'/oberiz-logo-middle.png':'/oberiz-logo.png'} alt="Oberiz"/></button>
     </div>
     <aside className={`sidebar ${open?'mobile-open':''}`}>
-      <nav>{items.map(item=><button key={item.id} className={`nav-item ${page===item.id?'active':''}`} onClick={()=>navigate(item.id)}><Icon name={item.icon}/><span>{item.label}</span></button>)}</nav>
+      <nav>{items.map(item=><button key={item.id} className={`nav-item ${page===item.id?'active':''}`} onClick={()=>navigate(item.id)} aria-label={item.label} aria-current={page===item.id?'page':undefined}><Icon name={item.icon}/><span>{item.label}</span></button>)}</nav>
       <div className="sidebar-spacer"/>
       <label className="sidebar-theme">
         <span>Theme</span>
@@ -63,9 +63,9 @@ export function Layout({
           <option value="light">Light</option>
         </select>
       </label>
-      <div className="sidebar-theme-icons" aria-label="Theme"><button className={theme==='dark'?'active':''} type="button" onClick={()=>onTheme('dark')} title="Dark theme">◐</button><button className={theme==='middle'?'active':''} type="button" onClick={()=>onTheme('middle')} title="Middle theme">●</button><button className={theme==='light'?'active':''} type="button" onClick={()=>onTheme('light')} title="Light theme">☀</button></div>
+      <div className="sidebar-theme-icons" role="group" aria-label="Theme"><button className={theme==='dark'?'active':''} type="button" onClick={()=>onTheme('dark')} title="Dark theme" aria-label="Dark theme" aria-pressed={theme==='dark'}>◐</button><button className={theme==='middle'?'active':''} type="button" onClick={()=>onTheme('middle')} title="Middle theme" aria-label="Middle theme" aria-pressed={theme==='middle'}>●</button><button className={theme==='light'?'active':''} type="button" onClick={()=>onTheme('light')} title="Light theme" aria-label="Light theme" aria-pressed={theme==='light'}>☀</button></div>
       <button className="system-ok" onClick={()=>navigate('settings')} title="Open system diagnostics"><span/> All Systems Operational</button>
-      <div className="version"><b>v1.0.0</b><span>Self-hosted Media Automation</span></div>
+      <div className="version"><b>v1.0.1</b><span>Self-hosted Media Automation</span></div>
     </aside>
 
     <main className="main">

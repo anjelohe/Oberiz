@@ -17,6 +17,9 @@
 }
 
 * { box-sizing: border-box; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition-duration: 0.001ms !important; animation-duration: 0.001ms !important; }
+}
 html, body, #root { min-height: 100%; margin: 0; }
 body {
   margin: 0;
@@ -208,7 +211,8 @@ button { cursor: pointer; }
   .sidebar.mobile-open{transform:translateX(0)}
   .sidebar .brand img{width:190px;object-fit:contain}
   .sidebar .nav-item{justify-content:flex-start;padding:0 18px}
-  .sidebar .nav-item span,.sidebar .system-ok,.sidebar .version{display:block}
+  .sidebar .nav-item span,.sidebar .system-ok{display:block}
+  .sidebar .version{display:grid}
   .mobile-backdrop{display:block;position:fixed;z-index:1090;inset:0;border:0;background:rgba(0,8,8,.62);backdrop-filter:blur(3px)}
   .mobile-menu{display:grid;place-items:center;flex:0 0 40px;width:40px;height:40px;border:1px solid rgba(83,145,141,.3);border-radius:8px;background:#0b1d20;color:#d8e7e3;font-size:20px}
   .topbar{gap:9px}
@@ -268,6 +272,10 @@ body{
 .topbar{height:86px;padding:17px 30px;border-bottom-color:rgba(60,150,140,.16);background:rgba(3,14,16,.72);backdrop-filter:blur(18px)}
 .global-search{height:46px;width:min(625px,48vw);border-radius:11px;background:linear-gradient(180deg,rgba(12,32,35,.96),rgba(7,23,26,.96));border-color:rgba(83,157,151,.48);box-shadow:inset 0 1px rgba(255,255,255,.025),0 7px 22px rgba(0,0,0,.12)}
 .global-search:focus-within{border-color:rgba(28,245,169,.72);box-shadow:0 0 0 3px rgba(19,226,150,.09)}
+/* These inputs remove their own outline for a custom look (see their input
+   rules further down); the container needs its own focus indicator so
+   keyboard focus stays visible (WCAG 2.4.7). */
+.lib-search:focus-within,.add-media-search:focus-within{border-color:rgba(28,245,169,.72);box-shadow:0 0 0 3px rgba(19,226,150,.09)}
 .top-actions{display:flex;align-items:center;gap:10px;margin-left:auto}.top-icon-button{width:44px;height:44px;display:grid;place-items:center;border:1px solid rgba(83,157,151,.4);border-radius:10px;background:linear-gradient(180deg,#0a2024,#07171a);color:#c7dad8;transition:.18s ease}.top-icon-button:hover{border-color:rgba(27,242,167,.7);color:#25f7a9;box-shadow:0 0 18px rgba(20,233,154,.14)}
 .primary-button,.ghost-button,.danger-button{border-radius:10px;min-height:40px}.primary-button{background:linear-gradient(135deg,#26f3a7,#08c87b);box-shadow:0 0 22px rgba(16,236,150,.18),inset 0 1px rgba(255,255,255,.36)}
 .content{padding:18px 30px 38px;max-width:1920px;margin:0 auto}

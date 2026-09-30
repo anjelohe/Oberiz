@@ -23,7 +23,7 @@ function formatBytes(bytes:number){
 
 export function Settings(){
   const [data,setData]=useState<SettingsType|null>(null)
-  const [tmdb,setTmdb]=useState(''),[password,setPassword]=useState(''),[apiKey,setApiKey]=useState('')
+  const [tmdb,setTmdb]=useState(''),[tvdb,setTvdb]=useState(''),[password,setPassword]=useState(''),[apiKey,setApiKey]=useState('')
   const [message,setMessage]=useState(''),[qbMessage,setQbMessage]=useState(''),[autoMessage,setAutoMessage]=useState(''),[rssMessage,setRssMessage]=useState('')
   const [autoRunning,setAutoRunning]=useState(false)
   const [policies,setPolicies]=useState<SeedPolicy[]>([])
@@ -45,7 +45,7 @@ export function Settings(){
   const [authMessage,setAuthMessage]=useState('')
 
   useEffect(()=>{
-    getSettings().then(next=>{setData(next);setApiKey(next.api_key||'')}).catch(e=>setMessage(String(e)))
+    getSettings().then(setData).catch(e=>setMessage(String(e)))
     getSeedPolicies().then(setPolicies).catch(()=>{})
     getRssStatus().then(setRssStatus).catch(()=>{})
     getBackups().then(setBackups).catch(e=>setBackupMessage(e instanceof Error?e.message:String(e)))
@@ -65,6 +65,7 @@ export function Settings(){
     try{
       await saveSettings({
         tmdb_api_key:tmdb===''?null:tmdb,
+        tvdb_api_key:tvdb===''?null:tvdb,
         qbittorrent_host:data!.qbittorrent_host,
         qbittorrent_port:data!.qbittorrent_port,
         qbittorrent_username:data!.qbittorrent_username,
@@ -99,9 +100,10 @@ export function Settings(){
       localStorage.setItem('oberiz.theme',data!.ui_theme)
       document.documentElement.dataset.theme=data!.ui_theme
       window.dispatchEvent(new CustomEvent('oberiz-theme-changed',{detail:data!.ui_theme}))
-      setTmdb('');setPassword('');
-      const next=await getSettings();setData(next);setApiKey(next.api_key||'');setMessage('Saved')
-      if(next.api_key) setApiMessage('API key saved.')
+      setTmdb('');setTvdb('');setPassword('');
+      const savedKey=apiKey!==''
+      setData(await getSettings());setMessage('Saved')
+      if(savedKey) setApiMessage('API key saved. Copy it now — it will not be shown again.')
     }catch(e){setMessage(e instanceof Error?e.message:String(e))}
   }
 
@@ -262,6 +264,12 @@ export function Settings(){
           <label>Credential<input type="password" value={tmdb} onChange={e=>setTmdb(e.target.value)} placeholder={data.tmdb_api_key_set?'Leave blank to keep current':'API key or Read Access Token'}/></label>
         </section>
 
+        <section className="settings-section card">
+          <div className="settings-title"><div className="service-logo">TVDB</div><div><h3>TVDB</h3><span>Optional series identifier lookup for compatible indexers</span></div><span className="connection">{data.tvdb_api_key_set?'● Configured':'○ Not configured'}</span></div>
+          <label>API key<input type="password" value={tvdb} onChange={e=>setTvdb(e.target.value)} placeholder={data.tvdb_api_key_set?'Leave blank to keep current':'TVDB API key'}/></label>
+          <small className="settings-help">Used only to resolve a TVDB series ID for indexers that request it. It is never sent to indexers.</small>
+        </section>
+
         <section className="settings-section card settings-wide">
           <div className="settings-title"><div className="service-logo qb">qb</div><div><h3>qBittorrent</h3><span>Download client</span></div></div>
           <div className="form-grid">
@@ -364,7 +372,7 @@ export function Settings(){
                 type={apiKeyVisible?'text':'password'}
                 value={apiKey}
                 onChange={e=>{setApiKey(e.target.value);setApiCopied(false)}}
-                placeholder={data.api_key_set?'Current API key':'Generate or enter a key'}
+                placeholder={data.api_key_set?'Set — generate a new key to replace it':'Generate or enter a key'}
                 autoComplete="off"
               />
               <button type="button" className="ghost-button" disabled={!apiKey} onClick={()=>setApiKeyVisible(v=>!v)}>{apiKeyVisible?'Hide':'Show'}</button>
@@ -372,7 +380,7 @@ export function Settings(){
             </div>
           </label>
 
-          {apiKey&&<div className="api-key-warning"><b>API key configured.</b><span>The key remains available here after reload. Use Show to reveal it and Copy to copy it.</span></div>}
+          {apiKey&&<div className="api-key-warning"><b>Copy this key now.</b><span>Oberiz stores only its hash, not the key itself — once you leave or reload this page it can't be shown again. Generate a new one if you lose it.</span></div>}
           <div className="settings-actions"><span>{apiMessage}</span><button type="button" className="ghost-button" onClick={generateApiKey}>{data.api_key_set?'Regenerate key':'Generate key'}</button></div>
           <small className="settings-help">Clients send <b>X-Api-Key</b>. Endpoints: GET /api/v1/status, POST/GET /api/v1/requests, GET /api/v1/requests/:id.</small>
           <label className="toggle-row"><input type="checkbox" checked={data.overseerr_compat_enabled} onChange={e=>setData({...data,overseerr_compat_enabled:e.target.checked})}/> Enable Overseerr compatibility</label>

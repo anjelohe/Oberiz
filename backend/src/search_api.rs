@@ -1,7 +1,7 @@
 use crate::{
     AppState,
     cardigann::{self, ReleaseResult, SearchContext, SearchFailure},
-    history, profiles, qbittorrent, releases, series,
+    history, profiles, releases, series, tvdb,
 };
 use axum::{
     Json,
@@ -20,6 +20,8 @@ pub struct ReleaseSearchQuery {
     pub tmdb_id: Option<String>,
     pub imdb_id: Option<String>,
     pub indexer_id: Option<String>,
+    pub season_number: Option<i32>,
+    pub episode_number: Option<i32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -56,6 +58,8 @@ pub(crate) struct MediaSearchSpec {
     pub title: String,
     pub original_title: Option<String>,
     pub year: Option<i32>,
+    pub target_season: Option<i32>,
+    pub target_episode: Option<i32>,
     pub tmdb_id: Option<String>,
     pub imdb_id: Option<String>,
     pub profile_id: Option<i64>,
@@ -82,6 +86,8 @@ pub async fn search(
         q.tmdb_id,
         q.imdb_id,
         q.indexer_id,
+        q.season_number,
+        q.episode_number,
     )
     .await?;
     let response = search_media_internal(&state, &spec).await?;
@@ -112,6 +118,8 @@ pub(crate) async fn resolve_media_spec(
         Some(media_id),
         None,
         "",
+        None,
+        None,
         None,
         None,
         None,
@@ -147,6 +155,8 @@ pub(crate) async fn resolve_series_target_spec(
         title: row.0,
         original_title: row.1,
         year: row.2,
+        target_season: Some(season_number),
+        target_episode: episode_number,
         tmdb_id: Some(row.3.to_string()),
         imdb_id: None,
         profile_id,
@@ -154,6 +164,7 @@ pub(crate) async fn resolve_series_target_spec(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn resolve_spec(
     state: &AppState,
     media_type: &str,
@@ -163,6 +174,8 @@ async fn resolve_spec(
     tmdb_id: Option<String>,
     imdb_id: Option<String>,
     indexer_id: Option<String>,
+    target_season: Option<i32>,
+    target_episode: Option<i32>,
 ) -> Result<MediaSearchSpec, (StatusCode, String)> {
     if media_type != "movie" && media_type != "series" {
         return Err((
@@ -187,6 +200,8 @@ async fn resolve_spec(
                 title: row.0,
                 original_title: row.1,
                 year: row.2,
+                target_season: None,
+                target_episode: None,
                 tmdb_id: Some(row.3.to_string()),
                 imdb_id,
                 profile_id: requested_profile.or(row.4),
@@ -212,6 +227,8 @@ async fn resolve_spec(
             title: row.0,
             original_title: row.1,
             year: row.2,
+            target_season,
+            target_episode,
             tmdb_id: Some(row.3.to_string()),
             imdb_id,
             profile_id: requested_profile.or(row.4),
@@ -225,6 +242,8 @@ async fn resolve_spec(
         title: fallback_query.into(),
         original_title: None,
         year: None,
+        target_season,
+        target_episode,
         tmdb_id,
         imdb_id,
         profile_id: requested_profile,
@@ -300,11 +319,37 @@ pub(crate) async fn search_media_internal(
         });
     }
 
+    // Keep any season/year suffix of the displayed-title query when trying
+    // TMDB's original title (for example "Lioness S03").
+    let alternate_keywords = spec.original_title.as_deref().and_then(|original| {
+        let original = original.trim();
+        if original.is_empty() || original.eq_ignore_ascii_case(&spec.title) {
+            return None;
+        }
+        let suffix = spec.query.strip_prefix(&spec.title).unwrap_or("");
+        Some(format!("{original}{suffix}"))
+    });
+    let tvdb_id = if spec.media_type == "series" {
+        tvdb::find_series_id(
+            state,
+            &spec.title,
+            spec.original_title.as_deref(),
+            spec.year,
+        )
+        .await
+    } else {
+        None
+    };
     let ctx = SearchContext {
         keywords: spec.query.clone(),
+        alternate_keywords,
         tmdb_id: spec.tmdb_id.clone(),
         imdb_id: spec.imdb_id.clone(),
+        tvdb_id,
         media_type: spec.media_type.clone(),
+        year: spec.year,
+        season: spec.target_season,
+        episode: spec.target_episode,
     };
     let mut results = Vec::new();
     let mut failures = Vec::new();
@@ -322,6 +367,7 @@ pub(crate) async fn search_media_internal(
                             spec.original_title.as_deref(),
                             spec.year,
                             &spec.media_type,
+                            spec.target_season,
                         );
                         row.base_score = row.score;
                         row.profile_score = eval.profile_score;
@@ -342,15 +388,33 @@ pub(crate) async fn search_media_internal(
         }
     }
 
+    let prefer_indexer_priority = profile
+        .as_ref()
+        .is_some_and(|profile| profile.rules.prefer_indexer_priority);
     results.sort_by(|a, b| {
+        let indexer_order = || {
+            priorities
+                .get(&a.indexer_id)
+                .unwrap_or(&100)
+                .cmp(priorities.get(&b.indexer_id).unwrap_or(&100))
+        };
+        let quality_order = || b.score.cmp(&a.score);
+
         b.accepted
             .cmp(&a.accepted)
-            .then_with(|| b.score.cmp(&a.score))
             .then_with(|| {
-                priorities
-                    .get(&a.indexer_id)
-                    .unwrap_or(&100)
-                    .cmp(priorities.get(&b.indexer_id).unwrap_or(&100))
+                if prefer_indexer_priority {
+                    indexer_order()
+                } else {
+                    quality_order()
+                }
+            })
+            .then_with(|| {
+                if prefer_indexer_priority {
+                    quality_order()
+                } else {
+                    indexer_order()
+                }
             })
             .then_with(|| b.seeders.unwrap_or(0).cmp(&a.seeders.unwrap_or(0)))
     });
@@ -458,26 +522,32 @@ pub(crate) async fn grab_internal(
 
     let result = match payload {
         cardigann::GrabPayload::Url(url) => {
-            qbittorrent::add_url(
-                state,
-                &url,
-                &req.title,
-                &category,
-                &visible_tags,
-                Some(job_id),
-            )
-            .await
+            state
+                .download_client
+                .add_magnet(
+                    state,
+                    &url,
+                    &category,
+                    &req.title,
+                    &visible_tags,
+                    Some(job_id),
+                )
+                .await
         }
         cardigann::GrabPayload::Torrent(bytes) => {
-            qbittorrent::add_torrent_bytes(
-                state,
-                bytes,
-                &category,
-                &req.title,
-                &visible_tags,
-                Some(job_id),
-            )
-            .await
+            state
+                .download_client
+                .add_torrent_file(
+                    state,
+                    bytes,
+                    &category,
+                    &req.title,
+                    &visible_tags,
+                    Some(job_id),
+                    None,
+                    false,
+                )
+                .await
         }
     };
 
@@ -486,6 +556,14 @@ pub(crate) async fn grab_internal(
         Err(error) => {
             let _=sqlx::query("UPDATE download_jobs SET status='error',last_error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?")
                 .bind(&error.1).bind(job_id).execute(&state.db).await;
+            history::record(
+                &state.db,
+                "release.grab_failed",
+                &req.title,
+                Some(&error.1),
+                "error",
+            )
+            .await;
             return Err(error);
         }
     };
@@ -627,6 +705,7 @@ async fn media_identity(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_qb_tags(
     template: &str,
     tracker: &str,
@@ -658,7 +737,7 @@ fn render_qb_tags(
     rendered = rendered.replace("[year]", &year.map(|y| y.to_string()).unwrap_or_default());
     let mut out = Vec::<String>::new();
     for raw in rendered.split(',') {
-        let clean = raw.trim().replace('\r', " ").replace('\n', " ");
+        let clean = raw.trim().replace(['\r', '\n'], " ");
         if !clean.is_empty() && !out.iter().any(|x| x.eq_ignore_ascii_case(&clean)) {
             out.push(clean);
         }

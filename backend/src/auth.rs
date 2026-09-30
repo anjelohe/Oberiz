@@ -22,7 +22,7 @@ use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 use std::{
     collections::HashMap,
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     sync::{Mutex, OnceLock},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -47,6 +47,50 @@ static LOGIN_ATTEMPTS: OnceLock<Mutex<HashMap<String, LoginAttempt>>> = OnceLock
 
 fn attempts() -> &'static Mutex<HashMap<String, LoginAttempt>> {
     LOGIN_ATTEMPTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+/// IPs allowed to set `X-Forwarded-For`/`X-Real-IP` (a reverse proxy in front
+/// of Oberiz), configured via a comma-separated `OBERIZ_TRUSTED_PROXIES` env
+/// var. Left empty by default: an untrusted client could otherwise put any
+/// value in that header and rate-limit someone else's IP instead of its own.
+fn trusted_proxies() -> &'static [IpAddr] {
+    static PROXIES: OnceLock<Vec<IpAddr>> = OnceLock::new();
+    PROXIES.get_or_init(|| {
+        std::env::var("OBERIZ_TRUSTED_PROXIES")
+            .ok()
+            .map(|value| {
+                value
+                    .split(',')
+                    .filter_map(|part| part.trim().parse::<IpAddr>().ok())
+                    .collect()
+            })
+            .unwrap_or_default()
+    })
+}
+/// The identity used as the login rate-limit key: the direct peer address,
+/// unless it is a configured trusted proxy, in which case the client IP it
+/// forwarded is used instead so one shared proxy IP can't lock out everyone
+/// behind it.
+fn client_identity(headers: &HeaderMap, peer: SocketAddr) -> String {
+    if trusted_proxies().contains(&peer.ip()) {
+        let forwarded = headers
+            .get("x-forwarded-for")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split(',').next_back())
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        if let Some(client) = forwarded {
+            return client.to_string();
+        }
+        let real_ip = headers
+            .get("x-real-ip")
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        if let Some(client) = real_ip {
+            return client.to_string();
+        }
+    }
+    peer.ip().to_string()
 }
 fn internal<E: std::fmt::Display>(error: E) -> (StatusCode, String) {
     (StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
@@ -208,7 +252,12 @@ pub async fn is_enabled(db: &SqlitePool) -> Result<bool, sqlx::Error> {
 fn is_public_path(path: &str) -> bool {
     matches!(
         path,
-        "/api/health" | "/api/auth/status" | "/api/auth/login" | "/api/auth/logout"
+        "/api/health"
+            | "/api/health/live"
+            | "/api/health/ready"
+            | "/api/auth/status"
+            | "/api/auth/login"
+            | "/api/auth/logout"
     ) || path.starts_with("/api/v1/")
         || path.starts_with("/radarr/")
         || path.starts_with("/sonarr/")
@@ -275,9 +324,10 @@ pub struct LoginRequest {
 pub async fn login(
     State(state): State<AppState>,
     ConnectInfo(address): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(payload): Json<LoginRequest>,
 ) -> Result<Response, (StatusCode, String)> {
-    let client = address.ip().to_string();
+    let client = client_identity(&headers, address);
     if rate_limited(&client) {
         return Err((
             StatusCode::TOO_MANY_REQUESTS,
@@ -327,13 +377,13 @@ pub async fn set_password(
         .await
         .map_err(internal)?
         .filter(|value| !value.is_empty());
-    if let Some(hash) = &existing_hash {
-        if !verify_password(&payload.current_password.unwrap_or_default(), hash) {
-            return Err((
-                StatusCode::UNAUTHORIZED,
-                "Current password is incorrect".into(),
-            ));
-        }
+    if let Some(hash) = &existing_hash
+        && !verify_password(&payload.current_password.unwrap_or_default(), hash)
+    {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "Current password is incorrect".into(),
+        ));
     }
     let new_password = payload
         .new_password

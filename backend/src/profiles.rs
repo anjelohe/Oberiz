@@ -30,6 +30,8 @@ pub struct QualityRules {
     pub allow_unknown_source: bool,
     #[serde(default)]
     pub series_prefer_pack: bool,
+    #[serde(default)]
+    pub prefer_indexer_priority: bool,
     #[serde(default = "default_true")]
     pub series_accept_complete: bool,
 }
@@ -60,6 +62,7 @@ pub struct QualityProfile {
     pub min_seeders: i64,
     pub min_size_mb: Option<i64>,
     pub max_size_mb: Option<i64>,
+    pub max_season_pack_size_mb: Option<i64>,
     pub language_profile_id: Option<i64>,
     pub language_profile_name: Option<String>,
     pub qbittorrent_category: String,
@@ -86,6 +89,7 @@ pub struct SaveQualityProfile {
     pub min_seeders: Option<i64>,
     pub min_size_mb: Option<i64>,
     pub max_size_mb: Option<i64>,
+    pub max_season_pack_size_mb: Option<i64>,
     pub language_profile_id: Option<i64>,
     pub qbittorrent_category: Option<String>,
     pub qbittorrent_tags_template: Option<String>,
@@ -113,6 +117,7 @@ struct QualityProfileRow {
     min_seeders: i64,
     min_size_mb: Option<i64>,
     max_size_mb: Option<i64>,
+    max_season_pack_size_mb: Option<i64>,
     language_profile_id: Option<i64>,
     language_profile_name: Option<String>,
     qbittorrent_category: String,
@@ -146,6 +151,7 @@ fn quality_from_row(row: QualityProfileRow) -> QualityProfile {
         min_seeders: row.min_seeders,
         min_size_mb: row.min_size_mb,
         max_size_mb: row.max_size_mb,
+        max_season_pack_size_mb: row.max_season_pack_size_mb,
         language_profile_id: row.language_profile_id,
         language_profile_name: row.language_profile_name,
         qbittorrent_category: row.qbittorrent_category,
@@ -177,7 +183,7 @@ pub async fn list_quality_profiles(
     let rows = if let Some(media_type) = query.media_type {
         sqlx::query_as::<_, QualityProfileRow>(r#"
             SELECT q.id,q.name,q.media_type,q.enabled,q.upgrade_allowed,q.cutoff_score,
-                   q.min_seeders,q.min_size_mb,q.max_size_mb,q.language_profile_id,
+                   q.min_seeders,q.min_size_mb,q.max_size_mb,q.max_season_pack_size_mb,q.language_profile_id,
                    l.name AS language_profile_name,q.qbittorrent_category,q.qbittorrent_tags_template,q.is_default,q.request_quality,
                    q.rules_json,q.created_at,q.updated_at
             FROM quality_profiles q
@@ -188,7 +194,7 @@ pub async fn list_quality_profiles(
     } else {
         sqlx::query_as::<_, QualityProfileRow>(r#"
             SELECT q.id,q.name,q.media_type,q.enabled,q.upgrade_allowed,q.cutoff_score,
-                   q.min_seeders,q.min_size_mb,q.max_size_mb,q.language_profile_id,
+                   q.min_seeders,q.min_size_mb,q.max_size_mb,q.max_season_pack_size_mb,q.language_profile_id,
                    l.name AS language_profile_name,q.qbittorrent_category,q.qbittorrent_tags_template,q.is_default,q.request_quality,
                    q.rules_json,q.created_at,q.updated_at
             FROM quality_profiles q
@@ -229,15 +235,15 @@ pub async fn create_quality_profile(
     let rules_json = serde_json::to_string(&payload.rules).map_err(internal)?;
     let result = sqlx::query(r#"
         INSERT INTO quality_profiles(
-          name,media_type,enabled,upgrade_allowed,cutoff_score,min_seeders,min_size_mb,max_size_mb,
+          name,media_type,enabled,upgrade_allowed,cutoff_score,min_seeders,min_size_mb,max_size_mb,max_season_pack_size_mb,
           language_profile_id,qbittorrent_category,qbittorrent_tags_template,request_quality,rules_json
         )
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     "#)
         .bind(payload.name.trim()).bind(&payload.media_type)
         .bind(payload.enabled.unwrap_or(true)).bind(payload.upgrade_allowed.unwrap_or(true))
         .bind(payload.cutoff_score.unwrap_or(500)).bind(payload.min_seeders.unwrap_or(1))
-        .bind(payload.min_size_mb).bind(payload.max_size_mb).bind(payload.language_profile_id)
+        .bind(payload.min_size_mb).bind(payload.max_size_mb).bind(payload.max_season_pack_size_mb).bind(payload.language_profile_id)
         .bind(payload.qbittorrent_category.as_deref().unwrap_or("").trim())
         .bind(payload.qbittorrent_tags_template.as_deref().unwrap_or("[tracker]").trim())
         .bind(request_quality(&payload))
@@ -262,12 +268,12 @@ pub async fn update_quality_profile(
     let rules_json = serde_json::to_string(&payload.rules).map_err(internal)?;
     let result=sqlx::query(r#"
         UPDATE quality_profiles SET name=?,media_type=?,enabled=?,upgrade_allowed=?,cutoff_score=?,min_seeders=?,
-        min_size_mb=?,max_size_mb=?,language_profile_id=?,qbittorrent_category=?,qbittorrent_tags_template=?,request_quality=?,
+        min_size_mb=?,max_size_mb=?,max_season_pack_size_mb=?,language_profile_id=?,qbittorrent_category=?,qbittorrent_tags_template=?,request_quality=?,
         rules_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?
     "#)
         .bind(payload.name.trim()).bind(&payload.media_type).bind(payload.enabled.unwrap_or(true))
         .bind(payload.upgrade_allowed.unwrap_or(true)).bind(payload.cutoff_score.unwrap_or(500))
-        .bind(payload.min_seeders.unwrap_or(1)).bind(payload.min_size_mb).bind(payload.max_size_mb)
+        .bind(payload.min_seeders.unwrap_or(1)).bind(payload.min_size_mb).bind(payload.max_size_mb).bind(payload.max_season_pack_size_mb)
         .bind(payload.language_profile_id)
         .bind(payload.qbittorrent_category.as_deref().unwrap_or("").trim())
         .bind(payload.qbittorrent_tags_template.as_deref().unwrap_or("[tracker]").trim())
@@ -412,7 +418,7 @@ pub async fn get_quality_profile_by_id(
     id: i64,
 ) -> Result<QualityProfile, (StatusCode, String)> {
     let row=sqlx::query_as::<_,QualityProfileRow>(r#"
-        SELECT q.id,q.name,q.media_type,q.enabled,q.upgrade_allowed,q.cutoff_score,q.min_seeders,q.min_size_mb,q.max_size_mb,
+        SELECT q.id,q.name,q.media_type,q.enabled,q.upgrade_allowed,q.cutoff_score,q.min_seeders,q.min_size_mb,q.max_size_mb,q.max_season_pack_size_mb,
                q.language_profile_id,l.name AS language_profile_name,q.qbittorrent_category,q.qbittorrent_tags_template,q.is_default,q.request_quality,
                q.rules_json,q.created_at,q.updated_at
         FROM quality_profiles q LEFT JOIN language_profiles l ON l.id=q.language_profile_id WHERE q.id=?
@@ -505,6 +511,7 @@ pub fn evaluate_release(
     original_title: Option<&str>,
     year: Option<i32>,
     media_type: &str,
+    target_season: Option<i32>,
 ) -> Evaluation {
     let parsed = releases::parse(&release.title);
     let mut reasons = Vec::new();
@@ -514,13 +521,13 @@ pub fn evaluate_release(
         rejected.push(format!("Título poco compatible ({title_match}%)"));
     }
 
-    if let Some(expected) = year {
-        if let Some(found) = extract_year(&release.title) {
-            if (found - expected).abs() > 1 {
-                rejected.push(format!("Año {found}, esperado {expected}"));
-            } else {
-                reasons.push(format!("Año compatible {found}"));
-            }
+    if let Some(expected) = year
+        && let Some(found) = extract_year(&release.title)
+    {
+        if (found - expected).abs() > 1 {
+            rejected.push(format!("Año {found}, esperado {expected}"));
+        } else {
+            reasons.push(format!("Año compatible {found}"));
         }
     }
 
@@ -534,6 +541,17 @@ pub fn evaluate_release(
     {
         rejected.push("El perfil no acepta packs completos".into());
     }
+    if media_type == "series"
+        && let Some(season) = target_season
+        && !matches_requested_season(&upper, season)
+        // Season one is frequently published without an S01 marker. Keep
+        // those valid releases, while still rejecting any explicit S02/S03.
+        && (season != 1 || has_explicit_season_marker(&upper))
+    {
+        rejected.push(format!(
+            "No corresponde a la temporada solicitada S{season:02}"
+        ));
+    }
 
     let seeds = release.seeders.unwrap_or(0);
     if seeds < profile.min_seeders {
@@ -545,20 +563,30 @@ pub fn evaluate_release(
 
     if let Some(bytes) = release.size_bytes {
         let mb = bytes / 1024 / 1024;
-        if let Some(min) = profile.min_size_mb {
-            if mb < min {
-                rejected.push(format!("Tamaño menor de {min} MB"));
-            }
+        if let Some(min) = profile.min_size_mb
+            && mb < min
+        {
+            rejected.push(format!("Tamaño menor de {min} MB"));
         }
-        if let Some(max) = profile.max_size_mb {
-            if mb > max {
-                rejected.push(format!("Tamaño mayor de {max} MB"));
-            }
+        let max = if media_type == "series" && is_season_pack_release(&upper) {
+            profile.max_season_pack_size_mb.or(profile.max_size_mb)
+        } else {
+            profile.max_size_mb
+        };
+        if let Some(max) = max
+            && mb > max
+        {
+            let label = if media_type == "series" && is_season_pack_release(&upper) {
+                "temporada/pack"
+            } else {
+                "episodio"
+            };
+            rejected.push(format!("Tamaño de {label} mayor de {max} MB"));
         }
     }
 
     for term in &profile.rules.reject_terms {
-        if !term.trim().is_empty() && upper.contains(&term.to_uppercase()) {
+        if contains_release_term(&upper, term) {
             rejected.push(format!("Contiene término bloqueado: {term}"));
         }
     }
@@ -605,14 +633,17 @@ pub fn evaluate_release(
     );
 
     for (term, score) in &profile.rules.prefer_terms {
-        if !term.trim().is_empty() && upper.contains(&term.to_uppercase()) {
+        if contains_release_term(&upper, term) {
             profile_score += *score;
             reasons.push(format!("{term} +{score}"));
         }
     }
     if media_type == "series"
         && profile.rules.series_prefer_pack
-        && (upper.contains("COMPLETE") || upper.contains("SEASON") || upper.contains("TEMPORADA"))
+        && (upper.contains("PACK")
+            || upper.contains("COMPLETE")
+            || upper.contains("SEASON")
+            || upper.contains("TEMPORADA"))
     {
         profile_score += 35;
         reasons.push("Pack de serie +35".into());
@@ -688,11 +719,11 @@ fn score_optional(
     total: &mut i32,
     reasons: &mut Vec<String>,
 ) {
-    if let Some(v) = value {
-        if let Some(score) = lookup_score(scores, v) {
-            *total += score;
-            reasons.push(format!("{label} {v} +{score}"));
-        }
+    if let Some(v) = value
+        && let Some(score) = lookup_score(scores, v)
+    {
+        *total += score;
+        reasons.push(format!("{label} {v} +{score}"));
     }
 }
 
@@ -786,6 +817,104 @@ fn looks_like_series(upper: &str) -> bool {
         || upper.contains("COMPLETE SEASON")
         || upper.contains("SEASON 1")
         || upper.contains("TEMPORADA")
+}
+
+/// A season/pack is identified only when it does not contain an explicit
+/// episode marker.  This keeps `S03E07` and `3x07` under the episode limit,
+/// while `S03`, `Temporada 3`, `PACK` and `Complete` use the pack limit.
+fn is_season_pack_release(upper: &str) -> bool {
+    let is_episode = regex::Regex::new(r"(?i)(?:\bS\s*\d{1,2}\s*E\s*\d{1,3}\b|\b\d{1,2}\s*X\s*\d{1,3}\b|\b(?:EPISODE|EPISODIO)\s*\d{1,3}\b)")
+        .map(|regex| regex.is_match(upper))
+        .unwrap_or(false);
+    if is_episode {
+        return false;
+    }
+
+    regex::Regex::new(r"(?i)(?:\bS\s*\d{1,2}\b|\b(?:SEASON|TEMPORADA)\s*\d{1,2}\b|\bPACK\b|\bCOMPLETE(?:\s+(?:SERIES|SEASON))?\b)")
+        .map(|regex| regex.is_match(upper))
+        .unwrap_or(false)
+}
+
+fn matches_requested_season(upper: &str, season: i32) -> bool {
+    let pattern =
+        format!(r"(?i)(?:\b[ST]\s*0?{season}(?:\b|E\d)|\b(?:SEASON|TEMPORADA)\s*0?{season}\b)");
+    regex::Regex::new(&pattern)
+        .map(|regex| regex.is_match(upper))
+        .unwrap_or(false)
+}
+
+fn has_explicit_season_marker(upper: &str) -> bool {
+    regex::Regex::new(r"(?i)(?:\b[ST]\s*\d{1,2}(?:\b|E\d)|\b(?:SEASON|TEMPORADA)\s*\d{1,2}\b)")
+        .map(|regex| regex.is_match(upper))
+        .unwrap_or(false)
+}
+
+/// Match terms as release tokens, not arbitrary character fragments.  A
+/// blocked `CAM` must catch `CAM.1080p`, but must not reject a film simply
+/// because its title begins with "Camino".
+fn contains_release_term(release_upper: &str, term: &str) -> bool {
+    let needle = term.trim().to_uppercase();
+    if needle.is_empty() {
+        return false;
+    }
+
+    let mut offset = 0;
+    while let Some(found) = release_upper[offset..].find(&needle) {
+        let start = offset + found;
+        let end = start + needle.len();
+        let before_is_word = release_upper[..start]
+            .chars()
+            .next_back()
+            .is_some_and(char::is_alphanumeric);
+        let after_is_word = release_upper[end..]
+            .chars()
+            .next()
+            .is_some_and(char::is_alphanumeric);
+        if !before_is_word && !after_is_word {
+            return true;
+        }
+        offset = end;
+    }
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        contains_release_term, has_explicit_season_marker, is_season_pack_release,
+        matches_requested_season,
+    };
+
+    #[test]
+    fn release_terms_require_token_boundaries() {
+        assert!(contains_release_term("FILM.2024.CAM.1080P", "cam"));
+        assert!(contains_release_term("FILM HDCAM 1080P", "HDCAM"));
+        assert!(!contains_release_term("CAMINO HACIA LA LIBERTAD", "cam"));
+        assert!(!contains_release_term("SCAMPER", "cam"));
+    }
+
+    #[test]
+    fn requested_season_does_not_match_another_season() {
+        assert!(matches_requested_season("LIONESS S03E01 1080P", 3));
+        assert!(matches_requested_season("LIONESS TEMPORADA 3 1080P", 3));
+        assert!(!matches_requested_season("LIONESS S01 1080P", 3));
+        assert!(!matches_requested_season("LIONESS S02 1080P", 3));
+    }
+
+    #[test]
+    fn first_season_can_omit_its_marker_but_not_match_another_one() {
+        assert!(!has_explicit_season_marker("LIONESS 1080P WEB-DL"));
+        assert!(has_explicit_season_marker("LIONESS S02 1080P WEB-DL"));
+    }
+
+    #[test]
+    fn distinguishes_season_packs_from_individual_episodes() {
+        assert!(is_season_pack_release("LIONESS S03 1080P WEB-DL"));
+        assert!(is_season_pack_release("LIONESS TEMPORADA 3 PACK 1080P"));
+        assert!(is_season_pack_release("LIONESS COMPLETE SEASON 1080P"));
+        assert!(!is_season_pack_release("LIONESS S03E07 1080P WEB-DL"));
+        assert!(!is_season_pack_release("LIONESS 3X07 1080P WEB-DL"));
+    }
 }
 
 fn validate_media_type(value: &str) -> Result<(), (StatusCode, String)> {
