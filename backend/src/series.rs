@@ -5,7 +5,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{AppState, history, profiles, settings, tmdb};
+use crate::{AppState, automation, history, profiles, settings, tmdb};
 
 #[derive(Debug, Deserialize)]
 pub struct CreateSeriesRequest {
@@ -409,6 +409,15 @@ pub async fn create_series(
         "info",
     )
     .await;
+
+    // One-off search for whatever the tracker already has, mirroring Radarr's
+    // "search on add" — RSS only ever catches releases published after this
+    // point, so anything already sitting on an indexer needs this once.
+    let bg = state.clone();
+    tokio::spawn(async move {
+        let _ = automation::run_media_cycle(&bg, "series", id).await;
+    });
+
     Ok((StatusCode::CREATED, Json(created)))
 }
 

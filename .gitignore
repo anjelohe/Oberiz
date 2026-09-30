@@ -19,8 +19,19 @@ config/secrets*
 config/indexers/custom/*
 !config/indexers/custom/.gitkeep
 
+# The patterns above targeted an older layout where config/ lived at the repo
+# root. The project now keeps it under backend/, and gitignore anchors any
+# pattern containing a slash to the .gitignore's own directory — so without
+# these, backend/config/indexers/custom/*.yml (personal tracker definitions)
+# was silently NOT ignored.
+backend/config/secrets*
+backend/config/indexers/custom/*
+!backend/config/indexers/custom/.gitkeep
+
 .DS_Store
 Thumbs.db
 
 config/indexers/upstream/*
 !config/indexers/upstream/.gitkeep
+
+.claude/

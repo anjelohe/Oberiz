@@ -5,7 +5,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{AppState, history, profiles, tmdb};
+use crate::{AppState, automation, history, profiles, tmdb};
 
 #[derive(Debug, Deserialize)]
 pub struct CreateMovieRequest {
@@ -214,6 +214,15 @@ pub async fn create_movie(
         "info",
     )
     .await;
+
+    // One-off search for whatever the tracker already has, mirroring Radarr's
+    // "search on add" — RSS only ever catches releases published after this
+    // point, so anything already sitting on an indexer needs this once.
+    let bg = state.clone();
+    let movie_id = created.id;
+    tokio::spawn(async move {
+        let _ = automation::run_media_cycle(&bg, "movie", movie_id).await;
+    });
 
     Ok((StatusCode::CREATED, Json(created)))
 }

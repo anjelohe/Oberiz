@@ -2,7 +2,7 @@ services:
   oberiz:
     # Pin an exact version and bump it deliberately: set OBERIZ_VERSION in
     # .env rather than tracking a moving tag in production.
-    image: ghcr.io/anjelohe/oberiz:${OBERIZ_VERSION:-v1.0.5}
+    image: ghcr.io/anjelohe/oberiz:${OBERIZ_VERSION:-v1.0.7}
     container_name: oberiz
     restart: unless-stopped
     # The container's own filesystem needs nothing writable: SQLite, indexer

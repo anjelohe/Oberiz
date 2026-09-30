@@ -10,6 +10,12 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use tokio::time::{Duration, sleep};
+
+/// Paced between indexer calls so a search doesn't fire a burst of
+/// simultaneous-looking requests at every enabled indexer at once — several
+/// private trackers rate-limit or flag bursts like that as scraper activity.
+const INDEXER_QUERY_PAUSE: Duration = Duration::from_millis(350);
 
 #[derive(Debug, Deserialize)]
 pub struct ReleaseSearchQuery {
@@ -90,7 +96,7 @@ pub async fn search(
         q.episode_number,
     )
     .await?;
-    let response = search_media_internal(&state, &spec).await?;
+    let response = search_media_internal(&state, &spec, false).await?;
     history::record(
         &state.db,
         "releases.search",
@@ -251,9 +257,21 @@ async fn resolve_spec(
     })
 }
 
+/// Whether an indexer's `oberiz_rss_only` flag is set — it should then be skipped
+/// by the recurring automatic-search sweep (see `exclude_rss_only` below), while
+/// still being used for RSS and for one-off searches (add / manual button).
+fn is_rss_only(config: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(config)
+        .ok()
+        .and_then(|value| value.get("oberiz_rss_only").cloned())
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+}
+
 pub(crate) async fn search_media_internal(
     state: &AppState,
     spec: &MediaSearchSpec,
+    exclude_rss_only: bool,
 ) -> Result<AggregateSearchResponse, (StatusCode, String)> {
     let indexers: Vec<(String, String)> = if let Some(id) = &spec.indexer_id {
         let config = sqlx::query_scalar::<_, String>(
@@ -272,6 +290,9 @@ pub(crate) async fn search_media_internal(
         .fetch_all(&state.db)
         .await
         .map_err(internal)?
+        .into_iter()
+        .filter(|(_, config)| !exclude_rss_only || !is_rss_only(config))
+        .collect()
     };
     let mut prioritized = indexers
         .into_iter()
@@ -354,7 +375,10 @@ pub(crate) async fn search_media_internal(
     let mut results = Vec::new();
     let mut failures = Vec::new();
 
-    for id in &ids {
+    for (index, id) in ids.iter().enumerate() {
+        if index > 0 {
+            sleep(INDEXER_QUERY_PAUSE).await;
+        }
         match cardigann::search_indexer(state, id, &ctx).await {
             Ok(mut rows) => {
                 for row in &mut rows {

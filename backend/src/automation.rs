@@ -19,6 +19,14 @@ use crate::{
 
 pub use state::AutomationRuntime;
 
+/// A single monitored item can search once (a movie) or, for a series with no
+/// pack match, once per missing episode — so a handful of series with long
+/// backlogs can otherwise queue up hundreds of indexer sweeps in one cycle.
+/// Capping searches per cycle keeps that bounded; anything past the cap is
+/// left for the next cycle instead of being lost (no automation_state update
+/// happens for a skipped item, so it stays eligible immediately).
+const MAX_SEARCHES_PER_CYCLE: usize = 40;
+
 #[derive(Debug, Clone)]
 pub(crate) struct RssRelease {
     pub indexer_id: String,
@@ -131,7 +139,7 @@ pub(crate) async fn process_rss_release(
         if current.is_some_and(|score| !profile.upgrade_allowed || candidate.score <= score + 25) {
             return Ok("skipped: no quality upgrade".into());
         }
-        if active_equivalent_job(state, "movie", id, None, None).await {
+        if already_grabbed(state, "movie", id, None, None).await {
             return Ok("skipped: equivalent job already active".into());
         }
         grab_rss(
@@ -216,7 +224,7 @@ pub(crate) async fn process_rss_release(
             return Ok("skipped: series is already complete".into());
         }
         if is_complete_series_title(&item.title) && profile.rules.series_accept_complete {
-            if active_equivalent_job(state, "series", id, None, None).await {
+            if already_grabbed(state, "series", id, None, None).await {
                 return Ok("skipped: equivalent job already active".into());
             }
             grab_rss(
@@ -270,7 +278,7 @@ pub(crate) async fn process_rss_release(
         if !exists {
             return Ok("skipped: target is not wanted".into());
         }
-        if active_equivalent_job(state, "series", id, Some(season), episode).await {
+        if already_grabbed(state, "series", id, Some(season), episode).await {
             return Ok("skipped: equivalent job already active".into());
         }
         grab_rss(
@@ -301,7 +309,12 @@ pub(crate) async fn process_rss_release(
     Ok("ignored: no monitored match".into())
 }
 
-async fn active_equivalent_job(
+/// Whether this exact target has already been grabbed — actively downloading
+/// right now, or successfully finished at some point in the past. `cleaned`
+/// (seeding finished and the seed policy removed the torrent) counts too:
+/// that job's files are already imported, so "cleaned up afterwards" must
+/// not read as "never happened" and let automation grab it all over again.
+async fn already_grabbed(
     state: &AppState,
     media_type: &str,
     media_id: i64,
@@ -311,7 +324,7 @@ async fn active_equivalent_job(
     sqlx::query_scalar::<_, i64>(
         r#"SELECT COUNT(*) FROM download_jobs
         WHERE media_type=? AND media_id=? AND season_number IS ? AND episode_number IS ?
-          AND status IN ('queued','downloading','completed','seeding')"#,
+          AND status IN ('queued','downloading','completed','seeding','cleaned')"#,
     )
     .bind(media_type)
     .bind(media_id)
@@ -542,7 +555,7 @@ pub(crate) async fn run_cycle(state: &AppState) -> RunSummary {
             .automation_runtime
             .item(format!("Movie · {title}"))
             .await;
-        process_movie(state, id, &title, &mut summary).await;
+        process_movie(state, id, &title, &mut summary, true).await;
         state.automation_runtime.done().await;
     }
     for (series_id, title) in series_rows {
@@ -550,7 +563,7 @@ pub(crate) async fn run_cycle(state: &AppState) -> RunSummary {
             .automation_runtime
             .item(format!("Series · {title}"))
             .await;
-        process_series(state, series_id, &title, &mut summary).await;
+        process_series(state, series_id, &title, &mut summary, true).await;
         state.automation_runtime.done().await;
     }
     summary
@@ -582,7 +595,7 @@ pub(crate) async fn run_media_cycle(
             .fetch_optional(&state.db)
             .await
             {
-                process_movie(state, id, &title, &mut summary).await;
+                process_movie(state, id, &title, &mut summary, false).await;
             }
         }
         "series" => {
@@ -593,7 +606,7 @@ pub(crate) async fn run_media_cycle(
             .fetch_optional(&state.db)
             .await
             {
-                process_series(state, id, &title, &mut summary).await;
+                process_series(state, id, &title, &mut summary, false).await;
             }
         }
         _ => summary.errors += 1,
@@ -601,7 +614,13 @@ pub(crate) async fn run_media_cycle(
     summary
 }
 
-async fn process_movie(state: &AppState, media_id: i64, title: &str, summary: &mut RunSummary) {
+async fn process_movie(
+    state: &AppState,
+    media_id: i64,
+    title: &str,
+    summary: &mut RunSummary,
+    periodic: bool,
+) {
     let spec = match search_api::resolve_media_spec(state, "movie", media_id).await {
         Ok(v) => v,
         Err((_, e)) => {
@@ -639,7 +658,11 @@ async fn process_movie(state: &AppState, media_id: i64, title: &str, summary: &m
         return;
     }
 
-    let response = match search_api::search_media_internal(state, &spec).await {
+    if summary.searched >= MAX_SEARCHES_PER_CYCLE {
+        summary.skipped += 1;
+        return;
+    }
+    let response = match search_api::search_media_internal(state, &spec, periodic).await {
         Ok(v) => v,
         Err((_, e)) => {
             record_error(state, "movie", media_id, &e).await;
@@ -709,7 +732,13 @@ async fn process_movie(state: &AppState, media_id: i64, title: &str, summary: &m
     }
 }
 
-async fn process_series(state: &AppState, series_id: i64, title: &str, summary: &mut RunSummary) {
+async fn process_series(
+    state: &AppState,
+    series_id: i64,
+    title: &str,
+    summary: &mut RunSummary,
+    periodic: bool,
+) {
     let rows=sqlx::query_as::<_,(i32,i32,String,bool,Option<i32>)>(r#"
         SELECT e.season_number,e.episode_number,e.name,e.has_file,
                (SELECT MAX(mf.quality_score) FROM episode_files ef JOIN media_files mf ON mf.id=ef.media_file_id
@@ -731,8 +760,8 @@ async fn process_series(state: &AppState, series_id: i64, title: &str, summary: 
         .iter()
         .filter(|(_, _, _, has_file, _)| *has_file)
         .count();
-    if missing_total >= 2 && available_total == 0 {
-        match try_complete_series(state, series_id, title).await {
+    if missing_total >= 2 && available_total == 0 && summary.searched < MAX_SEARCHES_PER_CYCLE {
+        match try_complete_series(state, series_id, title, periodic).await {
             Ok(CompleteSeriesAttempt::Grabbed) => {
                 summary.searched += 1;
                 summary.grabbed += 1;
@@ -807,7 +836,9 @@ async fn process_series(state: &AppState, series_id: i64, title: &str, summary: 
             .filter(|(_, _, has_file, _)| !*has_file)
             .count();
         if profile.rules.series_prefer_pack && missing >= 2 {
-            if has_active_series_job(state, series_id, season_number, None, true).await {
+            if summary.searched >= MAX_SEARCHES_PER_CYCLE
+                || has_active_series_job(state, series_id, season_number, None, true).await
+            {
                 summary.skipped += missing;
             } else {
                 process_series_target(
@@ -820,6 +851,7 @@ async fn process_series(state: &AppState, series_id: i64, title: &str, summary: 
                     &profile,
                     None,
                     summary,
+                    periodic,
                 )
                 .await;
             }
@@ -832,6 +864,10 @@ async fn process_series(state: &AppState, series_id: i64, title: &str, summary: 
             if has_file
                 && (!profile.upgrade_allowed || current_score.unwrap_or(0) >= profile.cutoff_score)
             {
+                summary.skipped += 1;
+                continue;
+            }
+            if summary.searched >= MAX_SEARCHES_PER_CYCLE {
                 summary.skipped += 1;
                 continue;
             }
@@ -851,6 +887,7 @@ async fn process_series(state: &AppState, series_id: i64, title: &str, summary: 
                 &profile,
                 current_score,
                 summary,
+                periodic,
             )
             .await;
         }
@@ -868,6 +905,7 @@ async fn process_series_target(
     profile: &profiles::QualityProfile,
     current_score: Option<i32>,
     summary: &mut RunSummary,
+    periodic: bool,
 ) {
     let spec = match search_api::resolve_series_target_spec(
         state,
@@ -885,7 +923,7 @@ async fn process_series_target(
         }
     };
 
-    let response = match search_api::search_media_internal(state, &spec).await {
+    let response = match search_api::search_media_internal(state, &spec, periodic).await {
         Ok(v) => v,
         Err((_, e)) => {
             record_series_target_error(state, series_id, season_number, episode_number, &e).await;
@@ -1000,6 +1038,7 @@ async fn try_complete_series(
     state: &AppState,
     series_id: i64,
     title: &str,
+    periodic: bool,
 ) -> Result<CompleteSeriesAttempt, String> {
     // Use the series-level profile. If the user has explicit season/episode profile overrides,
     // a single Complete Series torrent could violate those policies, so keep automation conservative.
@@ -1052,7 +1091,7 @@ async fn try_complete_series(
     let spec = search_api::resolve_media_spec(state, "series", series_id)
         .await
         .map_err(|e| e.1)?;
-    let response = search_api::search_media_internal(state, &spec)
+    let response = search_api::search_media_internal(state, &spec, periodic)
         .await
         .map_err(|e| e.1)?;
 

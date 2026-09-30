@@ -66,7 +66,7 @@ button { cursor: pointer; }
 .main { min-width: 0; }
 .topbar {
   height: 80px; display: flex; align-items: center; justify-content: space-between; padding: 16px 28px;
-  position:relative;border-bottom:0; background: rgba(5, 16, 18, .55); backdrop-filter: blur(12px);
+  position:sticky;top:0;z-index:110;border-bottom:0; background: rgba(5, 16, 18, .55); backdrop-filter: blur(12px);
 }
 .global-search {
   width: min(620px, 52vw); height: 44px; display: flex; align-items: center; gap: 10px; padding: 0 14px;

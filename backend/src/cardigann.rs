@@ -83,23 +83,36 @@ struct TemplateContext {
     categories: Vec<String>,
 }
 
-// A tracker can answer with HTTP 429 during login or searching. Remembering its
-// Retry-After window prevents Oberiz from immediately trying again on every
-// automated search or health check.
-static INDEXER_COOLDOWNS: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+#[derive(Debug, Clone, Copy)]
+struct IndexerBackoff {
+    level: usize,
+    until: Instant,
+}
+
+// The same escalation ladder Sonarr/Radarr use (ProviderStatusServiceBase /
+// EscalationBackOff): 0s, 1min, 5min, 15min, 30min, 1h, 3h, 6h, 12h, 24h.
+// Any failure talking to a tracker escalates one step, not just an explicit
+// HTTP 429 — a timeout or connection error is just as good a sign to back
+// off. A success clears the entry, so one bad patch doesn't keep an indexer
+// penalized for a day once it recovers.
+const BACKOFF_LADDER_SECS: [u64; 10] = [
+    0, 60, 300, 900, 1_800, 3_600, 10_800, 21_600, 43_200, 86_400,
+];
+
+static INDEXER_COOLDOWNS: OnceLock<Mutex<HashMap<String, IndexerBackoff>>> = OnceLock::new();
+
+fn cooldowns() -> &'static Mutex<HashMap<String, IndexerBackoff>> {
+    INDEXER_COOLDOWNS.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 fn cooldown_message(def: &Definition) -> Option<String> {
     let now = Instant::now();
-    let mut guard = INDEXER_COOLDOWNS
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-        .ok()?;
-    let until = *guard.get(&def.id)?;
-    if until <= now {
-        guard.remove(&def.id);
+    let guard = cooldowns().lock().ok()?;
+    let backoff = guard.get(&def.id)?;
+    if backoff.until <= now {
         return None;
     }
-    let seconds = until.duration_since(now).as_secs().max(1);
+    let seconds = backoff.until.duration_since(now).as_secs().max(1);
     Some(format!(
         "{} is temporarily rate limited. Oberiz will wait about {} before trying it again.",
         def.name,
@@ -107,24 +120,41 @@ fn cooldown_message(def: &Definition) -> Option<String> {
     ))
 }
 
+/// Escalates this indexer one step up the ladder and returns the wait chosen.
+/// `min_seconds` lets an explicit `Retry-After` from a 429 raise the floor
+/// above what the ladder alone would give at this level.
+fn record_failure(def: &Definition, min_seconds: u64) -> u64 {
+    let Ok(mut guard) = cooldowns().lock() else {
+        return min_seconds.max(60);
+    };
+    let entry = guard.entry(def.id.clone()).or_insert(IndexerBackoff {
+        level: 0,
+        until: Instant::now(),
+    });
+    let level = (entry.level + 1).min(BACKOFF_LADDER_SECS.len() - 1);
+    let seconds = BACKOFF_LADDER_SECS[level].max(min_seconds);
+    entry.level = level;
+    entry.until = Instant::now() + Duration::from_secs(seconds);
+    seconds
+}
+
+/// A request that actually went through and succeeded resets the ladder.
+fn record_success(def: &Definition) {
+    if let Ok(mut guard) = cooldowns().lock() {
+        guard.remove(&def.id);
+    }
+}
+
 fn response_error(def: &Definition, response: &reqwest::Response, context: &str) -> String {
     if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
-        let seconds = response
+        let retry_after = response
             .headers()
             .get(reqwest::header::RETRY_AFTER)
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(300)
-            .clamp(30, 3600);
-        if let Ok(mut guard) = INDEXER_COOLDOWNS
-            .get_or_init(|| Mutex::new(HashMap::new()))
-            .lock()
-        {
-            guard.insert(
-                def.id.clone(),
-                Instant::now() + Duration::from_secs(seconds),
-            );
-        }
+            .unwrap_or(0)
+            .clamp(0, 86_400);
+        let seconds = record_failure(def, retry_after);
         return format!(
             "{} limited requests (HTTP 429) during {}. Oberiz will pause this indexer for {}.",
             def.name,
@@ -132,11 +162,13 @@ fn response_error(def: &Definition, response: &reqwest::Response, context: &str)
             human_duration(seconds)
         );
     }
+    let seconds = record_failure(def, 0);
     format!(
-        "{} returned HTTP {} during {}",
+        "{} returned HTTP {} during {}. Oberiz will back off this indexer for {}.",
         def.name,
         response.status(),
-        context
+        context,
+        human_duration(seconds)
     )
 }
 
@@ -174,6 +206,7 @@ pub async fn search_indexer(
         );
         output = search_query_with_year_fallback(&def, &client, ctx, alternate).await?;
     }
+    record_success(&def);
     Ok(output)
 }
 
@@ -330,7 +363,10 @@ async fn search_indexer_once(
             }
             req.send().await
         }
-        .map_err(|e| format!("Error HTTP en {}: {e}", def.name))?;
+        .map_err(|e| {
+            record_failure(def, 0);
+            format!("Error HTTP en {}: {e}", def.name)
+        })?;
 
         if !response.status().is_success() {
             return Err(response_error(def, &response, "search"));

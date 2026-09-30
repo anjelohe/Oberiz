@@ -171,7 +171,7 @@ export function Indexers(){
          field.field_type==='select'?<select value={String(values[field.name]??'')} onChange={e=>setValues({...values,[field.name]:e.target.value})}>{field.options.map(([v,l])=><option key={v} value={v}>{l}</option>)}</select>:
          <input type={field.secret?'password':field.field_type==='number'?'number':'text'} min={field.field_type==='number'?0:undefined} max={field.field_type==='number'?10000:undefined} step={field.field_type==='number'?1:undefined} value={String(values[field.name]??'')} onChange={e=>setValues({...values,[field.name]:e.target.value})} placeholder={field.name==='oberiz_tag_name'?'For example: ThePirateBay':field.name==='oberiz_priority'?'Lower number is preferred':field.secret&&field.configured?'Leave blank to keep current':''}/>}
       </label>)}</div>
-      <small className="ix-routing-help">Lower priority runs first and breaks ties between equally scored releases. The custom tag replaces <b>[tracker]</b> in the selected quality profile’s tag template.</small>
+      <small className="ix-routing-help">Lower priority runs first and breaks ties between equally scored releases. The custom tag replaces <b>[tracker]</b> in the selected quality profile’s tag template. "Only use RSS" still lets this indexer be searched when you add a title or click Search — it's skipped only by the scheduled automatic search.</small>
       <div className="ix-test-result">{test}</div>
       <div className="ix-modal-actions"><button className="ghost-button" onClick={()=>void testIndexer()} disabled={busy}>Test</button><button className="primary-button" onClick={()=>void save()} disabled={busy}>Save</button></div>
     </div></div>}
