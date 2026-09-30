@@ -2,7 +2,7 @@
 
 Self-hosted media automation for movies and series. Oberiz brings metadata, indexers, quality profiles, searches, qBittorrent, importing and the real library together in one application.
 
-**Current version: 1.0.2 — improved indexer searching, release selection, Windows tray controls and ready-to-run packages.**
+**Current version: 1.0.3 — improved indexer searching, release selection, Windows tray controls and ready-to-run packages.**
 
 ## What it does
 
@@ -50,12 +50,12 @@ Every release provides ready-to-run packages. No Rust, Node.js or frontend build
 
 | Platform | Download | Starts with |
 | --- | --- | --- |
-| Docker | `ghcr.io/anjelohe/oberiz:v1.0.2` | `docker compose up -d` |
-| Linux x86_64 | `oberiz-1.0.2-linux-x86_64.tar.gz` | `sudo ./install.sh` |
-| Windows x86_64 (portable) | `oberiz-1.0.2-windows-x86_64.zip` | `Start-Oberiz.bat` |
-| Windows x86_64 (installer) | `oberiz-1.0.2-windows-x86_64-setup.exe` | Setup assistant |
+| Docker | `ghcr.io/anjelohe/oberiz:v1.0.3` | `docker compose up -d` |
+| Linux x86_64 | `oberiz-1.0.3-linux-x86_64.tar.gz` | `sudo ./install.sh` |
+| Windows x86_64 (portable) | `oberiz-1.0.3-windows-x86_64.zip` | `Start-Oberiz.bat` |
+| Windows x86_64 (installer) | `oberiz-1.0.3-windows-x86_64-setup.exe` | Setup assistant |
 
-The packages are available from the [v1.0.2 release](https://github.com/anjelohe/Oberiz/releases/tag/v1.0.2). The release workflow also builds and attaches the Windows package whenever a version is published.
+The packages are available from the [v1.0.3 release](https://github.com/anjelohe/Oberiz/releases/tag/v1.0.3). The release workflow also builds and attaches the Windows package whenever a version is published.
 
 ## Support Oberiz
 
@@ -91,11 +91,11 @@ For an LXC without Docker, use the Linux package instead. It requires a distribu
 
 ## Linux installation
 
-The Linux package targets 64-bit Linux distributions using systemd. Download `oberiz-1.0.2-linux-x86_64.tar.gz` from the release, extract it and run:
+The Linux package targets 64-bit Linux distributions using systemd. Download `oberiz-1.0.3-linux-x86_64.tar.gz` from the release, extract it and run:
 
 ```bash
-tar -xzf oberiz-1.0.2-linux-x86_64.tar.gz
-cd oberiz-1.0.2-linux-x86_64
+tar -xzf oberiz-1.0.3-linux-x86_64.tar.gz
+cd oberiz-1.0.3-linux-x86_64
 sudo ./install.sh
 ```
 
@@ -105,13 +105,13 @@ The service uses the `oberiz` system account. Grant that account the required re
 
 ## Windows portable installation
 
-Download `oberiz-1.0.2-windows-x86_64.zip` from the release, extract it anywhere you want to keep Oberiz, then double-click `Start-Oberiz.bat`. It starts the included `Oberiz.exe` invisibly in the background and opens `http://127.0.0.1:2032`; no command window remains open.
+Download `oberiz-1.0.3-windows-x86_64.zip` from the release, extract it anywhere you want to keep Oberiz, then double-click `Start-Oberiz.bat`. It starts the included `Oberiz.exe` invisibly in the background and opens `http://127.0.0.1:2032`; no command window remains open.
 
 The `data` and `config` folders are created beside the executable, so the installation is portable and can be moved or backed up as one directory.
 
 ## Windows installer
 
-Download `oberiz-1.0.2-windows-x86_64-setup.exe` from the release and run it. The setup assistant installs Oberiz, creates Start Menu and optional desktop shortcuts, and offers to start it at the end. Oberiz then runs invisibly in the background, without a command window.
+Download `oberiz-1.0.3-windows-x86_64-setup.exe` from the release and run it. The setup assistant installs Oberiz, creates Start Menu and optional desktop shortcuts, and offers to start it at the end. Oberiz then runs invisibly in the background, without a command window.
 
 Application files are installed under `Program Files\Oberiz`. Your database, configuration and backups are stored separately in `%LOCALAPPDATA%\Oberiz`, so they survive application updates and uninstallation.
 

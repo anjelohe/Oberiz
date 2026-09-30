@@ -1388,7 +1388,7 @@ dependencies = [
 
 [[package]]
 name = "oberiz"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "anyhow",
  "argon2",
