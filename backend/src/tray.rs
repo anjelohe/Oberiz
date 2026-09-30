@@ -40,6 +40,7 @@ const OPEN_OBERIZ: usize = 1;
 const EXIT_OBERIZ: usize = 2;
 const START_SERVICE: usize = 3;
 const STOP_SERVICE: usize = 4;
+const CLOSE_SERVICE_AND_EXIT: usize = 5;
 const WINDOW_CLASS: &str = "OberizTrayWindow";
 
 /// Set once before the message loop starts; `window_proc` is a plain Win32
@@ -156,6 +157,11 @@ unsafe extern "system" fn window_proc(
                 control_service("stop");
                 0
             }
+            CLOSE_SERVICE_AND_EXIT => {
+                control_service("stop");
+                PostQuitMessage(0);
+                0
+            }
             _ => DefWindowProcW(window, message, w_param, l_param),
         },
         WM_DESTROY => {
@@ -176,10 +182,10 @@ unsafe fn show_menu(window: HWND) {
     if STANDALONE_MODE.load(Ordering::SeqCst) {
         let start = wide("Start service");
         let stop = wide("Stop service");
-        let exit = wide("Exit");
+        let close = wide("Close Oberiz");
         AppendMenuW(menu, MF_STRING, START_SERVICE, start.as_ptr());
         AppendMenuW(menu, MF_STRING, STOP_SERVICE, stop.as_ptr());
-        AppendMenuW(menu, MF_STRING, EXIT_OBERIZ, exit.as_ptr());
+        AppendMenuW(menu, MF_STRING, CLOSE_SERVICE_AND_EXIT, close.as_ptr());
     } else {
         let exit = wide("Exit Oberiz");
         AppendMenuW(menu, MF_STRING, EXIT_OBERIZ, exit.as_ptr());
