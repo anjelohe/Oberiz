@@ -23,10 +23,20 @@ pub(super) struct AutomationProgress {
 }
 
 impl AutomationRuntime {
-    pub(super) fn begin(&self) -> bool {
+    /// Returns a guard that clears the running flag on `Drop` — including when
+    /// the caller's future is cancelled mid-cycle rather than finishing
+    /// normally. `run_now` used to call `finish()` as a plain statement after
+    /// awaiting the cycle, but an HTTP handler's future is dropped outright if
+    /// the client disconnects mid-request, which skipped that call and left
+    /// `running` stuck at true forever — blocking every future manual run and
+    /// the scheduled cycle until the process restarted.
+    pub(super) fn begin(&self) -> Option<AutomationRunGuard> {
         self.running
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
+            .then(|| AutomationRunGuard {
+                running: self.running.clone(),
+            })
     }
     pub(super) async fn reset(&self, total: usize) {
         *self.progress.write().await = AutomationProgress {
@@ -43,8 +53,14 @@ impl AutomationRuntime {
         value.completed_items += 1;
         value.current_item = None;
     }
-    pub(super) fn finish(&self) {
-        self.running.store(false, Ordering::SeqCst)
+}
+
+pub(super) struct AutomationRunGuard {
+    running: Arc<AtomicBool>,
+}
+impl Drop for AutomationRunGuard {
+    fn drop(&mut self) {
+        self.running.store(false, Ordering::SeqCst);
     }
 }
 

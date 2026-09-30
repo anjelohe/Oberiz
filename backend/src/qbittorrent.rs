@@ -922,22 +922,63 @@ fn normalize_title(value: &str) -> String {
         .join(" ")
 }
 
+/// The magnet URI spec (BEP 9) allows a v1 infohash to be either 40 hex
+/// characters or, less commonly but just as validly, 32 base32 characters —
+/// some indexers emit the base32 form. This used to only recognize hex,
+/// silently falling back to less precise duplicate detection for any magnet
+/// using base32.
 fn magnet_hex_hash(url: &str) -> Option<String> {
     let parsed = url::Url::parse(url).ok()?;
     for (key, value) in parsed.query_pairs() {
-        if key == "xt" {
-            let value = value.to_string();
-            if let Some(hash) = value
-                .strip_prefix("urn:btih:")
-                .or_else(|| value.strip_prefix("URN:BTIH:"))
-                && hash.len() == 40
-                && hash.chars().all(|c| c.is_ascii_hexdigit())
-            {
-                return Some(hash.to_ascii_lowercase());
-            }
+        if key != "xt" {
+            continue;
+        }
+        let value = value.to_string();
+        let Some(hash) = value
+            .strip_prefix("urn:btih:")
+            .or_else(|| value.strip_prefix("URN:BTIH:"))
+        else {
+            continue;
+        };
+        if hash.len() == 40 && hash.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Some(hash.to_ascii_lowercase());
+        }
+        if hash.len() == 32
+            && let Some(hex) = base32_to_hex(hash)
+        {
+            return Some(hex);
         }
     }
     None
+}
+
+/// Decodes a 32-character RFC 4648 base32 string into the 20 raw bytes of a
+/// BitTorrent v1 infohash, returned as lowercase hex. BitTorrent v2/hybrid
+/// magnets (`urn:btmh:`, a SHA-256 multihash) are a different, larger hash
+/// entirely and aren't handled here — qBittorrent's own reported torrent hash
+/// for those isn't a same-length infohash to compare against in the first
+/// place, so recognizing the URN alone wouldn't be enough to actually match.
+fn base32_to_hex(input: &str) -> Option<String> {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    if input.len() != 32 {
+        return None;
+    }
+    let mut bits: u64 = 0;
+    let mut bit_count: u32 = 0;
+    let mut bytes = Vec::with_capacity(20);
+    for c in input.to_ascii_uppercase().bytes() {
+        let value = ALPHABET.iter().position(|&b| b == c)? as u64;
+        bits = (bits << 5) | value;
+        bit_count += 5;
+        if bit_count >= 8 {
+            bit_count -= 8;
+            bytes.push((bits >> bit_count) as u8);
+        }
+    }
+    if bytes.len() != 20 {
+        return None;
+    }
+    Some(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 async fn torrent_by_hash(
@@ -1339,4 +1380,67 @@ pub(crate) async fn add_torrent_bytes_with_options(
         return Ok(torrent.hash);
     }
     unreachable!()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{base32_to_hex, magnet_hex_hash};
+
+    /// RFC 4648 base32, mirroring `base32_to_hex`'s decode direction, so the
+    /// round trip below verifies both against the same reference alphabet
+    /// rather than against a single hand-computed example.
+    fn hex_to_base32(hex: &str) -> String {
+        const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+        let bytes: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect();
+        let mut bits: u64 = 0;
+        let mut bit_count: u32 = 0;
+        let mut out = String::new();
+        for byte in bytes {
+            bits = (bits << 8) | byte as u64;
+            bit_count += 8;
+            while bit_count >= 5 {
+                bit_count -= 5;
+                out.push(ALPHABET[((bits >> bit_count) & 0x1f) as usize] as char);
+            }
+        }
+        if bit_count > 0 {
+            out.push(ALPHABET[((bits << (5 - bit_count)) & 0x1f) as usize] as char);
+        }
+        out
+    }
+
+    /// 20 bytes hex-encoded programmatically (not hand-typed) so the string
+    /// is guaranteed to be exactly 40 hex characters — a real SHA-1 infohash's
+    /// length.
+    fn sample_infohash_hex() -> String {
+        let bytes: [u8; 20] = [
+            0xc9, 0xe1, 0x57, 0x63, 0xf7, 0x22, 0xf2, 0x3e, 0x98, 0xa2, 0x9d, 0xec, 0xdf, 0xae,
+            0x34, 0x1b, 0x98, 0xd5, 0x30, 0x1f,
+        ];
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    #[test]
+    fn base32_round_trips_with_a_known_infohash() {
+        let hex = sample_infohash_hex();
+        let base32 = hex_to_base32(&hex);
+        assert_eq!(base32.len(), 32);
+        assert_eq!(base32_to_hex(&base32).as_deref(), Some(hex.as_str()));
+    }
+
+    #[test]
+    fn magnet_hex_hash_recognizes_both_hex_and_base32_btih() {
+        let hex = sample_infohash_hex();
+        let base32 = hex_to_base32(&hex);
+        let hex_magnet = format!("magnet:?xt=urn:btih:{hex}&dn=Example");
+        let base32_magnet = format!("magnet:?xt=urn:btih:{base32}&dn=Example");
+        assert_eq!(magnet_hex_hash(&hex_magnet).as_deref(), Some(hex.as_str()));
+        assert_eq!(
+            magnet_hex_hash(&base32_magnet).as_deref(),
+            Some(hex.as_str())
+        );
+    }
 }

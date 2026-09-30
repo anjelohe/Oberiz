@@ -292,12 +292,14 @@ pub async fn reseed(
     } else {
         PathBuf::from("./reseed")
     };
+    refuse_system_directory(&base)?;
     fs::create_dir_all(&base).map_err(fs_error)?;
 
     let library_root = PathBuf::from(&library);
+    refuse_system_directory(&library_root)?;
     for mapping in &mappings {
-        let src = library_root.join(&mapping.library_rel);
-        let dst = base.join(&mapping.original_rel);
+        let src = resolve_within(&library_root, &mapping.library_rel)?;
+        let dst = resolve_within(&base, &mapping.original_rel)?;
         if let Some(parent) = dst.parent() {
             fs::create_dir_all(parent).map_err(fs_error)?;
         }
@@ -387,7 +389,21 @@ async fn run_cycle(state: &AppState) -> Result<(), (StatusCode, String)> {
                         .await;
                     }
                 } else if job.imported_at.is_some() && job.cleaned_at.is_none() {
-                    maybe_cleanup(state, &job, torrent).await?;
+                    // Not propagated with `?`: this used to abort the whole cycle
+                    // on the first torrent whose cleanup failed (e.g. qBittorrent
+                    // briefly unreachable), silently blocking every other
+                    // torrent's import/cleanup behind it — every 10 seconds,
+                    // forever, until whatever caused the one failure was fixed.
+                    if let Err((_, error)) = maybe_cleanup(state, &job, torrent).await {
+                        history::record(
+                            &state.db,
+                            "seed.cleanup_failed",
+                            &job.release_title,
+                            Some(&error),
+                            "error",
+                        )
+                        .await;
+                    }
                 }
             }
         }
@@ -431,6 +447,7 @@ async fn import_job(
         sanitize_name(&title)
     };
     let library_root = PathBuf::from(library_base).join(folder_name);
+    refuse_system_directory(&library_root)?;
     fs::create_dir_all(&library_root).map_err(fs_error)?;
 
     let method = settings::get_value(&state.db, "import.method")
@@ -493,16 +510,19 @@ async fn import_job(
         && let Some(season) = job.season_number
     {
         // This job was grabbed as a whole-season pack (no single episode
-        // number), so every file inside it belongs to `season` even if one
-        // file's name didn't match the SxxExx/absolute-episode patterns
+        // number), so every AIRED episode in `season` belongs to it even if
+        // one file's name didn't match the SxxExx/absolute-episode patterns
         // above (extras, a differently-named bonus episode, an unusual scene
         // convention...). Without this, that one episode would stay
         // has_file=0 forever, automation would keep treating the season as
         // "still missing something", and — once the original job's seeding
         // was cleaned up — nothing would stop it from grabbing the season
-        // again from scratch, which is exactly the bug this fixes.
+        // again from scratch, which is exactly the bug this fixes. Excluding
+        // unaired episodes matters just as much: a pack only ever contains
+        // what had already aired when it was released, so marking a future
+        // episode as already-on-disk would hide it from automation forever.
         sqlx::query(
-            "UPDATE series_episodes SET has_file=1,updated_at=CURRENT_TIMESTAMP WHERE series_id=? AND season_number=? AND has_file=0",
+            "UPDATE series_episodes SET has_file=1,updated_at=CURRENT_TIMESTAMP WHERE series_id=? AND season_number=? AND has_file=0 AND (air_date IS NULL OR air_date<=date('now','localtime'))",
         )
         .bind(job.media_id)
         .bind(season)
@@ -887,4 +907,123 @@ fn internal<E: std::fmt::Display>(e: E) -> (StatusCode, String) {
 }
 fn fs_error(e: std::io::Error) -> (StatusCode, String) {
     (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+}
+
+/// Refuses a small denylist of well-known OS-critical directories as an
+/// import/reseed destination or library root, regardless of how the path got
+/// configured. `paths.movies`/`paths.series`/`paths.reseed` are ordinary
+/// settings rows with no format Oberiz could reject as "clearly wrong" for a
+/// media library — but a `.sqlite3` restored from a manipulated backup only
+/// has its table *names* checked against the current schema (see
+/// backups::restore_backup), not the values inside them, so those settings
+/// could just as easily come from an attacker as from the person configuring
+/// Settings. No legitimate media library is ever inside one of these.
+fn refuse_system_directory(path: &Path) -> Result<(), (StatusCode, String)> {
+    let normalized = path.to_string_lossy().to_lowercase().replace('\\', "/");
+    const DENYLIST: &[&str] = &[
+        "c:/windows",
+        "c:/program files",
+        "c:/program files (x86)",
+        "c:/programdata",
+        "/etc",
+        "/bin",
+        "/sbin",
+        "/usr",
+        "/boot",
+        "/sys",
+        "/proc",
+        "/lib",
+        "/lib64",
+        "/root",
+    ];
+    let is_root = path.parent().is_none();
+    let is_denied = DENYLIST
+        .iter()
+        .any(|prefix| normalized == *prefix || normalized.starts_with(&format!("{prefix}/")));
+    if is_root || is_denied {
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!(
+                "Refusing to use {} as a library/import path — it looks like an OS-critical directory.",
+                path.display()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Joins `relative` onto `base` and refuses the result if `..` segments would
+/// have walked it outside `base` — a relative path is resolved lexically
+/// (component by component) rather than trusted as-is, since a `library_rel`/
+/// `original_rel` this permissive about traversal ultimately comes from
+/// `file_mappings_json` in the database. A `.sqlite3` restored from a
+/// manipulated backup only has its table *names* checked against the current
+/// schema (see backups::restore_backup), not the values inside them, so a
+/// crafted mapping like `../../../etc/passwd` must not be able to turn a
+/// reseed into reading (and re-sharing over BitTorrent) or deleting an
+/// arbitrary file outside the job's own library/reseed folder.
+fn resolve_within(base: &Path, relative: &str) -> Result<PathBuf, (StatusCode, String)> {
+    let mut normalized = PathBuf::new();
+    for component in base.join(relative).components() {
+        match component {
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => normalized.push(other),
+        }
+    }
+    if normalized.starts_with(base) {
+        Ok(normalized)
+    } else {
+        Err((
+            StatusCode::BAD_REQUEST,
+            format!("Ruta fuera de la carpeta esperada: {relative}"),
+        ))
+    }
+}
+
+#[cfg(test)]
+mod resolve_within_tests {
+    use super::resolve_within;
+    use std::path::Path;
+
+    #[test]
+    fn keeps_a_well_behaved_relative_path() {
+        let base = Path::new("/library/Movie (2024)");
+        let resolved = resolve_within(base, "Movie.2024.1080p.mkv").unwrap();
+        assert_eq!(resolved, base.join("Movie.2024.1080p.mkv"));
+    }
+
+    #[test]
+    fn rejects_a_traversal_that_escapes_the_base() {
+        let base = Path::new("/library/Movie (2024)");
+        assert!(resolve_within(base, "../../../etc/passwd").is_err());
+    }
+
+    #[test]
+    fn rejects_traversal_hidden_inside_a_deeper_relative_path() {
+        let base = Path::new("/library/Movie (2024)");
+        assert!(resolve_within(base, "extras/../../../../etc/passwd").is_err());
+    }
+}
+
+#[cfg(test)]
+mod refuse_system_directory_tests {
+    use super::refuse_system_directory;
+    use std::path::Path;
+
+    #[test]
+    fn allows_an_ordinary_media_library_path() {
+        assert!(refuse_system_directory(Path::new("/media/Movies")).is_ok());
+        assert!(refuse_system_directory(Path::new(r"D:\Media\Series")).is_ok());
+    }
+
+    #[test]
+    fn refuses_well_known_os_directories() {
+        assert!(refuse_system_directory(Path::new("/etc")).is_err());
+        assert!(refuse_system_directory(Path::new("/etc/oberiz")).is_err());
+        assert!(refuse_system_directory(Path::new(r"C:\Windows\System32")).is_err());
+        assert!(refuse_system_directory(Path::new("/")).is_err());
+    }
 }

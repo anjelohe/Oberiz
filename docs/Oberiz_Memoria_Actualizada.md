@@ -3,16 +3,42 @@
 > Estado del proyecto, decisiones tomadas, trabajo realizado y roadmap previsto.
 
 **Fecha de esta memoria:** 30 de septiembre de 2026  
-**Estado actual:** Oberiz v1.0.8 es la versión pública vigente. Incluye biblioteca real, automatización de películas y series, RSS incremental con prioridad de indexador, importación, Calendar, API pública v1, diagnóstico, backup/restore SQLite, perfiles refinados y acceso de administrador protegido.
+**Estado actual:** Oberiz v1.0.9 es la versión pública vigente. Incluye biblioteca real, automatización de películas y series, RSS incremental con prioridad de indexador, importación, Calendar, API pública v1, diagnóstico, backup/restore SQLite, perfiles refinados y acceso de administrador protegido.
 
 ---
 
 ## Pendientes de interfaz acordados
 
-- **Estado TVDB en Dashboard:** añadir una tarjeta de estado de TVDB junto a TMDB, indicando claramente si la clave está configurada y si la integración está disponible para resolver identificadores de series.
 - **Filtros de Downloads:** incorporar selectores combinables por tracker, categoría de qBittorrent y etiquetas, además de los filtros actuales por estado y búsqueda de texto.
 
 ---
+
+## v1.0.9 — Correcciones de automatización/RSS/importador y endurecimiento de seguridad (2026-09-30)
+
+### Automatización, RSS e importación
+- RSS dejó de rechazar sistemáticamente todas las releases con los perfiles por defecto (nunca llegaba a completar el número de seeds).
+- RSS ya no se queda bloqueado en la primera coincidencia de título cuando no es la correcta — un título corto o común ya no impide evaluar el resto de la biblioteca.
+- El reescaneo de biblioteca ya no confunde un número de resolución (p. ej. "1080p") con un rango de episodios.
+- El fix de season-pack de la v1.0.8 ya no marca como presentes episodios que no venían en el pack o que aún no se han emitido.
+- Las búsquedas de mejora de calidad ya no quedan bloqueadas por un job antiguo ya limpiado tras sembrar.
+- Con "preferir pack" activado, si no se encuentra un pack esa vez, ahora se buscan los episodios sueltos en vez de dejarlos sin buscar indefinidamente.
+- Las películas ya comprueban si hay una descarga en curso antes de lanzar otra búsqueda.
+- "Ejecutar automatización ahora" ya no puede quedar bloqueado de forma indefinida si la petición se corta a medias.
+- Un fallo aislado al limpiar un torrent tras sembrar ya no bloquea el resto de descargas del ciclo; la copia de archivos durante la importación es ahora atómica.
+- El tope de búsquedas por ciclo ahora rota de forma justa entre películas y series, priorizando lo menos buscado recientemente, en vez de agotarse siempre en el mismo grupo.
+- Los resultados de búsqueda en formato "2x05" ya se reconocen al confirmar un release, no solo al leer archivos locales.
+- Nuevo refresco periódico de metadata de TMDB para series en emisión, para que los episodios nuevos aparezcan sin tener que pulsar "Refresh" a mano.
+- El reescaneo ya no vacía la biblioteca entera si la carpeta montada está temporalmente vacía (por ejemplo, un recurso de red que tarda en montarse).
+- Añadida exclusión mutua entre RSS, automatización y altas para evitar descargas duplicadas por condiciones de carrera.
+- Reconocimiento de magnets con el hash en base32 además de hexadecimal.
+- Fechas de calendario y de emisión calculadas en hora local en vez de UTC.
+
+### Seguridad
+Endurecimiento amplio a raíz de una auditoría externa de todo el código: validación de rutas en importación y reseed, cabeceras de seguridad, cookies de sesión más estrictas, permisos de archivo más restrictivos en Linux, límite de tamaño en subidas, protección frente a fuga de credenciales de indexadores hacia otros hosts, mitigación de fuerza bruta en el login, redacción de credenciales en mensajes de error, y hardening del servicio systemd en Linux.
+
+### Interfaz
+- Dashboard: tarjeta de estado de TVDB junto a TMDB y qBittorrent en "System Status".
+- Badge "Wanted" del Dashboard actualizado al estilo visual del resto de badges de la app.
 
 ## v1.0.8 — Los season-packs limpiados ya no se vuelven a descargar (2026-09-30)
 

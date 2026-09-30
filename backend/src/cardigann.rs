@@ -172,6 +172,46 @@ fn response_error(def: &Definition, response: &reqwest::Response, context: &str)
     )
 }
 
+/// `reqwest::Error`'s own message can include the full request URL, and many
+/// private trackers put an API key or passkey directly in the query string —
+/// so an unredacted connection-error message can hand that credential back to
+/// whoever reads it later (the Settings UI, server logs, a support request
+/// the user pastes it into). Redacts credential-shaped query parameter
+/// *values* rather than the whole query string, so the rest of the URL —
+/// useful for actually diagnosing the failure — stays visible.
+fn sanitize_reqwest_error(error: &reqwest::Error) -> String {
+    let Some(url) = error.url() else {
+        return error.to_string();
+    };
+    let redacted = redact_sensitive_query_params(url);
+    error.to_string().replace(url.as_str(), redacted.as_str())
+}
+
+/// Blanks out credential-shaped query parameter *values*, keeping the rest of
+/// the URL (host, path, other params) visible — that's what's actually useful
+/// for diagnosing a connection failure, whereas the value of `passkey=`/
+/// `apikey=`/etc. is exactly what a private tracker's URL-based auth exposes.
+fn redact_sensitive_query_params(url: &Url) -> Url {
+    const SENSITIVE: &[&str] = &[
+        "passkey", "apikey", "api_key", "token", "auth", "key", "rsskey", "secret", "password",
+    ];
+    let mut redacted = url.clone();
+    let pairs: Vec<(String, String)> = redacted
+        .query_pairs()
+        .map(|(k, v)| {
+            if SENSITIVE.iter().any(|s| k.eq_ignore_ascii_case(s)) {
+                (k.into_owned(), "REDACTED".to_string())
+            } else {
+                (k.into_owned(), v.into_owned())
+            }
+        })
+        .collect();
+    if !pairs.is_empty() {
+        redacted.query_pairs_mut().clear().extend_pairs(&pairs);
+    }
+    redacted
+}
+
 fn human_duration(seconds: u64) -> String {
     if seconds >= 60 {
         format!("{} min", seconds.div_ceil(60))
@@ -365,7 +405,7 @@ async fn search_indexer_once(
         }
         .map_err(|e| {
             record_failure(def, 0);
-            format!("Error HTTP en {}: {e}", def.name)
+            format!("Error HTTP en {}: {}", def.name, sanitize_reqwest_error(&e))
         })?;
 
         if !response.status().is_success() {
@@ -378,7 +418,10 @@ async fn search_indexer_once(
             .unwrap_or_else(|| "html".into())
             .to_lowercase();
 
-        let body = response.text().await.map_err(|e| e.to_string())?;
+        let body = response
+            .text()
+            .await
+            .map_err(|e| sanitize_reqwest_error(&e))?;
 
         if response_type == "json" {
             let json: JsonValue = serde_json::from_str(&body)
@@ -711,12 +754,19 @@ pub async fn test_indexer(state: &AppState, indexer_id: &str) -> Result<String, 
                 },
             ),
         )?;
-        let response = client.get(url).send().await.map_err(|e| e.to_string())?;
+        let response = client
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| sanitize_reqwest_error(&e))?;
         if !response.status().is_success() {
             return Err(response_error(&def, &response, "login test"));
         }
         if let Some(sel) = yaml_string(map_get(test, "selector")) {
-            let html = response.text().await.map_err(|e| e.to_string())?;
+            let html = response
+                .text()
+                .await
+                .map_err(|e| sanitize_reqwest_error(&e))?;
             let doc = Html::parse_document(&html);
             let selector = forgiving_selector(&sel)
                 .ok_or_else(|| format!("Selector de test no compatible: {sel}"))?;
@@ -755,7 +805,7 @@ pub async fn test_indexer(state: &AppState, indexer_id: &str) -> Result<String, 
         .get(&def.base_url)
         .send()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| sanitize_reqwest_error(&e))?;
     if response.status().is_success() {
         Ok(format!("{} · HTTP {}", def.name, response.status()))
     } else {
@@ -844,6 +894,30 @@ async fn test_search_endpoint(
     Ok(Some(response))
 }
 
+/// Whether `candidate_url`'s host is the indexer's own host, or a subdomain
+/// (or parent domain) of it. Some trackers legitimately serve downloads from
+/// a separate subdomain (`dl.tracker.com` vs `tracker.com`), so this isn't a
+/// strict equality check — but a genuinely unrelated host, whether from a
+/// compromised/malicious indexer definition or a hijacked details page, must
+/// not receive that indexer's login cookies and custom auth headers just
+/// because they happen to be sitting on the `reqwest::Client` used to fetch
+/// it.
+fn same_or_related_host(base_url: &str, candidate_url: &str) -> bool {
+    let host = |value: &str| {
+        Url::parse(value)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_lowercase))
+    };
+    match (host(base_url), host(candidate_url)) {
+        (Some(base), Some(candidate)) => {
+            base == candidate
+                || candidate.ends_with(&format!(".{base}"))
+                || base.ends_with(&format!(".{candidate}"))
+        }
+        _ => false,
+    }
+}
+
 pub async fn fetch_release_bytes_or_url(
     state: &AppState,
     indexer_id: &str,
@@ -866,15 +940,28 @@ pub async fn fetch_release_bytes_or_url(
         && let Some(details) = details_url
         && let Some(download) = map_get(&def.yaml, "download")
     {
-        let mut request = client.get(details);
-        for (key, value) in &download_headers {
-            request = request.header(key, value);
+        let related = same_or_related_host(&def.base_url, details);
+        let mut request = if related {
+            client.get(details)
+        } else {
+            state.http.get(details)
+        };
+        if related {
+            for (key, value) in &download_headers {
+                request = request.header(key, value);
+            }
         }
-        let response = request.send().await.map_err(|e| e.to_string())?;
+        let response = request
+            .send()
+            .await
+            .map_err(|e| sanitize_reqwest_error(&e))?;
         if !response.status().is_success() {
             return Err(format!("Página de detalle HTTP {}", response.status()));
         }
-        let body = response.text().await.map_err(|e| e.to_string())?;
+        let body = response
+            .text()
+            .await
+            .map_err(|e| sanitize_reqwest_error(&e))?;
         let doc = Html::parse_document(&body);
 
         if let Some(selectors) = map_get(download, "selectors").and_then(Value::as_sequence) {
@@ -914,18 +1001,31 @@ pub async fn fetch_release_bytes_or_url(
         return Ok(GrabPayload::Url(url));
     }
 
-    let mut request = client.get(&url);
-    for (key, value) in &download_headers {
-        request = request.header(key, value);
+    let related = same_or_related_host(&def.base_url, &url);
+    let mut request = if related {
+        client.get(&url)
+    } else {
+        state.http.get(&url)
+    };
+    if related {
+        for (key, value) in &download_headers {
+            request = request.header(key, value);
+        }
     }
-    let response = request.send().await.map_err(|e| e.to_string())?;
+    let response = request
+        .send()
+        .await
+        .map_err(|e| sanitize_reqwest_error(&e))?;
     if !response.status().is_success() {
         return Err(format!(
             "La descarga del .torrent devolvió HTTP {}",
             response.status()
         ));
     }
-    let bytes = response.bytes().await.map_err(|e| e.to_string())?;
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| sanitize_reqwest_error(&e))?;
     if let Err(reason) = validate_torrent_metainfo(&bytes) {
         return Err(format!(
             "{} no devolvió un archivo .torrent válido ({reason}); no se envió a qBittorrent",
@@ -1206,7 +1306,7 @@ async fn build_authenticated_client(def: &Definition) -> Result<Client, String> 
             ")"
         ))
         .build()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| sanitize_reqwest_error(&e))?;
 
     if let Some(login) = map_get(&def.yaml, "login") {
         let method = yaml_string(map_get(login, "method"))
@@ -1237,11 +1337,11 @@ async fn build_authenticated_client(def: &Definition) -> Result<Client, String> 
                         .get(&form_url)
                         .send()
                         .await
-                        .map_err(|e| e.to_string())?;
+                        .map_err(|e| sanitize_reqwest_error(&e))?;
                     if !page.status().is_success() {
                         return Err(response_error(def, &page, "login form"));
                     }
-                    let html = page.text().await.map_err(|e| e.to_string())?;
+                    let html = page.text().await.map_err(|e| sanitize_reqwest_error(&e))?;
                     if let Some(form_selector) = yaml_string(map_get(login, "form")) {
                         let (form_inputs, action) = form_input_values(&form_selector, &html)?;
                         merge_missing_inputs(&mut inputs, form_inputs);
@@ -1292,12 +1392,15 @@ async fn build_authenticated_client(def: &Definition) -> Result<Client, String> 
                     }
                     request.send().await
                 }
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| sanitize_reqwest_error(&e))?;
                 if !response.status().is_success() {
                     return Err(response_error(def, &response, "login"));
                 }
                 if matches!(method.as_str(), "form" | "post") {
-                    let body = response.text().await.map_err(|e| e.to_string())?;
+                    let body = response
+                        .text()
+                        .await
+                        .map_err(|e| sanitize_reqwest_error(&e))?;
                     if let Some(message) = login_page_error(login, &body) {
                         return Err(format!("{} rechazó el login: {message}", def.name));
                     }
@@ -2029,4 +2132,55 @@ fn is_yaml(path: &Path) -> bool {
         .and_then(|x| x.to_str())
         .map(|x| x.eq_ignore_ascii_case("yml") || x.eq_ignore_ascii_case("yaml"))
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod same_or_related_host_tests {
+    use super::same_or_related_host;
+
+    #[test]
+    fn accepts_the_same_host_and_a_subdomain() {
+        assert!(same_or_related_host(
+            "https://tracker.example",
+            "https://tracker.example/download/123"
+        ));
+        assert!(same_or_related_host(
+            "https://tracker.example",
+            "https://dl.tracker.example/x.torrent"
+        ));
+    }
+
+    #[test]
+    fn rejects_an_unrelated_host() {
+        assert!(!same_or_related_host(
+            "https://tracker.example",
+            "https://attacker.example/x.torrent"
+        ));
+        assert!(!same_or_related_host(
+            "https://tracker.example",
+            "https://nottracker.example/x.torrent"
+        ));
+    }
+}
+
+#[cfg(test)]
+mod redact_sensitive_query_params_tests {
+    use super::redact_sensitive_query_params;
+    use url::Url;
+
+    #[test]
+    fn redacts_passkey_and_apikey_but_keeps_the_rest_of_the_url() {
+        let url = Url::parse("https://tracker.example/rss?passkey=SECRET123&cat=movies").unwrap();
+        let redacted = redact_sensitive_query_params(&url);
+        assert!(!redacted.as_str().contains("SECRET123"));
+        assert!(redacted.as_str().contains("cat=movies"));
+        assert!(redacted.as_str().contains("passkey=REDACTED"));
+    }
+
+    #[test]
+    fn leaves_a_url_with_no_sensitive_params_untouched() {
+        let url = Url::parse("https://tracker.example/search?q=movie&cat=movies").unwrap();
+        let redacted = redact_sensitive_query_params(&url);
+        assert_eq!(redacted.as_str(), url.as_str());
+    }
 }

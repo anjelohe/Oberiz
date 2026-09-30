@@ -24,9 +24,30 @@ fn data_directory() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("data"))
 }
 
+/// `oberiz.db` holds Argon2id password hashes plus every indexer/TMDB/TVDB/
+/// qBittorrent credential in plain text, and SQLite otherwise creates it with
+/// whatever the process umask leaves — commonly 0644 on Linux, readable by
+/// any local account. Restricting the *directory* to owner-only, rather than
+/// chasing the main db file plus its `-wal`/`-shm` sidecars individually,
+/// covers all of them (existing and future) in one call: without execute
+/// permission on the directory, another user can't traverse into it at all,
+/// regardless of any file's own mode bits. Windows' equivalent boundary is
+/// the service's own account/ACLs, set up separately in service.rs.
+#[cfg(unix)]
+fn restrict_data_directory_permissions(path: &std::path::Path) -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+    Ok(())
+}
+#[cfg(not(unix))]
+fn restrict_data_directory_permissions(_path: &std::path::Path) -> anyhow::Result<()> {
+    Ok(())
+}
+
 pub async fn connect() -> anyhow::Result<SqlitePool> {
     let data_directory = data_directory();
     std::fs::create_dir_all(&data_directory)?;
+    restrict_data_directory_permissions(&data_directory)?;
     let database_path = data_directory.join("oberiz.db");
     let database_url = format!(
         "sqlite://{}",

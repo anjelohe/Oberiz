@@ -289,7 +289,7 @@ async fn to_view(
             .fetch_optional(&state.db)
             .await
             .map_err(internal)?;
-        let missing=sqlx::query_scalar::<_,i64>(r#"SELECT COUNT(*) FROM series_episodes WHERE series_id=? AND monitored=1 AND has_file=0 AND (air_date IS NULL OR air_date<=date('now'))"#)
+        let missing=sqlx::query_scalar::<_,i64>(r#"SELECT COUNT(*) FROM series_episodes WHERE series_id=? AND monitored=1 AND has_file=0 AND (air_date IS NULL OR air_date<=date('now','localtime'))"#)
             .bind(media_id).fetch_one(&state.db).await.map_err(internal)?;
         let files = sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM series_episodes WHERE series_id=? AND has_file=1",
@@ -538,7 +538,7 @@ async fn apply_requested_seasons(
     if monitor_future {
         sqlx::query("UPDATE series_seasons SET monitor_override=NULL WHERE series_id=? AND season_number>0 AND monitor_override=0")
             .bind(series_id).execute(&mut *tx).await.map_err(internal)?;
-        sqlx::query("UPDATE series_episodes SET monitor_override=NULL WHERE series_id=? AND season_number>0 AND monitor_override=0 AND air_date IS NOT NULL AND air_date>=date('now')")
+        sqlx::query("UPDATE series_episodes SET monitor_override=NULL WHERE series_id=? AND season_number>0 AND monitor_override=0 AND air_date IS NOT NULL AND air_date>=date('now','localtime')")
             .bind(series_id).execute(&mut *tx).await.map_err(internal)?;
     }
     tx.commit().await.map_err(internal)?;

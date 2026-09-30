@@ -40,8 +40,8 @@ pub async fn list_calendar(
                e.season_number,e.episode_number,e.name AS episode_name,e.air_date,e.monitored,e.has_file
         FROM series_episodes e JOIN series s ON s.id=e.series_id
         WHERE e.air_date IS NOT NULL
-          AND e.air_date>=date('now', ?)
-          AND e.air_date<=date('now', ?)
+          AND e.air_date>=date('now','localtime', ?)
+          AND e.air_date<=date('now','localtime', ?)
         ORDER BY e.air_date,s.name,e.season_number,e.episode_number
     "#)
         .bind(format!("-{} days",back)).bind(format!("+{} days",days))
