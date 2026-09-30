@@ -45,6 +45,19 @@ Name: "{userstartup}\Oberiz Tray"; Filename: "{sys}\wscript.exe"; Parameters: ""
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"
 
+[Code]
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  ResultCode: Integer;
+begin
+  if CurStep = ssInstall then begin
+    { An existing service keeps Oberiz.exe locked. Stop it before replacing
+      application files; the [Run] entry below reconfigures and starts it. }
+    Exec(ExpandConstant('{sys}\sc.exe'), 'stop Oberiz', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    Sleep(1000);
+  end;
+end;
+
 [Run]
 ; Registers and starts the Oberiz Windows Service (runs at boot, no login
 ; required) and grants the logged-in user's tray icon start/stop rights.

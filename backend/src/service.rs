@@ -130,8 +130,10 @@ fn run_service() -> anyhow::Result<()> {
 /// helper, running unprivileged) the right to start/stop it without a UAC
 /// prompt every time. Intended to be run once by the (elevated) installer.
 pub fn install() -> anyhow::Result<()> {
-    let manager =
-        ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CREATE_SERVICE)?;
+    let manager = ServiceManager::local_computer(
+        None::<&str>,
+        ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE,
+    )?;
     let exe_path = std::env::current_exe()?;
     let service_info = ServiceInfo {
         name: OsString::from(SERVICE_NAME),
@@ -145,16 +147,32 @@ pub fn install() -> anyhow::Result<()> {
         account_name: None, // runs as LocalSystem
         account_password: None,
     };
-    let service = manager.create_service(
-        &service_info,
-        ServiceAccess::CHANGE_CONFIG | ServiceAccess::START,
-    )?;
+    let access = ServiceAccess::CHANGE_CONFIG | ServiceAccess::START;
+    // An installer upgrade keeps the existing service registration. Reuse it
+    // and point it at the freshly installed executable instead of failing
+    // with ERROR_SERVICE_EXISTS and silently leaving the old binary active.
+    let service = match manager.open_service(SERVICE_NAME, access) {
+        Ok(service) => {
+            service.change_config(&service_info)?;
+            service
+        }
+        Err(windows_service::Error::Winapi(error)) if error.raw_os_error() == Some(1060) => {
+            manager.create_service(&service_info, access)?
+        }
+        Err(error) => return Err(error.into()),
+    };
     service.set_description(SERVICE_DESCRIPTION)?;
     // The Registry key only exists after `create_service`; configure the
     // process environment before starting it so its very first boot uses the
     // persistent ProgramData locations rather than System32-relative paths.
     configure_service_environment()?;
-    service.start::<OsString>(&[])?;
+    if let Err(windows_service::Error::Winapi(error)) = service.start::<OsString>(&[]) {
+        // A repair install may run while Oberiz is already serving requests.
+        // The updated configuration is still valid; no second start is needed.
+        if error.raw_os_error() != Some(1056) {
+            return Err(error.into());
+        }
+    }
     drop(service);
 
     grant_authenticated_users_start_stop()
