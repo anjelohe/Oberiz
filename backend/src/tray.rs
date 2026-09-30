@@ -19,7 +19,10 @@ use std::{
 };
 
 use windows_sys::Win32::{
-    Foundation::{HWND, LPARAM, LRESULT, WPARAM},
+    Foundation::{
+        CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HWND, LPARAM, LRESULT, WPARAM,
+    },
+    System::Threading::CreateMutexW,
     UI::{
         Shell::{
             NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_SETVERSION,
@@ -61,8 +64,28 @@ pub fn spawn() {
 /// A standalone helper process (`Oberiz.exe --tray`) that only shows the icon
 /// and starts/stops the real Windows Service — it runs no web server itself.
 pub fn run_standalone() {
+    let Some(single_instance) = acquire_standalone_lock() else {
+        return;
+    };
     STANDALONE_MODE.store(true, Ordering::SeqCst);
     unsafe { tray_loop() };
+    unsafe { CloseHandle(single_instance) };
+}
+
+/// There can be only one interactive tray helper per logged-in Windows user.
+/// Both the Startup shortcut and the normal Oberiz shortcut may launch it,
+/// so use a Local namespace mutex to discard duplicate helpers cleanly.
+fn acquire_standalone_lock() -> Option<HANDLE> {
+    let name = wide("Local\\OberizTraySingleton");
+    let handle = unsafe { CreateMutexW(ptr::null(), 0, name.as_ptr()) };
+    if handle.is_null() {
+        return None;
+    }
+    if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+        unsafe { CloseHandle(handle) };
+        return None;
+    }
+    Some(handle)
 }
 
 unsafe fn tray_loop() {

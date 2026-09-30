@@ -62,9 +62,13 @@ end;
 ; Registers and starts the Oberiz Windows Service (runs at boot, no login
 ; required) and grants the logged-in user's tray icon start/stop rights.
 Filename: "{app}\Oberiz.exe"; Parameters: "--install-service"; StatusMsg: "Installing the Oberiz service..."; Flags: runhidden
+; Permit Oberiz from other devices on trusted local networks without a first-use
+; firewall prompt. Public networks remain blocked.
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Oberiz local network"" dir=in action=allow program=""{app}\Oberiz.exe"" enable=yes profile=private protocol=TCP localport=2032"; Flags: runhidden
 ; The tray helper for this session, without waiting for the next logon.
 Filename: "{sys}\wscript.exe"; Parameters: """{app}\Start-Oberiz-Tray.vbs"""; WorkingDir: "{app}"; Flags: nowait runhidden
 Filename: "{sys}\wscript.exe"; Parameters: """{app}\Start-Oberiz-Installed.vbs"""; Description: "Open Oberiz"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Oberiz local network"" program=""{app}\Oberiz.exe"" protocol=TCP localport=2032"; Flags: runhidden
 Filename: "{app}\Oberiz.exe"; Parameters: "--uninstall-service"; Flags: runhidden
