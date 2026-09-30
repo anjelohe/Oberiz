@@ -1077,7 +1077,7 @@ async fn try_complete_series(
         WHERE media_type='series' AND media_id=?
           AND season_number IS NULL AND episode_number IS NULL
           AND is_season_pack=1
-          AND status IN ('queued','downloading','completed','seeding')
+          AND status IN ('queued','downloading','completed','seeding','cleaned')
     "#,
     )
     .bind(series_id)
@@ -1159,12 +1159,16 @@ async fn has_active_series_job(
     episode_number: Option<i32>,
     is_pack: bool,
 ) -> bool {
+    // 'cleaned' counts as active too: the seed policy removing a finished torrent
+    // from qBittorrent doesn't mean the grab never happened — its files are
+    // already imported, so treating it as "not active" would let this same
+    // season/episode be re-grabbed from scratch (see `already_grabbed` above).
     let count = if is_pack {
         sqlx::query_scalar::<_, i64>(
             r#"
             SELECT COUNT(*) FROM download_jobs
             WHERE media_type='series' AND media_id=? AND season_number=? AND is_season_pack=1
-              AND status IN ('queued','downloading','completed','seeding')
+              AND status IN ('queued','downloading','completed','seeding','cleaned')
         "#,
         )
         .bind(series_id)
@@ -1177,7 +1181,7 @@ async fn has_active_series_job(
             r#"
             SELECT COUNT(*) FROM download_jobs
             WHERE media_type='series' AND media_id=? AND season_number=? AND episode_number=?
-              AND status IN ('queued','downloading','completed','seeding')
+              AND status IN ('queued','downloading','completed','seeding','cleaned')
         "#,
         )
         .bind(series_id)

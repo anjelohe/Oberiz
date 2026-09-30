@@ -3,7 +3,7 @@
 > Estado del proyecto, decisiones tomadas, trabajo realizado y roadmap previsto.
 
 **Fecha de esta memoria:** 30 de septiembre de 2026  
-**Estado actual:** Oberiz v1.0.7 es la versión pública vigente. Incluye biblioteca real, automatización de películas y series, RSS incremental con prioridad de indexador, importación, Calendar, API pública v1, diagnóstico, backup/restore SQLite, perfiles refinados y acceso de administrador protegido.
+**Estado actual:** Oberiz v1.0.8 es la versión pública vigente. Incluye biblioteca real, automatización de películas y series, RSS incremental con prioridad de indexador, importación, Calendar, API pública v1, diagnóstico, backup/restore SQLite, perfiles refinados y acceso de administrador protegido.
 
 ---
 
@@ -13,6 +13,11 @@
 - **Filtros de Downloads:** incorporar selectores combinables por tracker, categoría de qBittorrent y etiquetas, además de los filtros actuales por estado y búsqueda de texto.
 
 ---
+
+## v1.0.8 — Los season-packs limpiados ya no se vuelven a descargar (2026-09-30)
+
+- `has_active_series_job` (season-packs y episodios en el barrido periódico/al añadir) y el chequeo de "ya activo" de `try_complete_series` no contaban el estado `cleaned` como activo — solo `already_grabbed` (usada por RSS) lo hacía desde el arreglo anterior. En cuanto qBittorrent limpiaba un torrent tras terminar de sembrar, automation olvidaba que ya se había descargado y volvía a buscarlo y descargarlo desde cero. Las tres funciones ahora tratan `cleaned` como activo.
+- Icono de aplicación actualizado (`.exe`, bandeja, instalador y accesos directos). De paso, `build.rs` ahora vigila el archivo del icono (`cargo:rerun-if-changed`), así que un cambio de icono futuro sí fuerza a recompilar el recurso incrustado.
 
 ## v1.0.7 — Menos peticiones a indexadores, más control de RSS (2026-09-30)
 
