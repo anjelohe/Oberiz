@@ -65,7 +65,7 @@ export function Layout({
       </label>
       <div className="sidebar-theme-icons" role="group" aria-label="Theme"><button className={theme==='dark'?'active':''} type="button" onClick={()=>onTheme('dark')} title="Dark theme" aria-label="Dark theme" aria-pressed={theme==='dark'}>◐</button><button className={theme==='middle'?'active':''} type="button" onClick={()=>onTheme('middle')} title="Middle theme" aria-label="Middle theme" aria-pressed={theme==='middle'}>●</button><button className={theme==='light'?'active':''} type="button" onClick={()=>onTheme('light')} title="Light theme" aria-label="Light theme" aria-pressed={theme==='light'}>☀</button></div>
       <button className="system-ok" onClick={()=>navigate('settings')} title="Open system diagnostics"><span/> All Systems Operational</button>
-      <div className="version"><b>v1.0.4</b><span>Self-hosted Media Automation</span></div>
+      <div className="version"><b>v1.0.5</b><span>Self-hosted Media Automation</span></div>
     </aside>
 
     <main className="main">

@@ -2,7 +2,7 @@
 
 Self-hosted media automation for movies and series. Oberiz brings metadata, indexers, quality profiles, searches, qBittorrent, importing and the real library together in one application.
 
-**Current version: 1.0.4 — improved indexer searching, release selection, Windows tray controls and ready-to-run packages.**
+**Current version: 1.0.5 — improved indexer searching, release selection, Windows tray controls and ready-to-run packages.**
 
 ## What it does
 
@@ -50,12 +50,12 @@ Every release provides ready-to-run packages. No Rust, Node.js or frontend build
 
 | Platform | Download | Starts with |
 | --- | --- | --- |
-| Docker | `ghcr.io/anjelohe/oberiz:v1.0.4` | `docker compose up -d` |
-| Linux x86_64 | `oberiz-1.0.4-linux-x86_64.tar.gz` | `sudo ./install.sh` |
-| Windows x86_64 (portable) | `oberiz-1.0.4-windows-x86_64.zip` | `Start-Oberiz.bat` |
-| Windows x86_64 (installer) | `oberiz-1.0.4-windows-x86_64-setup.exe` | Setup assistant |
+| Docker | `ghcr.io/anjelohe/oberiz:v1.0.5` | `docker compose up -d` |
+| Linux x86_64 | `oberiz-1.0.5-linux-x86_64.tar.gz` | `sudo ./install.sh` |
+| Windows x86_64 (portable) | `oberiz-1.0.5-windows-x86_64.zip` | `Start-Oberiz.bat` |
+| Windows x86_64 (installer) | `oberiz-1.0.5-windows-x86_64-setup.exe` | Setup assistant |
 
-The packages are available from the [v1.0.4 release](https://github.com/anjelohe/Oberiz/releases/tag/v1.0.4). The release workflow also builds and attaches the Windows package whenever a version is published.
+The packages are available from the [v1.0.5 release](https://github.com/anjelohe/Oberiz/releases/tag/v1.0.5). The release workflow also builds and attaches the Windows package whenever a version is published.
 
 ## Support Oberiz
 
