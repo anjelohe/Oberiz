@@ -488,6 +488,29 @@ async fn import_job(
         }
     }
 
+    if job.media_type == "series"
+        && job.episode_number.is_none()
+        && let Some(season) = job.season_number
+    {
+        // This job was grabbed as a whole-season pack (no single episode
+        // number), so every file inside it belongs to `season` even if one
+        // file's name didn't match the SxxExx/absolute-episode patterns
+        // above (extras, a differently-named bonus episode, an unusual scene
+        // convention...). Without this, that one episode would stay
+        // has_file=0 forever, automation would keep treating the season as
+        // "still missing something", and — once the original job's seeding
+        // was cleaned up — nothing would stop it from grabbing the season
+        // again from scratch, which is exactly the bug this fixes.
+        sqlx::query(
+            "UPDATE series_episodes SET has_file=1,updated_at=CURRENT_TIMESTAMP WHERE series_id=? AND season_number=? AND has_file=0",
+        )
+        .bind(job.media_id)
+        .bind(season)
+        .execute(&state.db)
+        .await
+        .map_err(internal)?;
+    }
+
     let source_string = source.to_string_lossy().to_string();
     let library_string = library_root.to_string_lossy().to_string();
     let mappings_json = serde_json::to_string(&mappings).unwrap_or_else(|_| "[]".into());

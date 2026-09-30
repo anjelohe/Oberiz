@@ -2,10 +2,40 @@
 
 > Estado del proyecto, decisiones tomadas, trabajo realizado y roadmap previsto.
 
-**Fecha de esta memoria:** 28 de septiembre de 2026  
-**Estado actual:** Oberiz v1.0.5 es la versión pública vigente. Incluye biblioteca real, automatización de películas y series, RSS incremental, importación, Calendar, API pública v1, diagnóstico, backup/restore SQLite, perfiles refinados y acceso de administrador protegido.
+**Fecha de esta memoria:** 30 de septiembre de 2026  
+**Estado actual:** Oberiz v1.0.7 es la versión pública vigente. Incluye biblioteca real, automatización de películas y series, RSS incremental con prioridad de indexador, importación, Calendar, API pública v1, diagnóstico, backup/restore SQLite, perfiles refinados y acceso de administrador protegido.
 
 ---
+
+## Pendientes de interfaz acordados
+
+- **Estado TVDB en Dashboard:** añadir una tarjeta de estado de TVDB junto a TMDB, indicando claramente si la clave está configurada y si la integración está disponible para resolver identificadores de series.
+- **Filtros de Downloads:** incorporar selectores combinables por tracker, categoría de qBittorrent y etiquetas, además de los filtros actuales por estado y búsqueda de texto.
+
+---
+
+## v1.0.7 — Menos peticiones a indexadores, más control de RSS (2026-09-30)
+
+### Riesgo de baneo por exceso de peticiones
+
+- La búsqueda automática (`automation.rs`) pausa 350 ms entre cada indexador consultado y limita a 40 el número de búsquedas activas por ciclo; lo que sobra queda para el siguiente ciclo en vez de dispararse todo de golpe.
+- Al añadir una película o serie desde la propia interfaz (no solo desde la API pública compatible con Radarr/Sonarr), se lanza una búsqueda puntual una sola vez — cubre lo que el tracker ya tenía publicado antes de monitorizar el título, algo que RSS nunca puede ver retroactivamente.
+- Nuevo ajuste por indexador, **"Only use RSS for this indexer"**: lo excluye del barrido periódico automático sin afectar a RSS, a la búsqueda al añadir ni al botón manual "Search releases".
+- El ciclo de RSS ahora procesa los feeds en orden de prioridad del indexador, para que un indexador preferido gane la carrera frente a uno de menor prioridad cuando ambos anuncian el mismo release en el mismo ciclo.
+- Backoff escalonado por indexador ante cualquier fallo (no solo HTTP 429): 0 s → 1 min → 5 min → 15 min → 30 min → 1 h → 3 h → 6 h → 12 h → 24 h, con reseteo en el primer éxito — el mismo esquema que usan Sonarr/Radarr.
+
+### Interfaz
+
+- Cabecera de aplicación fija: logo, buscador y acciones globales (Add Media, notificaciones, Settings) permanecen visibles al hacer scroll, sin quedar tapados por el contenido.
+
+### Mantenimiento
+
+- `.gitignore` corregido: las reglas de indexadores custom y secrets apuntaban a una ruta `config/...` de la raíz que ya no existe; ahora protegen la ruta real `backend/config/...`.
+
+## v1.0.6 — Instancia única de bandeja y regla de firewall (2026-09-30)
+
+- El ayudante de bandeja independiente (`--tray`) usa un mutex con nombre para evitar dos iconos duplicados cuando lo lanzan a la vez el acceso de inicio de sesión y el acceso directo normal.
+- El instalador añade una regla de Firewall de Windows que permite Oberiz en redes privadas de confianza sin el aviso de primer uso; las redes públicas siguen bloqueadas. Se elimina al desinstalar.
 
 ## v1.0.5 — Recuperación del icono de bandeja (2026-09-30)
 

@@ -418,6 +418,21 @@ pub async fn get_indexer(
         default: None,
         options: vec![],
     });
+    // Lets a user exempt a specific indexer from the recurring automatic-search
+    // sweep (which queries every enabled indexer for every monitored title on a
+    // timer) while still using it for RSS and for the one-off search that runs
+    // when a title is added or the user clicks Search — the two cases that don't
+    // repeat and therefore don't carry the same rate-limit/ban risk.
+    settings_out.push(IndexerSetting {
+        name: "oberiz_rss_only".into(),
+        label: "Only use RSS for this indexer (skip it in the scheduled automatic search)".into(),
+        field_type: "checkbox".into(),
+        secret: false,
+        configured: current.contains_key("oberiz_rss_only"),
+        value: current.get("oberiz_rss_only").cloned(),
+        default: Some(serde_json::Value::from(false)),
+        options: vec![],
+    });
     Ok(Json(IndexerDetail {
         id,
         name,

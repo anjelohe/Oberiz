@@ -88,12 +88,21 @@ pub fn spawn_scheduler(state: AppState) {
 
 pub(crate) async fn run_cycle(state: &AppState) -> RssRunSummary {
     let mut summary = RssRunSummary::default();
-    let feeds = sqlx::query_as::<_, (String, String)>(
+    let mut feeds = sqlx::query_as::<_, (String, String)>(
         "SELECT indexer_id,config_json FROM indexer_configs WHERE enabled=1",
     )
     .fetch_all(&state.db)
     .await
     .unwrap_or_default();
+    // Higher-priority indexers are processed first so that when the same release
+    // shows up in more than one feed during a cycle, the preferred indexer's copy
+    // is the one that gets grabbed — `process_rss_release`'s already-grabbed check
+    // then skips the same target when a lower-priority feed reaches it afterwards.
+    feeds.sort_by(|(left_id, left_config), (right_id, right_config)| {
+        indexer_priority(left_config)
+            .cmp(&indexer_priority(right_config))
+            .then_with(|| left_id.cmp(right_id))
+    });
     for (indexer_id, config) in feeds {
         let rss_url = serde_json::from_str::<Value>(&config).ok().and_then(|v| {
             v.get("rss_url")
@@ -196,6 +205,19 @@ pub(crate) async fn run_cycle(state: &AppState) -> RssRunSummary {
         .await;
     }
     summary
+}
+
+/// Same convention as `search_api.rs`: lower number = higher priority, unset = 100.
+fn indexer_priority(config: &str) -> i64 {
+    serde_json::from_str::<Value>(config)
+        .ok()
+        .and_then(|value| value.get("oberiz_priority").cloned())
+        .and_then(|value| {
+            value
+                .as_i64()
+                .or_else(|| value.as_str().and_then(|value| value.parse::<i64>().ok()))
+        })
+        .unwrap_or(100)
 }
 
 fn parse_feed(body: &str) -> Vec<RssRelease> {
