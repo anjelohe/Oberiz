@@ -1,13 +1,12 @@
+mod state;
+
 use axum::{Json, extract::State, http::StatusCode};
 use serde::Serialize;
+use state::{record_error, record_series_target_error, touch_search};
 use std::{
     collections::BTreeMap,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{LazyLock, atomic::Ordering},
 };
-use tokio::sync::RwLock;
 use tokio::time::{Duration, sleep};
 
 use crate::{
@@ -17,6 +16,8 @@ use crate::{
     search_api::{self, GrabRequest},
     series, settings,
 };
+
+pub use state::AutomationRuntime;
 
 #[derive(Debug, Clone)]
 pub(crate) struct RssRelease {
@@ -112,6 +113,7 @@ pub(crate) async fn process_rss_release(
             original.as_deref(),
             year,
             "movie",
+            None,
         );
         candidate.base_score = candidate.score;
         candidate.profile_score = evaluation.profile_score;
@@ -195,6 +197,7 @@ pub(crate) async fn process_rss_release(
             original.as_deref(),
             None,
             "series",
+            None,
         );
         candidate.base_score = candidate.score;
         candidate.profile_score = evaluation.profile_score;
@@ -237,8 +240,12 @@ pub(crate) async fn process_rss_release(
             .await;
             return Ok(format!("grabbed: complete series {title}"));
         }
-        let season_re = regex::Regex::new(r"(?i)S(\\d{1,2})(?:E(\\d{1,3}))?").unwrap();
-        let Some(caps) = season_re.captures(&item.title) else {
+        // Compiled once: this runs per RSS item, and re-compiling per call was
+        // also silently broken — the doubled `\\d` matched a literal
+        // backslash instead of a digit, so this never matched a real title.
+        static SEASON_EPISODE: LazyLock<regex::Regex> =
+            LazyLock::new(|| regex::Regex::new(r"(?i)S(\d{1,2})(?:E(\d{1,3}))?").unwrap());
+        let Some(caps) = SEASON_EPISODE.captures(&item.title) else {
             return Ok("skipped: series release has no season/episode target".into());
         };
         let season = caps
@@ -316,6 +323,7 @@ async fn active_equivalent_job(
         > 0
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn grab_rss(
     state: &AppState,
     candidate: &ReleaseResult,
@@ -403,43 +411,6 @@ pub struct AutomationStatus {
     pub total_items: usize,
 }
 
-#[derive(Clone, Default)]
-pub struct AutomationRuntime {
-    running: Arc<AtomicBool>,
-    progress: Arc<RwLock<AutomationProgress>>,
-}
-#[derive(Clone, Default)]
-struct AutomationProgress {
-    current_item: Option<String>,
-    completed_items: usize,
-    total_items: usize,
-}
-impl AutomationRuntime {
-    fn begin(&self) -> bool {
-        self.running
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-    }
-    async fn reset(&self, total: usize) {
-        *self.progress.write().await = AutomationProgress {
-            current_item: None,
-            completed_items: 0,
-            total_items: total,
-        };
-    }
-    async fn item(&self, label: String) {
-        self.progress.write().await.current_item = Some(label);
-    }
-    async fn done(&self) {
-        let mut value = self.progress.write().await;
-        value.completed_items += 1;
-        value.current_item = None;
-    }
-    fn finish(&self) {
-        self.running.store(false, Ordering::SeqCst)
-    }
-}
-
 #[derive(Debug, Serialize)]
 pub struct RunSummary {
     pub searched: usize,
@@ -525,9 +496,12 @@ pub fn spawn_scheduler(state: AppState) {
                 }
                 let summary = run_cycle(&state).await;
                 state.automation_runtime.finish();
-                println!(
-                    "[AUTOMATION] searched={} grabbed={} skipped={} errors={}",
-                    summary.searched, summary.grabbed, summary.skipped, summary.errors
+                tracing::info!(
+                    searched = summary.searched,
+                    grabbed = summary.grabbed,
+                    skipped = summary.skipped,
+                    errors = summary.errors,
+                    "automation cycle completed"
                 );
             }
             sleep(Duration::from_secs(interval * 60)).await;
@@ -657,12 +631,12 @@ async fn process_movie(state: &AppState, media_id: i64, title: &str, summary: &m
         "SELECT MAX(quality_score) FROM media_files WHERE media_type='movie' AND media_id=? AND file_exists=1"
     ).bind(media_id).fetch_one(&state.db).await.unwrap_or(None);
 
-    if let Some(score) = current_score {
-        if !profile.upgrade_allowed || score >= profile.cutoff_score {
-            summary.skipped += 1;
-            touch_search(state, "movie", media_id, "cutoff").await;
-            return;
-        }
+    if let Some(score) = current_score
+        && (!profile.upgrade_allowed || score >= profile.cutoff_score)
+    {
+        summary.skipped += 1;
+        touch_search(state, "movie", media_id, "cutoff").await;
+        return;
     }
 
     let response = match search_api::search_media_internal(state, &spec).await {
@@ -680,12 +654,12 @@ async fn process_movie(state: &AppState, media_id: i64, title: &str, summary: &m
         return;
     };
 
-    if let Some(score) = current_score {
-        if best.score <= score + 25 {
-            touch_search(state, "movie", media_id, "upgrade-wait").await;
-            summary.skipped += 1;
-            return;
-        }
+    if let Some(score) = current_score
+        && best.score <= score + 25
+    {
+        touch_search(state, "movie", media_id, "upgrade-wait").await;
+        summary.skipped += 1;
+        return;
     }
 
     let req = GrabRequest {
@@ -780,6 +754,7 @@ async fn process_series(state: &AppState, series_id: i64, title: &str, summary: 
         }
     }
 
+    #[allow(clippy::type_complexity)]
     let mut by_season: BTreeMap<i32, Vec<(i32, String, bool, Option<i32>)>> = BTreeMap::new();
     for (season, episode, name, has_file, current_score) in rows {
         if season <= 0 {
@@ -882,6 +857,7 @@ async fn process_series(state: &AppState, series_id: i64, title: &str, summary: 
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn process_series_target(
     state: &AppState,
     series_id: i64,
@@ -939,21 +915,21 @@ async fn process_series_target(
         summary.skipped += 1;
         return;
     };
-    if let Some(score) = current_score {
-        if best.score <= score + 25 {
-            touch_series_target(
-                state,
-                series_id,
-                season_number,
-                episode_number,
-                "upgrade-wait",
-                None,
-                Some(score),
-            )
-            .await;
-            summary.skipped += 1;
-            return;
-        }
+    if let Some(score) = current_score
+        && best.score <= score + 25
+    {
+        touch_series_target(
+            state,
+            series_id,
+            season_number,
+            episode_number,
+            "upgrade-wait",
+            None,
+            Some(score),
+        )
+        .await;
+        summary.skipped += 1;
+        return;
     }
 
     let req = GrabRequest {
@@ -1200,76 +1176,6 @@ async fn touch_series_target(
         .bind(series_id).bind(season_number).bind(ep).bind(grabbed)
         .bind(title).bind(score).bind(status)
         .execute(&state.db).await;
-}
-
-async fn record_series_target_error(
-    state: &AppState,
-    series_id: i64,
-    season_number: i32,
-    episode_number: Option<i32>,
-    error: &str,
-) {
-    println!(
-        "[AUTOMATION] ERROR series id={} S{:02}{}: {}",
-        series_id,
-        season_number,
-        episode_number
-            .map(|value| format!("E{:02}", value))
-            .unwrap_or_else(|| " pack".into()),
-        error
-    );
-    let ep = episode_number.unwrap_or(0);
-    let _ = sqlx::query(
-        r#"
-        INSERT INTO series_target_state(
-          series_id,season_number,episode_number,last_search_at,last_error,status
-        ) VALUES(?,?,?,CURRENT_TIMESTAMP,?,'error')
-        ON CONFLICT(series_id,season_number,episode_number) DO UPDATE SET
-          last_search_at=CURRENT_TIMESTAMP,last_error=excluded.last_error,status='error'
-    "#,
-    )
-    .bind(series_id)
-    .bind(season_number)
-    .bind(ep)
-    .bind(error)
-    .execute(&state.db)
-    .await;
-}
-
-async fn touch_search(state: &AppState, media_type: &str, media_id: i64, status: &str) {
-    let _ = sqlx::query(
-        r#"
-        INSERT INTO automation_state(media_type,media_id,last_search_at,status)
-        VALUES(?,?,CURRENT_TIMESTAMP,?)
-        ON CONFLICT(media_type,media_id) DO UPDATE SET
-          last_search_at=CURRENT_TIMESTAMP,status=excluded.status,last_error=NULL
-    "#,
-    )
-    .bind(media_type)
-    .bind(media_id)
-    .bind(status)
-    .execute(&state.db)
-    .await;
-}
-
-async fn record_error(state: &AppState, media_type: &str, media_id: i64, error: &str) {
-    println!(
-        "[AUTOMATION] ERROR {} id={}: {}",
-        media_type, media_id, error
-    );
-    let _ = sqlx::query(
-        r#"
-        INSERT INTO automation_state(media_type,media_id,last_search_at,last_error,status)
-        VALUES(?,?,CURRENT_TIMESTAMP,?,'error')
-        ON CONFLICT(media_type,media_id) DO UPDATE SET
-          last_search_at=CURRENT_TIMESTAMP,last_error=excluded.last_error,status='error'
-    "#,
-    )
-    .bind(media_type)
-    .bind(media_id)
-    .bind(error)
-    .execute(&state.db)
-    .await;
 }
 
 async fn setting_bool(

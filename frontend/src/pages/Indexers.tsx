@@ -5,6 +5,7 @@ import './Indexers.css'
 type Indexer={
   id:string;name:string;description:string|null;language:string|null;indexer_type:string|null;
   links:string[];source:string;file_name:string;valid:boolean;configured:boolean;enabled:boolean;
+  priority:number;
   settings_count:number;last_status:'unknown'|'online'|'offline'|string;last_message:string|null;
   last_latency_ms:number|null;last_checked_at:string|null;error:string|null
 }
@@ -47,17 +48,20 @@ export function Indexers(){
 
   async function sync(){setBusy(true);setError('');try{const r=await fetch('/api/indexers/sync',{method:'POST'});if(!r.ok)throw new Error(await r.text());await load()}catch(e){setError(e instanceof Error?e.message:String(e))}finally{setBusy(false)}}
   async function open(item:Indexer){setTest('');const r=await fetch(`/api/indexers/${encodeURIComponent(item.id)}`);if(!r.ok){setError(await r.text());return}const d:Detail=await r.json();setSelected(d);const initial:Record<string,any>={};d.settings.forEach(s=>initial[s.name]=s.value??s.default??(s.field_type==='checkbox'?false:''));setValues(initial)}
-  async function save(){
-    if(!selected)return;setBusy(true);setTest('')
+  async function save(closeAfterSaving=true):Promise<boolean>{
+    if(!selected)return false;setBusy(true);setTest('')
     try{
       let r=await fetch(`/api/indexers/${encodeURIComponent(selected.id)}/config`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({values})});if(!r.ok)throw new Error(await r.text())
       r=await fetch(`/api/indexers/${encodeURIComponent(selected.id)}/enabled`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:selected.enabled})});if(!r.ok)throw new Error(await r.text())
-      await load();setTest('Saved')
-    }catch(e){setTest(e instanceof Error?e.message:String(e))}finally{setBusy(false)}
+      await load()
+      if(closeAfterSaving)setSelected(null)
+      else setTest('Saved')
+      return true
+    }catch(e){setTest(e instanceof Error?e.message:String(e));return false}finally{setBusy(false)}
   }
   async function testIndexer(){
     if(!selected)return;setBusy(true);setTest('Testing…')
-    try{await save();const r=await fetch(`/api/indexers/${encodeURIComponent(selected.id)}/test`,{method:'POST'});if(!r.ok)throw new Error(await r.text());const x=await r.json();setTest(x.message);await load()}
+    try{if(!await save(false))return;const r=await fetch(`/api/indexers/${encodeURIComponent(selected.id)}/test`,{method:'POST'});if(!r.ok)throw new Error(await r.text());const x=await r.json();setTest(x.message);await load()}
     catch(e){setTest(e instanceof Error?e.message:String(e));await load()}
     finally{setBusy(false)}
   }
@@ -111,7 +115,7 @@ export function Indexers(){
         <div className="ix-search"><Icon name="search" size={16}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search configured indexers..."/></div>
       </div>
 
-      <div className="ix-table-head"><span>Name</span><span>Type</span><span>Status</span><span>Categories</span><span>Last Check</span><span>Latency</span><span>Actions</span></div>
+      <div className="ix-table-head"><span>Name</span><span>Type</span><span>Status</span><span>Categories</span><span>Priority</span><span>Last Check</span><span>Latency</span><span>Actions</span></div>
       <div className="ix-installed-list">
         {configured.map(item=><div className="ix-installed-row" key={`${item.source}-${item.id}`}>
           <button className="ix-name-button" onClick={()=>void open(item)}>
@@ -121,6 +125,7 @@ export function Indexers(){
           <span><b className={`ix-type ${item.indexer_type==='private'?'private':'public'}`}>{typeLabel(item.indexer_type)}</b></span>
           <span><b className={`ix-runtime ${item.last_status}`}>{item.last_status==='online'?'● Online':item.last_status==='offline'?'● Offline':'● Not tested'}</b></span>
           <span className="ix-categories">{categoryGuess(item).map(c=><em key={c}>{c}</em>)}</span>
+          <span>{item.priority}</span>
           <span>{relative(item.last_checked_at)}</span>
           <span>{item.last_latency_ms!=null?`${item.last_latency_ms} ms`:'—'}</span>
           <span className="ix-row-actions">

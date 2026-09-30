@@ -55,9 +55,13 @@ export default function App() {
   const [theme,setTheme]=useState<Theme>(initialTheme())
   const [authChecked,setAuthChecked]=useState(false)
   const [authStatus,setAuthStatus]=useState<AuthStatus|null>(null)
+  const [authUnavailable,setAuthUnavailable]=useState(false)
 
   function refreshAuthStatus(){
-    return getAuthStatus().then(setAuthStatus).catch(()=>{}).finally(()=>setAuthChecked(true))
+    return getAuthStatus()
+      .then(status=>{setAuthStatus(status);setAuthUnavailable(false)})
+      .catch(()=>setAuthUnavailable(true))
+      .finally(()=>setAuthChecked(true))
   }
 
   useEffect(()=>{
@@ -66,6 +70,12 @@ export default function App() {
     window.addEventListener('oberiz-auth-required',onAuthRequired)
     return()=>window.removeEventListener('oberiz-auth-required',onAuthRequired)
   },[])
+
+  useEffect(()=>{
+    if(!authUnavailable)return
+    const retry=window.setInterval(()=>void refreshAuthStatus(),1000)
+    return()=>window.clearInterval(retry)
+  },[authUnavailable])
 
   useEffect(()=>{
     document.documentElement.dataset.theme=theme
@@ -104,8 +114,8 @@ export default function App() {
     try{await saveSettings({ui_theme:next})}catch{/* local preference still applies until backend is available */}
   }
 
-  if (!authChecked) return null
-  if (!authStatus || !authStatus.enabled) return <Setup onSuccess={()=>void refreshAuthStatus()} />
+  if (!authChecked || authUnavailable || !authStatus) return <div className="login-screen"><div className="card login-card"><img src="/oberiz-logo.png" alt="Oberiz" className="login-logo"/><h1>Connecting to Oberiz…</h1><p>The server is starting or reconnecting. This page will continue automatically.</p></div></div>
+  if (!authStatus.enabled) return <Setup onSuccess={()=>void refreshAuthStatus()} />
   if (!authStatus.authenticated) return <Login onSuccess={()=>void refreshAuthStatus()} />
 
   return <Layout page={page} onPage={navigate} theme={theme} onTheme={changeTheme}>

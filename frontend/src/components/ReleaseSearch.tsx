@@ -39,12 +39,14 @@ export function ReleaseSearch({
     const q=queryOverride?.trim()||`${title}${year?` ${year}`:''}`
     const params=new URLSearchParams({query:q,media_type:mediaType,tmdb_id:String(tmdbId),media_id:String(mediaId)})
     if(profileId)params.set('profile_id',String(profileId))
+    if(seasonNumber!==null&&seasonNumber!==undefined)params.set('season_number',String(seasonNumber))
+    if(episodeNumber!==null&&episodeNumber!==undefined)params.set('episode_number',String(episodeNumber))
     fetch(`/api/releases/search?${params.toString()}`)
       .then(async r=>{if(!r.ok)throw new Error(await r.text());return r.json() as Promise<Response>})
       .then(r=>{setRows(r.results);setFailures(r.failures);setProfileName(r.profile_name);setCutoff(r.cutoff_score)})
       .catch(e=>setError(e instanceof Error?e.message:String(e)))
       .finally(()=>setLoading(false))
-  },[open,title,year,tmdbId,mediaId,mediaType,profileId,queryOverride])
+  },[open,title,year,tmdbId,mediaId,mediaType,profileId,queryOverride,seasonNumber,episodeNumber])
 
   const accepted=useMemo(()=>rows.filter(x=>x.accepted),[rows])
   const rejected=useMemo(()=>rows.filter(x=>!x.accepted),[rows])

@@ -1,0 +1,488 @@
+openapi: 3.0.3
+info:
+  title: Oberiz Public API v1
+  version: "1.0.1"
+  license:
+    name: AGPL-3.0-or-later
+    url: https://www.gnu.org/licenses/agpl-3.0.html
+  description: |
+    Oberiz's native, authenticated API for external request clients (Cinetta
+    and similar). It lets a client register and query media requests; it is
+    not intended to be a full Radarr/Sonarr/Overseerr/Seerr compatibility
+    layer — that separate, optional adapter lives under `/radarr/api/v3/*`
+    and `/sonarr/api/v3/*` (gated by `overseerr.compat_enabled`) and is out
+    of scope for this document.
+
+    Enable **Public API v1** and generate a key from Settings before using
+    any of these endpoints. See `docs/Oberiz_API_Integraciones.md` for the
+    full prose write-up this spec mirrors.
+externalDocs:
+  description: Full integration guide (Spanish)
+  url: ./Oberiz_API_Integraciones.md
+
+servers:
+  - url: "http://{host}:2032/api/v1"
+    variables:
+      host:
+        default: localhost
+        description: Hostname or IP of the machine running Oberiz.
+
+security:
+  - ApiKeyAuth: []
+
+paths:
+  /status:
+    get:
+      operationId: getStatus
+      summary: Service status and version
+      tags: [Status]
+      responses:
+        "200":
+          description: Oberiz is reachable and the API key is valid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublicStatus"
+        "401":
+          $ref: "#/components/responses/InvalidApiKey"
+        "403":
+          $ref: "#/components/responses/ApiDisabled"
+        "412":
+          $ref: "#/components/responses/ApiKeyNotConfigured"
+
+  /quality-profiles:
+    get:
+      operationId: listQualityProfiles
+      summary: List enabled quality profiles
+      description: |
+        Returns only *enabled* movie and series quality profiles. Each one
+        carries `request_quality` (`standard` or `4k`), set per-profile in
+        Settings → Profiles via "4K profile for API requests" — clients
+        should filter candidate profiles by this flag before offering the
+        user a choice.
+      tags: [Profiles]
+      responses:
+        "200":
+          description: Enabled quality profiles, movies and series mixed.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/QualityProfile"
+        "401":
+          $ref: "#/components/responses/InvalidApiKey"
+        "403":
+          $ref: "#/components/responses/ApiDisabled"
+        "412":
+          $ref: "#/components/responses/ApiKeyNotConfigured"
+
+  /requests:
+    get:
+      operationId: listRequests
+      summary: List recent media requests
+      description: Returns the most recent 250 requests, newest first.
+      tags: [Requests]
+      responses:
+        "200":
+          description: Recent requests with their computed status.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/MediaRequestView"
+        "401":
+          $ref: "#/components/responses/InvalidApiKey"
+        "403":
+          $ref: "#/components/responses/ApiDisabled"
+        "412":
+          $ref: "#/components/responses/ApiKeyNotConfigured"
+    post:
+      operationId: createRequest
+      summary: Create (or idempotently reapply) a media request
+      description: |
+        Creates a request for a movie or series. Sending the same
+        `client_name` + `client_request_id` pair again is idempotent and
+        returns the existing request instead of creating a duplicate — except
+        for a series retried with a new `requested_seasons`, which updates
+        that series' season selection in place (e.g. adding season 2 once
+        it's out, to a series Cinetta already requested for season 1).
+
+        This does not trigger a global automation cycle: only the media item
+        just requested is processed, in the background, after the response
+        is returned.
+      tags: [Requests]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRequest"
+            examples:
+              movie:
+                summary: Minimal movie request
+                value:
+                  media_type: movie
+                  tmdb_id: 19995
+              seriesWithProfile:
+                summary: Series with an explicit profile and monitor mode
+                value:
+                  media_type: series
+                  tmdb_id: 1399
+                  quality_profile_id: 4
+                  client_name: cinetta
+                  client_request_id: "184"
+                  monitored: true
+                  monitor_mode: all
+                  requested_by: user_42
+      responses:
+        "201":
+          description: Request created (or the existing idempotent match returned).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MediaRequestView"
+        "400":
+          description: Invalid `media_type`, or `quality_profile_id` doesn't match `media_type`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "401":
+          $ref: "#/components/responses/InvalidApiKey"
+        "403":
+          $ref: "#/components/responses/ApiDisabled"
+        "412":
+          description: The Public API key, or TMDB, is not configured yet.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "502":
+          description: TMDB could not be reached or returned an error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+
+  /requests/{id}:
+    get:
+      operationId: getRequest
+      summary: Get one request's detail and computed status
+      tags: [Requests]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+          description: Oberiz's own request id (from the create/list response), not `client_request_id`.
+      responses:
+        "200":
+          description: The request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MediaRequestView"
+        "401":
+          $ref: "#/components/responses/InvalidApiKey"
+        "403":
+          $ref: "#/components/responses/ApiDisabled"
+        "404":
+          description: No request with that id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "412":
+          $ref: "#/components/responses/ApiKeyNotConfigured"
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-Api-Key
+      description: |
+        The key generated in Settings → Public API v1. `Authorization: Bearer`
+        is not supported by the current implementation.
+
+  responses:
+    InvalidApiKey:
+      description: Missing or incorrect `X-Api-Key`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorMessage"
+    ApiDisabled:
+      description: Public API v1 is disabled in Settings.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorMessage"
+    ApiKeyNotConfigured:
+      description: Public API v1 is enabled but no key has been generated yet.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorMessage"
+
+  schemas:
+    ErrorMessage:
+      type: string
+      description: Plain-text error message (not a JSON object).
+
+    PublicStatus:
+      type: object
+      required: [status, version]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+        version:
+          type: string
+          example: "1.0.1"
+
+    QualityRules:
+      type: object
+      description: Scoring weights and acceptance rules evaluated against each release.
+      required:
+        - resolutions
+        - sources
+        - codecs
+        - hdr
+        - audio
+        - reject_terms
+        - prefer_terms
+        - allow_unknown_resolution
+        - allow_unknown_source
+        - series_prefer_pack
+        - series_accept_complete
+      properties:
+        resolutions:
+          type: object
+          additionalProperties:
+            type: integer
+        sources:
+          type: object
+          additionalProperties:
+            type: integer
+        codecs:
+          type: object
+          additionalProperties:
+            type: integer
+        hdr:
+          type: object
+          additionalProperties:
+            type: integer
+        audio:
+          type: object
+          additionalProperties:
+            type: integer
+        reject_terms:
+          type: array
+          items:
+            type: string
+        prefer_terms:
+          type: object
+          additionalProperties:
+            type: integer
+        allow_unknown_resolution:
+          type: boolean
+        allow_unknown_source:
+          type: boolean
+        series_prefer_pack:
+          type: boolean
+        series_accept_complete:
+          type: boolean
+
+    QualityProfile:
+      type: object
+      required:
+        - id
+        - name
+        - media_type
+        - enabled
+        - upgrade_allowed
+        - cutoff_score
+        - min_seeders
+        - qbittorrent_category
+        - qbittorrent_tags_template
+        - is_default
+        - request_quality
+        - rules
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+        media_type:
+          type: string
+          enum: [movie, series]
+        enabled:
+          type: boolean
+        upgrade_allowed:
+          type: boolean
+        cutoff_score:
+          type: integer
+        min_seeders:
+          type: integer
+          format: int64
+        min_size_mb:
+          type: integer
+          format: int64
+          nullable: true
+        max_size_mb:
+          type: integer
+          format: int64
+          nullable: true
+        language_profile_id:
+          type: integer
+          format: int64
+          nullable: true
+        language_profile_name:
+          type: string
+          nullable: true
+        qbittorrent_category:
+          type: string
+        qbittorrent_tags_template:
+          type: string
+        is_default:
+          type: boolean
+        request_quality:
+          type: string
+          enum: [standard, "4k"]
+          description: Set via "4K profile for API requests" in Settings → Profiles.
+        rules:
+          $ref: "#/components/schemas/QualityRules"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CreateRequest:
+      type: object
+      required: [media_type, tmdb_id]
+      properties:
+        media_type:
+          type: string
+          enum: [movie, series]
+        tmdb_id:
+          type: integer
+          format: int64
+          description: TMDB id of the movie or series.
+        quality_profile_id:
+          type: integer
+          format: int64
+          nullable: true
+          description: Falls back to the default profile for `media_type` when omitted.
+        client_request_id:
+          type: string
+          nullable: true
+          description: Combined with `client_name`, makes creation idempotent.
+        client_name:
+          type: string
+          nullable: true
+          example: cinetta
+        monitored:
+          type: boolean
+          nullable: true
+          default: true
+        monitor_mode:
+          type: string
+          nullable: true
+          description: Series only. Defaults to `all` unless `requested_seasons` is set.
+        requested_seasons:
+          type: array
+          nullable: true
+          items:
+            type: integer
+          description: Series only — the exact season numbers to monitor.
+        monitor_future_seasons:
+          type: boolean
+          nullable: true
+          default: false
+          description: Series only — keep monitoring seasons that air later, without activating past unselected seasons.
+        requested_by:
+          type: string
+          nullable: true
+          description: Free-text audit label.
+
+    MediaRequestView:
+      description: A `MediaRequestRow`'s fields, flattened, plus the computed `status` and resolved `title`.
+      allOf:
+        - $ref: "#/components/schemas/MediaRequestRow"
+        - type: object
+          required: [status, title]
+          properties:
+            status:
+              type: string
+              description: |
+                For movies: `available | downloading | searching | pending`.
+                For series: `available | downloading | searching | monitoring | pending`.
+                `pending` means no media item is associated with the request yet.
+            title:
+              type: string
+              nullable: true
+
+    MediaRequestRow:
+      type: object
+      required:
+        - id
+        - media_type
+        - tmdb_id
+        - monitored
+        - monitor_future_seasons
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        media_type:
+          type: string
+          enum: [movie, series]
+        tmdb_id:
+          type: integer
+          format: int64
+        media_id:
+          type: integer
+          format: int64
+          nullable: true
+        quality_profile_id:
+          type: integer
+          format: int64
+          nullable: true
+        client_request_id:
+          type: string
+          nullable: true
+        client_name:
+          type: string
+          nullable: true
+        monitored:
+          type: boolean
+        monitor_mode:
+          type: string
+          nullable: true
+        requested_seasons:
+          type: string
+          nullable: true
+          description: JSON-encoded array of season numbers, as stored (not a native array).
+        monitor_future_seasons:
+          type: boolean
+        requested_by:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time

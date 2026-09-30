@@ -1,0 +1,20 @@
+version: 2
+updates:
+  # Pinning Docker base images to a digest (see Dockerfile) only stays secure
+  # if something keeps that digest current — this is that something.
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
+  - package-ecosystem: cargo
+    directory: "/backend"
+    schedule:
+      interval: weekly
+  - package-ecosystem: npm
+    directory: "/frontend"
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly

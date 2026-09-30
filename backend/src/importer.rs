@@ -1,7 +1,14 @@
+mod naming;
+mod transfer;
+
 use axum::{
     Json,
     extract::{Path as AxumPath, State},
     http::StatusCode,
+};
+use naming::{
+    parse_absolute_episode, parse_episode_numbers, render_series_template, render_template,
+    sanitize_name,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::QueryBuilder;
@@ -11,6 +18,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use tokio::time::{Duration, sleep};
+use transfer::{collect_media_files, transfer_file};
 
 use crate::{AppState, history, qbittorrent, releases, settings};
 
@@ -20,7 +28,7 @@ use crate::{AppState, history, qbittorrent, releases, settings};
 pub(crate) async fn reconcile_missing_torrents(
     state: &AppState,
 ) -> Result<usize, (StatusCode, String)> {
-    let torrents = qbittorrent::list_torrents_internal(state).await?;
+    let torrents = state.download_client.list_torrents(state).await?;
     let present: HashSet<String> = torrents.into_iter().map(|torrent| torrent.hash).collect();
     let jobs = sqlx::query_as::<_, (i64, String, Option<String>)>(
         r#"
@@ -129,10 +137,9 @@ pub fn spawn_import_scheduler(state: AppState) {
             if setting_bool(&state, "import.enabled", true)
                 .await
                 .unwrap_or(true)
+                && let Err(error) = run_cycle(&state).await
             {
-                if let Err(error) = run_cycle(&state).await {
-                    eprintln!("[IMPORTER] cycle error: {}", error.1);
-                }
+                tracing::error!(error = %error.1, "importer cycle failed");
             }
             sleep(Duration::from_secs(10)).await;
         }
@@ -303,17 +310,19 @@ pub async fn reseed(
     }
 
     let base_string = base.to_string_lossy().to_string();
-    let qb_hash = qbittorrent::add_torrent_bytes_with_options(
-        &state,
-        bytes,
-        &job.category,
-        &job.release_title,
-        &job.qbittorrent_tags,
-        Some(job.id),
-        Some(&base_string),
-        true,
-    )
-    .await?;
+    let qb_hash = state
+        .download_client
+        .add_torrent_file(
+            &state,
+            bytes,
+            &job.category,
+            &job.release_title,
+            &job.qbittorrent_tags,
+            Some(job.id),
+            Some(&base_string),
+            true,
+        )
+        .await?;
     let _ =
         sqlx::query("UPDATE download_jobs SET qb_hash=?,updated_at=CURRENT_TIMESTAMP WHERE id=?")
             .bind(&qb_hash)
@@ -338,7 +347,7 @@ pub async fn reseed(
 }
 
 async fn run_cycle(state: &AppState) -> Result<(), (StatusCode, String)> {
-    let torrents = qbittorrent::list_torrents_internal(state).await?;
+    let torrents = state.download_client.list_torrents(state).await?;
 
     for torrent in &torrents {
         let job_id = sqlx::query_scalar::<_, i64>(
@@ -507,15 +516,16 @@ async fn import_job(
         "info",
     )
     .await;
-    println!(
-        "[IMPORTER] imported job={} {} -> {}",
-        job.id,
-        source.display(),
-        library_root.display()
+    tracing::info!(
+        job_id = job.id,
+        source = %source.display(),
+        destination = %library_root.display(),
+        "import completed"
     );
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn copy_payload(
     state: &AppState,
     job: &DownloadJob,
@@ -597,7 +607,7 @@ async fn copy_payload(
                 fallback_rel
             }
         } else if source.is_file() || files.len() == 1 {
-            let file_name = if rename {
+            if rename {
                 let template = settings::get_value(&state.db, "import.movie_template")
                     .await
                     .map_err(internal)?
@@ -613,8 +623,7 @@ async fn copy_payload(
                     .and_then(|x| x.to_str())
                     .unwrap_or("media")
                     .to_string()
-            };
-            file_name
+            }
         } else {
             src.strip_prefix(source)
                 .unwrap_or(src)
@@ -652,59 +661,6 @@ async fn copy_payload(
     Ok(mappings)
 }
 
-fn transfer_file(src: &Path, dst: &Path, method: &str) -> std::io::Result<()> {
-    match method {
-        "hardlink" => fs::hard_link(src, dst),
-        "copy" => fs::copy(src, dst).map(|_| ()),
-        "move" => fs::rename(src, dst),
-        _ => match fs::hard_link(src, dst) {
-            Ok(()) => Ok(()),
-            Err(_) => fs::copy(src, dst).map(|_| ()),
-        },
-    }
-}
-
-fn collect_media_files(path: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
-    const MEDIA_EXTS: &[&str] = &[
-        "mkv", "mp4", "avi", "m4v", "mov", "ts", "m2ts", "wmv", "webm",
-    ];
-    if path.is_file() {
-        let ext = path
-            .extension()
-            .and_then(|x| x.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        if MEDIA_EXTS.contains(&ext.as_str()) {
-            out.push(path.to_path_buf());
-        }
-        return Ok(());
-    }
-    for entry in fs::read_dir(path)? {
-        let p = entry?.path();
-        if p.is_dir() {
-            collect_media_files(&p, out)?;
-        } else {
-            let name = p
-                .file_name()
-                .and_then(|x| x.to_str())
-                .unwrap_or("")
-                .to_ascii_lowercase();
-            if name.contains("sample") {
-                continue;
-            }
-            let ext = p
-                .extension()
-                .and_then(|x| x.to_str())
-                .unwrap_or("")
-                .to_ascii_lowercase();
-            if MEDIA_EXTS.contains(&ext.as_str()) {
-                out.push(p);
-            }
-        }
-    }
-    Ok(())
-}
-
 async fn save_torrent_metadata(
     state: &AppState,
     job: &DownloadJob,
@@ -718,7 +674,10 @@ async fn save_torrent_metadata(
     } else {
         &torrent.hash
     };
-    let bytes = qbittorrent::export_torrent(state, hash).await?;
+    let bytes = state
+        .download_client
+        .export_torrent_file(state, hash)
+        .await?;
     let base = settings::get_value(&state.db, "import.torrent_metadata_path")
         .await
         .map_err(internal)?
@@ -764,7 +723,10 @@ async fn maybe_cleanup(
 
     let hash = job.qb_hash.as_deref().unwrap_or(&torrent.hash);
     let delete_files = policy.cleanup_mode == "remove_torrent_and_original";
-    qbittorrent::delete_torrent_internal(state, hash, delete_files).await?;
+    state
+        .download_client
+        .delete_torrent(state, hash, delete_files)
+        .await?;
     sqlx::query("UPDATE download_jobs SET status='cleaned',cleaned_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?")
         .bind(job.id).execute(&state.db).await.map_err(internal)?;
     history::record(
@@ -780,11 +742,11 @@ async fn maybe_cleanup(
         "info",
     )
     .await;
-    println!(
-        "[IMPORTER] cleanup job={} ratio={:.2} seed_minutes={}",
-        job.id,
-        torrent.ratio,
-        torrent.seeding_time / 60
+    tracing::info!(
+        job_id = job.id,
+        ratio = torrent.ratio,
+        seed_minutes = torrent.seeding_time / 60,
+        "torrent cleanup completed"
     );
     Ok(())
 }
@@ -836,29 +798,6 @@ fn tag_job_id(tags: &str) -> Option<i64> {
     })
 }
 
-fn parse_episode_numbers(name: &str) -> Option<(i32, i32, Option<i32>)> {
-    let patterns = [
-        r"(?i)S(\d{1,2})E(\d{1,3})(?:[-_. ]?E?(\d{1,3}))?",
-        r"(?i)(\d{1,2})x(\d{1,3})(?:[-_. ]?(\d{1,3}))?",
-    ];
-    for pattern in patterns {
-        let re = regex::Regex::new(pattern).ok()?;
-        if let Some(caps) = re.captures(name) {
-            let season = caps.get(1)?.as_str().parse().ok()?;
-            let first = caps.get(2)?.as_str().parse().ok()?;
-            let last = caps.get(3).and_then(|m| m.as_str().parse().ok());
-            return Some((season, first, last));
-        }
-    }
-    None
-}
-
-fn parse_absolute_episode(name: &str) -> Option<i32> {
-    let re = regex::Regex::new(r"(?i)(?:^|[ ._\-])(?:EP?|EPISODE)[ ._\-]?(\d{1,3})(?:[ ._\-]|$)")
-        .ok()?;
-    re.captures(name)?.get(1)?.as_str().parse().ok()
-}
-
 async fn link_series_file(
     state: &AppState,
     job: &DownloadJob,
@@ -901,59 +840,6 @@ async fn link_series_file(
         }
     }
     Ok(())
-}
-
-fn render_series_template(
-    template: &str,
-    title: &str,
-    year: Option<i32>,
-    parsed: &releases::ParsedRelease,
-    season: i32,
-    episode: i32,
-    episode_title: &str,
-) -> String {
-    let mut value = render_template(template, title, year, parsed)
-        .replace("{Season}", &season.to_string())
-        .replace("{Episode}", &episode.to_string())
-        .replace("{Season:00}", &format!("{season:02}"))
-        .replace("{Episode:00}", &format!("{episode:02}"))
-        .replace("{EpisodeTitle}", episode_title);
-    while value.contains("  ") {
-        value = value.replace("  ", " ");
-    }
-    value.trim().trim_matches('-').trim().to_string()
-}
-
-fn render_template(
-    template: &str,
-    title: &str,
-    year: Option<i32>,
-    parsed: &releases::ParsedRelease,
-) -> String {
-    let mut value = template
-        .replace("{Title}", title)
-        .replace("{Year}", &year.map(|v| v.to_string()).unwrap_or_default())
-        .replace("{Resolution}", parsed.resolution.as_deref().unwrap_or(""))
-        .replace("{Source}", parsed.source.as_deref().unwrap_or(""))
-        .replace("{Codec}", parsed.codec.as_deref().unwrap_or(""))
-        .replace("{HDR}", parsed.hdr.as_deref().unwrap_or(""))
-        .replace("{Audio}", parsed.audio.as_deref().unwrap_or(""))
-        .replace("{Language}", parsed.language.as_deref().unwrap_or(""));
-    while value.contains("  ") {
-        value = value.replace("  ", " ");
-    }
-    value.trim().trim_matches('-').trim().to_string()
-}
-
-fn sanitize_name(value: &str) -> String {
-    let invalid = ['<', '>', ':', '"', '/', '\\', '|', '?', '*'];
-    value
-        .chars()
-        .map(|c| if invalid.contains(&c) { ' ' } else { c })
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 fn method_used(method: &str, _source: &Path, _library: &Path) -> String {

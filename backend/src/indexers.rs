@@ -31,6 +31,7 @@ pub struct IndexerSummary {
     pub valid: bool,
     pub configured: bool,
     pub enabled: bool,
+    pub priority: i64,
     pub settings_count: usize,
     pub last_status: String,
     pub last_message: Option<String>,
@@ -597,23 +598,35 @@ async fn scan_all(state: &AppState) -> Result<IndexerListResponse, (StatusCode, 
     let upstream = upstream_folder(state).await?;
     let custom = custom_folder(state).await?;
 
-    let config_rows: Vec<(String, bool)> =
-        sqlx::query_as("SELECT indexer_id, enabled FROM indexer_configs")
+    let config_rows: Vec<(String, bool, String)> =
+        sqlx::query_as("SELECT indexer_id, enabled, config_json FROM indexer_configs")
             .fetch_all(&state.db)
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let config_map: std::collections::HashMap<String, bool> = config_rows.into_iter().collect();
+    let config_map: std::collections::HashMap<String, (bool, i64)> = config_rows
+        .into_iter()
+        .map(|(id, enabled, config)| {
+            let priority = serde_json::from_str::<serde_json::Value>(&config)
+                .ok()
+                .and_then(|value| value.get("oberiz_priority").cloned())
+                .and_then(|value| {
+                    value
+                        .as_i64()
+                        .or_else(|| value.as_str().and_then(|value| value.parse::<i64>().ok()))
+                })
+                .unwrap_or(100);
+            (id, (enabled, priority))
+        })
+        .collect();
 
+    #[allow(clippy::type_complexity)]
     let runtime_rows: Vec<(String,String,Option<String>,Option<i64>,Option<String>)> = sqlx::query_as(
         "SELECT indexer_id,last_status,last_message,last_latency_ms,last_checked_at FROM indexer_runtime"
     ).fetch_all(&state.db).await
       .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let runtime_map: std::collections::HashMap<
-        String,
-        (String, Option<String>, Option<i64>, Option<String>),
-    > = runtime_rows
+    let runtime_map: IndexerRuntimeMap = runtime_rows
         .into_iter()
         .map(|(id, status, msg, latency, checked)| (id, (status, msg, latency, checked)))
         .collect();
@@ -622,7 +635,7 @@ async fn scan_all(state: &AppState) -> Result<IndexerListResponse, (StatusCode, 
     scan_folder(&upstream, "upstream", &config_map, &runtime_map, &mut items).await?;
     scan_folder(&custom, "custom", &config_map, &runtime_map, &mut items).await?;
 
-    items.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    items.sort_by_key(|a| a.name.to_lowercase());
 
     let upstream_count = items.iter().filter(|x| x.source == "upstream").count();
     let custom_count = items.iter().filter(|x| x.source == "custom").count();
@@ -640,14 +653,14 @@ async fn scan_all(state: &AppState) -> Result<IndexerListResponse, (StatusCode, 
     })
 }
 
+type IndexerRuntimeMap =
+    std::collections::HashMap<String, (String, Option<String>, Option<i64>, Option<String>)>;
+
 async fn scan_folder(
     folder: &FsPath,
     source: &str,
-    config_map: &std::collections::HashMap<String, bool>,
-    runtime_map: &std::collections::HashMap<
-        String,
-        (String, Option<String>, Option<i64>, Option<String>),
-    >,
+    config_map: &std::collections::HashMap<String, (bool, i64)>,
+    runtime_map: &IndexerRuntimeMap,
     out: &mut Vec<IndexerSummary>,
 ) -> Result<(), (StatusCode, String)> {
     if !folder.exists() {
@@ -690,6 +703,7 @@ async fn scan_folder(
                     valid: false,
                     configured: false,
                     enabled: false,
+                    priority: 100,
                     settings_count: 0,
                     last_status: "unknown".into(),
                     last_message: None,
@@ -720,6 +734,7 @@ async fn scan_folder(
                     valid: false,
                     configured: false,
                     enabled: false,
+                    priority: 100,
                     settings_count: 0,
                     last_status: "unknown".into(),
                     last_message: None,
@@ -755,7 +770,7 @@ async fn scan_folder(
         let valid = missing.is_empty();
 
         let configured = config_map.contains_key(&id);
-        let enabled = config_map.get(&id).copied().unwrap_or(false);
+        let (enabled, priority) = config_map.get(&id).copied().unwrap_or((false, 100));
         let (last_status, last_message, last_latency_ms, last_checked_at) = runtime_map
             .get(&id)
             .cloned()
@@ -777,6 +792,7 @@ async fn scan_folder(
             valid,
             configured,
             enabled,
+            priority,
             settings_count,
             last_status,
             last_message,
@@ -877,7 +893,7 @@ fn yaml_string_list(root: &Value, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 fn mapping_value<'a>(root: &'a Value, key: &str) -> Option<&'a Value> {
-    root.as_mapping()?.get(&Value::String(key.to_string()))
+    root.as_mapping()?.get(Value::String(key.to_string()))
 }
 fn file_stem(path: &FsPath) -> String {
     path.file_stem()

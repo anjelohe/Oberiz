@@ -135,8 +135,8 @@ pub(crate) async fn create_request_internal(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    if let (Some(client_name), Some(client_request_id)) = (client_name, client_request_id) {
-        if let Some((id,media_type,media_id))=sqlx::query_as::<_,(i64,String,Option<i64>)>("SELECT id,media_type,media_id FROM media_requests WHERE client_name=? AND client_request_id=? ORDER BY id DESC LIMIT 1")
+    if let (Some(client_name), Some(client_request_id)) = (client_name, client_request_id)
+        && let Some((id,media_type,media_id))=sqlx::query_as::<_,(i64,String,Option<i64>)>("SELECT id,media_type,media_id FROM media_requests WHERE client_name=? AND client_request_id=? ORDER BY id DESC LIMIT 1")
             .bind(client_name).bind(client_request_id).fetch_optional(&state.db).await.map_err(internal)? {
             // A manual deletion of a movie/series must not make the client idempotency key permanent.
             // Discard only an orphaned request; healthy retries still return the original request.
@@ -152,7 +152,6 @@ pub(crate) async fn create_request_internal(
             if exists && !(payload.media_type=="series" && payload.requested_seasons.is_some()) { return load_view(state,id).await; }
             sqlx::query("DELETE FROM media_requests WHERE id=?").bind(id).execute(&state.db).await.map_err(internal)?;
         }
-    }
     let monitored = payload.monitored.unwrap_or(true);
     let requested_seasons = payload
         .requested_seasons
@@ -328,11 +327,11 @@ async fn authorize(state: &AppState, headers: &HeaderMap) -> Result<(), (StatusC
     if !enabled {
         return Err((StatusCode::FORBIDDEN, "Public API is disabled".into()));
     }
-    let expected = settings::get_value(&state.db, "api.key")
+    let expected_hash = settings::get_value(&state.db, "api.key_hash")
         .await
         .map_err(internal)?
         .unwrap_or_default();
-    if expected.is_empty() {
+    if expected_hash.is_empty() {
         return Err((
             StatusCode::PRECONDITION_REQUIRED,
             "Public API key is not configured".into(),
@@ -342,7 +341,7 @@ async fn authorize(state: &AppState, headers: &HeaderMap) -> Result<(), (StatusC
         .get("x-api-key")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    if provided != expected {
+    if provided.is_empty() || settings::hash_api_key(provided) != expected_hash {
         return Err((StatusCode::UNAUTHORIZED, "Invalid API key".into()));
     }
     Ok(())

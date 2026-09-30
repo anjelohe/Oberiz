@@ -21,7 +21,7 @@ pub struct QBittorrentTestResponse {
     pub auth_method: &'static str,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct QBittorrentTorrent {
     #[serde(default)]
     pub hash: String,
@@ -241,24 +241,8 @@ pub async fn test_connection(
 pub async fn list_downloads(
     State(state): State<AppState>,
 ) -> Result<Json<DownloadListResponse>, (StatusCode, String)> {
-    let config = load_config(&state).await?;
-
-    let result = authenticated_get(
-        &config,
-        "/api/v2/torrents/info?filter=all&sort=added_on&reverse=true",
-    )
-    .await?;
-
-    let torrents = result
-        .response
-        .json::<Vec<QBittorrentTorrent>>()
-        .await
-        .map_err(|error| {
-            (
-                StatusCode::BAD_GATEWAY,
-                format!("No se pudo interpretar la lista de torrents de qBittorrent: {error}"),
-            )
-        })?;
+    let mut torrents = list_torrents_internal(&state).await?;
+    torrents.sort_by_key(|torrent| std::cmp::Reverse(torrent.added_on));
 
     Ok(Json(DownloadListResponse {
         status: "ok",
@@ -293,7 +277,7 @@ pub async fn list_categories(
             save_path: value.save_path,
         })
         .collect::<Vec<_>>();
-    categories.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    categories.sort_by_key(|a| a.name.to_lowercase());
     Ok(Json(QBittorrentCategoryListResponse {
         status: "ok",
         categories,
@@ -442,21 +426,21 @@ pub async fn add_magnet(
         ));
     }
 
-    if let Some(hash) = magnet_hex_hash(magnet) {
-        if torrent_by_hash(&state, &hash).await?.is_some() {
-            if !payload.category.trim().is_empty() {
-                authenticated_form_post(
-                    &config,
-                    "/api/v2/torrents/setCategory",
-                    &[
-                        ("hashes", hash.clone()),
-                        ("category", payload.category.trim().to_string()),
-                    ],
-                )
-                .await?;
-            }
-            return Ok(Json(ActionResponse { status: "ok" }));
+    if let Some(hash) = magnet_hex_hash(magnet)
+        && torrent_by_hash(&state, &hash).await?.is_some()
+    {
+        if !payload.category.trim().is_empty() {
+            authenticated_form_post(
+                &config,
+                "/api/v2/torrents/setCategory",
+                &[
+                    ("hashes", hash.clone()),
+                    ("category", payload.category.trim().to_string()),
+                ],
+            )
+            .await?;
         }
+        return Ok(Json(ActionResponse { status: "ok" }));
     }
 
     let mut fields = vec![("urls", magnet.to_string())];
@@ -652,15 +636,8 @@ async fn authenticated_multipart_post(
         .await
         .map_err(|error| connection_error(&base_url, error))?;
 
-    if basic_response.status().is_success() {
+    if multipart_add_accepted(basic_response, "añadir el magnet").await? {
         return Ok(());
-    }
-
-    if !matches!(
-        basic_response.status(),
-        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
-    ) {
-        return Err(qb_status_error(basic_response.status(), "añadir el magnet"));
     }
 
     login_cookie(&client, config).await?;
@@ -676,14 +653,43 @@ async fn authenticated_multipart_post(
         .await
         .map_err(|error| connection_error(&base_url, error))?;
 
-    if !response.status().is_success() {
-        return Err(qb_status_error(
-            response.status(),
-            "añadir el magnet tras iniciar sesión",
+    if !multipart_add_accepted(response, "añadir el magnet tras iniciar sesión").await? {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "qBittorrent rechazó el usuario o la contraseña".into(),
         ));
     }
 
     Ok(())
+}
+
+/// qBittorrent can reply with HTTP 200 and the literal body `Fails.` when it
+/// rejects a torrent or magnet. HTTP status alone would make Oberiz wait for a
+/// torrent that was never created.
+async fn multipart_add_accepted(
+    response: reqwest::Response,
+    action: &str,
+) -> Result<bool, (StatusCode, String)> {
+    let status = response.status();
+    if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
+        return Ok(false);
+    }
+    if !status.is_success() {
+        return Err(qb_status_error(status, action));
+    }
+    let body = response.text().await.map_err(|error| {
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("No se pudo leer la respuesta de qBittorrent: {error}"),
+        )
+    })?;
+    if body.trim().eq_ignore_ascii_case("fails.") {
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            format!("qBittorrent rechazó la solicitud al {action} (respuesta: Fails.)"),
+        ));
+    }
+    Ok(true)
 }
 
 fn multipart_body(boundary: &str, fields: &[(&str, String)]) -> Vec<u8> {
@@ -726,7 +732,19 @@ async fn login_cookie(
         .map_err(|error| connection_error(&base_url, error))?;
 
     if login_response.status().is_success() {
-        return Ok(());
+        let body = login_response.text().await.map_err(|error| {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("No se pudo leer la respuesta de login de qBittorrent: {error}"),
+            )
+        })?;
+        if !body.trim().eq_ignore_ascii_case("fails.") {
+            return Ok(());
+        }
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "qBittorrent rechazó el usuario o la contraseña".to_string(),
+        ));
     }
 
     if login_response.status() == StatusCode::FORBIDDEN {
@@ -747,7 +765,7 @@ fn build_client() -> Result<reqwest::Client, (StatusCode, String)> {
     reqwest::Client::builder()
         .cookie_store(true)
         .timeout(Duration::from_secs(10))
-        .user_agent("Oberiz/0.1.0")
+        .user_agent(concat!("Oberiz/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|error| {
             (
@@ -880,7 +898,7 @@ fn database_error(error: sqlx::Error) -> (StatusCode, String) {
 fn oberiz_tags(user_tags: &str, _job_id: Option<i64>, _reseed: bool) -> String {
     let mut tags = Vec::<String>::new();
     for raw in user_tags.split(',') {
-        let clean = raw.trim().replace('\r', " ").replace('\n', " ");
+        let clean = raw.trim().replace(['\r', '\n'], " ");
         if !clean.is_empty() && !tags.iter().any(|x| x.eq_ignore_ascii_case(&clean)) {
             tags.push(clean);
         }
@@ -912,10 +930,10 @@ fn magnet_hex_hash(url: &str) -> Option<String> {
             if let Some(hash) = value
                 .strip_prefix("urn:btih:")
                 .or_else(|| value.strip_prefix("URN:BTIH:"))
+                && hash.len() == 40
+                && hash.chars().all(|c| c.is_ascii_hexdigit())
             {
-                if hash.len() == 40 && hash.chars().all(|c| c.is_ascii_hexdigit()) {
-                    return Some(hash.to_ascii_lowercase());
-                }
+                return Some(hash.to_ascii_lowercase());
             }
         }
     }
@@ -926,14 +944,14 @@ async fn torrent_by_hash(
     state: &AppState,
     hash: &str,
 ) -> Result<Option<QBittorrentTorrent>, (StatusCode, String)> {
-    Ok(list_torrents_internal(state)
+    Ok(list_torrents_fresh(state)
         .await?
         .into_iter()
         .find(|t| t.hash.eq_ignore_ascii_case(hash)))
 }
 
 async fn snapshot_hashes(state: &AppState) -> Result<HashSet<String>, (StatusCode, String)> {
-    Ok(list_torrents_internal(state)
+    Ok(list_torrents_fresh(state)
         .await?
         .into_iter()
         .map(|t| t.hash)
@@ -948,54 +966,53 @@ async fn wait_for_new_torrent(
 ) -> Result<QBittorrentTorrent, (StatusCode, String)> {
     let wanted_title = normalize_title(title);
     for _ in 0..40 {
-        let torrents = list_torrents_internal(state).await?;
-        if let Some(expected) = expected_hash {
-            if let Some(torrent) = torrents
+        let torrents = list_torrents_fresh(state).await?;
+        if let Some(expected) = expected_hash
+            && let Some(torrent) = torrents
                 .iter()
                 .find(|t| t.hash.eq_ignore_ascii_case(expected))
-            {
-                return Ok(QBittorrentTorrent {
-                    hash: torrent.hash.clone(),
-                    name: torrent.name.clone(),
-                    size: torrent.size,
-                    total_size: torrent.total_size,
-                    amount_left: torrent.amount_left,
-                    progress: torrent.progress,
-                    availability: torrent.availability,
-                    dlspeed: torrent.dlspeed,
-                    upspeed: torrent.upspeed,
-                    dl_limit: torrent.dl_limit,
-                    up_limit: torrent.up_limit,
-                    downloaded: torrent.downloaded,
-                    downloaded_session: torrent.downloaded_session,
-                    uploaded: torrent.uploaded,
-                    uploaded_session: torrent.uploaded_session,
-                    eta: torrent.eta,
-                    ratio: torrent.ratio,
-                    ratio_limit: torrent.ratio_limit,
-                    num_seeds: torrent.num_seeds,
-                    num_complete: torrent.num_complete,
-                    num_leechs: torrent.num_leechs,
-                    num_incomplete: torrent.num_incomplete,
-                    state: torrent.state.clone(),
-                    priority: torrent.priority,
-                    force_start: torrent.force_start,
-                    seq_dl: torrent.seq_dl,
-                    f_l_piece_prio: torrent.f_l_piece_prio,
-                    super_seeding: torrent.super_seeding,
-                    category: torrent.category.clone(),
-                    tags: torrent.tags.clone(),
-                    tracker: torrent.tracker.clone(),
-                    save_path: torrent.save_path.clone(),
-                    content_path: torrent.content_path.clone(),
-                    magnet_uri: torrent.magnet_uri.clone(),
-                    added_on: torrent.added_on,
-                    completion_on: torrent.completion_on,
-                    last_activity: torrent.last_activity,
-                    time_active: torrent.time_active,
-                    seeding_time: torrent.seeding_time,
-                });
-            }
+        {
+            return Ok(QBittorrentTorrent {
+                hash: torrent.hash.clone(),
+                name: torrent.name.clone(),
+                size: torrent.size,
+                total_size: torrent.total_size,
+                amount_left: torrent.amount_left,
+                progress: torrent.progress,
+                availability: torrent.availability,
+                dlspeed: torrent.dlspeed,
+                upspeed: torrent.upspeed,
+                dl_limit: torrent.dl_limit,
+                up_limit: torrent.up_limit,
+                downloaded: torrent.downloaded,
+                downloaded_session: torrent.downloaded_session,
+                uploaded: torrent.uploaded,
+                uploaded_session: torrent.uploaded_session,
+                eta: torrent.eta,
+                ratio: torrent.ratio,
+                ratio_limit: torrent.ratio_limit,
+                num_seeds: torrent.num_seeds,
+                num_complete: torrent.num_complete,
+                num_leechs: torrent.num_leechs,
+                num_incomplete: torrent.num_incomplete,
+                state: torrent.state.clone(),
+                priority: torrent.priority,
+                force_start: torrent.force_start,
+                seq_dl: torrent.seq_dl,
+                f_l_piece_prio: torrent.f_l_piece_prio,
+                super_seeding: torrent.super_seeding,
+                category: torrent.category.clone(),
+                tags: torrent.tags.clone(),
+                tracker: torrent.tracker.clone(),
+                save_path: torrent.save_path.clone(),
+                content_path: torrent.content_path.clone(),
+                magnet_uri: torrent.magnet_uri.clone(),
+                added_on: torrent.added_on,
+                completion_on: torrent.completion_on,
+                last_activity: torrent.last_activity,
+                time_active: torrent.time_active,
+                seeding_time: torrent.seeding_time,
+            });
         }
 
         let mut fresh = torrents
@@ -1005,15 +1022,15 @@ async fn wait_for_new_torrent(
         if fresh.len() == 1 {
             return Ok(fresh.remove(0));
         }
-        if !wanted_title.is_empty() {
-            if let Some(pos) = fresh.iter().position(|t| {
+        if !wanted_title.is_empty()
+            && let Some(pos) = fresh.iter().position(|t| {
                 let current = normalize_title(&t.name);
                 current == wanted_title
                     || current.contains(&wanted_title)
                     || wanted_title.contains(&current)
-            }) {
-                return Ok(fresh.remove(pos));
-            }
+            })
+        {
+            return Ok(fresh.remove(pos));
         }
         sleep(Duration::from_millis(250)).await;
     }
@@ -1058,7 +1075,7 @@ async fn apply_and_verify_metadata(
     }
 
     for _ in 0..20 {
-        let torrents = list_torrents_internal(state).await?;
+        let torrents = list_torrents_fresh(state).await?;
         if let Some(torrent) = torrents
             .into_iter()
             .find(|t| t.hash.eq_ignore_ascii_case(hash))
@@ -1068,6 +1085,7 @@ async fn apply_and_verify_metadata(
             let actual = tag_set(&torrent.tags);
             let tags_ok = wanted.iter().all(|tag| actual.contains(tag));
             if category_ok && tags_ok {
+                invalidate_torrent_cache(state).await;
                 return Ok(torrent);
             }
         }
@@ -1086,6 +1104,26 @@ async fn apply_and_verify_metadata(
 pub(crate) async fn list_torrents_internal(
     state: &AppState,
 ) -> Result<Vec<QBittorrentTorrent>, (StatusCode, String)> {
+    const CACHE_TTL: Duration = Duration::from_secs(8);
+    let mut cache = state.torrent_list_cache.lock().await;
+    if let Some(cached) = cache.as_ref()
+        && cached.fetched_at.elapsed() < CACHE_TTL
+    {
+        return Ok(cached.torrents.clone());
+    }
+    let torrents = list_torrents_fresh(state).await?;
+    *cache = Some(crate::TorrentListCache {
+        fetched_at: Instant::now(),
+        torrents: torrents.clone(),
+    });
+    Ok(torrents)
+}
+
+/// A direct API read for operations that must observe a just-added, changed or
+/// deleted torrent. UI polling deliberately goes through the short cache above.
+async fn list_torrents_fresh(
+    state: &AppState,
+) -> Result<Vec<QBittorrentTorrent>, (StatusCode, String)> {
     let config = load_config(state).await?;
     let result = authenticated_get(&config, "/api/v2/torrents/info?filter=all").await?;
     result
@@ -1098,6 +1136,10 @@ pub(crate) async fn list_torrents_internal(
                 format!("No se pudo interpretar la lista de torrents de qBittorrent: {e}"),
             )
         })
+}
+
+async fn invalidate_torrent_cache(state: &AppState) {
+    *state.torrent_list_cache.lock().await = None;
 }
 
 pub(crate) async fn delete_torrent_internal(
@@ -1155,12 +1197,12 @@ pub(crate) async fn add_url(
     job_id: Option<i64>,
 ) -> Result<String, (StatusCode, String)> {
     let expected = magnet_hex_hash(url);
-    if let Some(hash) = expected.as_deref() {
-        if torrent_by_hash(state, hash).await?.is_some() {
-            let tags = oberiz_tags(user_tags, job_id, false);
-            let torrent = apply_and_verify_metadata(state, hash, category, &tags).await?;
-            return Ok(torrent.hash);
-        }
+    if let Some(hash) = expected.as_deref()
+        && torrent_by_hash(state, hash).await?.is_some()
+    {
+        let tags = oberiz_tags(user_tags, job_id, false);
+        let torrent = apply_and_verify_metadata(state, hash, category, &tags).await?;
+        return Ok(torrent.hash);
     }
     let before = snapshot_hashes(state).await?;
     let config = load_config(state).await?;
@@ -1189,20 +1231,7 @@ pub(crate) async fn add_url(
     Ok(torrent.hash)
 }
 
-pub(crate) async fn add_torrent_bytes(
-    state: &AppState,
-    bytes: Vec<u8>,
-    category: &str,
-    title: &str,
-    user_tags: &str,
-    job_id: Option<i64>,
-) -> Result<String, (StatusCode, String)> {
-    add_torrent_bytes_with_options(
-        state, bytes, category, title, user_tags, job_id, None, false,
-    )
-    .await
-}
-
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn add_torrent_bytes_with_options(
     state: &AppState,
     bytes: Vec<u8>,
@@ -1213,6 +1242,17 @@ pub(crate) async fn add_torrent_bytes_with_options(
     save_path: Option<&str>,
     reseed: bool,
 ) -> Result<String, (StatusCode, String)> {
+    // qBittorrent answers `Fails.` for an already-known torrent file. Detect
+    // v1/hybrid torrents by their metainfo hash first so a duplicate can be
+    // treated like the magnet path rather than a failed upload.
+    if let Some(info_hash) = crate::cardigann::torrent_v1_info_hash(&bytes)
+        && torrent_by_hash(state, &info_hash).await?.is_some()
+    {
+        let tags = oberiz_tags(user_tags, job_id, reseed);
+        let torrent = apply_and_verify_metadata(state, &info_hash, category, &tags).await?;
+        return Ok(torrent.hash);
+    }
+
     let before = snapshot_hashes(state).await?;
     let config = load_config(state).await?;
     let base_url = config.base_url();
@@ -1220,6 +1260,7 @@ pub(crate) async fn add_torrent_bytes_with_options(
     let url = format!("{base_url}/api/v2/torrents/add");
     let tags = oberiz_tags(user_tags, job_id, reseed);
 
+    #[allow(clippy::too_many_arguments)]
     async fn send(
         client: &reqwest::Client,
         url: &str,
@@ -1274,24 +1315,22 @@ pub(crate) async fn add_torrent_bytes_with_options(
     .await
     .map_err(|e| connection_error(&base_url, e))?;
 
-    let added = if response.status().is_success() {
+    let added = if multipart_add_accepted(response, "añadir el .torrent").await? {
         true
-    } else if matches!(
-        response.status(),
-        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
-    ) {
+    } else {
         login_cookie(&client, &config).await?;
         let response = send(
             &client, &url, &config, bytes, category, title, &tags, save_path, false,
         )
         .await
         .map_err(|e| connection_error(&base_url, e))?;
-        if !response.status().is_success() {
-            return Err(qb_status_error(response.status(), "añadir el .torrent"));
+        if !multipart_add_accepted(response, "añadir el .torrent tras iniciar sesión").await? {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                "qBittorrent rechazó el usuario o la contraseña".into(),
+            ));
         }
         true
-    } else {
-        return Err(qb_status_error(response.status(), "añadir el .torrent"));
     };
 
     if added {

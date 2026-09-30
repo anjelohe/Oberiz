@@ -68,9 +68,13 @@ pub fn spawn_scheduler(state: AppState) {
                 .unwrap_or(false)
             {
                 let s = run_cycle(&state).await;
-                println!(
-                    "[RSS] feeds={} new={} matched={} grabbed={} errors={}",
-                    s.feeds, s.new_items, s.matched, s.grabbed, s.errors
+                tracing::info!(
+                    feeds = s.feeds,
+                    new_items = s.new_items,
+                    matched = s.matched,
+                    grabbed = s.grabbed,
+                    errors = s.errors,
+                    "rss cycle completed"
                 );
             }
             let interval = setting_u64(&state, "rss.interval_minutes", 15)

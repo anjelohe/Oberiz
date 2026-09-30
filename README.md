@@ -2,7 +2,7 @@
 
 Self-hosted media automation for movies and series. Oberiz brings metadata, indexers, quality profiles, searches, qBittorrent, importing and the real library together in one application.
 
-**Current version: 1.0.0 — initial public release with secure admin access, media automation and ready-to-run packages.**
+**Current version: 1.0.1 — improved indexer searching, release selection and ready-to-run packages.**
 
 ## What it does
 
@@ -18,20 +18,20 @@ Add media from TMDB
 → rename, rescan, upgrade and record history
 ```
 
-For series, it manages seasons, episodes, monitoring and inherited profiles. Automation prefers a complete-series release when appropriate, then a season pack, then individual episodes. Active duplicate grabs are prevented through job state and magnet infohash tracking.
+For series, it manages seasons, episodes, monitoring and inherited profiles. Automation prefers a complete-series release when appropriate, then a season pack, then individual episodes. Season searches reject releases explicitly labelled for another season; profiles can use a distinct maximum size for episodes and season/complete packs. Active duplicate grabs are prevented through job state and magnet infohash tracking.
 
 ## Included features
 
 - Movies and series with TMDB metadata.
 - A real library with indexed files, availability, rescans and score-based upgrades.
-- Quality Profiles and Language Profiles, with default profiles per media type.
-- Cardigann indexers, an upstream catalogue and local private definitions.
+- Quality Profiles and Language Profiles, with default profiles per media type, cloning and independent episode/season-pack size limits for series.
+- Cardigann indexers, an upstream catalogue and local private definitions. Searches retry safely without a release year and with the original media title when needed; optional TVDB lookup supplies compatible series identifiers.
 - qBittorrent integration: connection checks, real categories, profile tags, progress and torrent controls.
 - Scheduled automation, importing, hardlinks/copy/move, reseeding and seed policies.
 - Per-indexer RSS: incremental sync, persistent deduplication, Wanted matching, scoring and traceable automatic grabs.
 - Calendar, History, Dashboard with real data and a Public API v1 for Cinetta.
 - Optional Radarr/Sonarr compatibility for clients such as Overseerr, isolated from the native API.
-- Local diagnostics without secrets and automated release-selection tests.
+- Local diagnostics without secrets, visible indexer priorities (optionally preferred by a quality profile) and automated release-selection tests.
 
 ## Architecture
 
@@ -50,12 +50,12 @@ Every release provides ready-to-run packages. No Rust, Node.js or frontend build
 
 | Platform | Download | Starts with |
 | --- | --- | --- |
-| Docker | `ghcr.io/anjelohe/oberiz:v1.0.0` | `docker compose up -d` |
-| Linux x86_64 | `oberiz-1.0.0-linux-x86_64.tar.gz` | `sudo ./install.sh` |
-| Windows x86_64 (portable) | `oberiz-1.0.0-windows-x86_64.zip` | `Start-Oberiz.bat` |
-| Windows x86_64 (installer) | `oberiz-1.0.0-windows-x86_64-setup.exe` | Setup assistant |
+| Docker | `ghcr.io/anjelohe/oberiz:v1.0.1` | `docker compose up -d` |
+| Linux x86_64 | `oberiz-1.0.1-linux-x86_64.tar.gz` | `sudo ./install.sh` |
+| Windows x86_64 (portable) | `oberiz-1.0.1-windows-x86_64.zip` | `Start-Oberiz.bat` |
+| Windows x86_64 (installer) | `oberiz-1.0.1-windows-x86_64-setup.exe` | Setup assistant |
 
-The packages are available from the [v1.0.0 release](https://github.com/anjelohe/Oberiz/releases/tag/v1.0.0). The release workflow also builds and attaches the Windows package whenever a version is published.
+The packages are available from the [v1.0.1 release](https://github.com/anjelohe/Oberiz/releases/tag/v1.0.1). The release workflow also builds and attaches the Windows package whenever a version is published.
 
 ## Support Oberiz
 
@@ -91,11 +91,11 @@ For an LXC without Docker, use the Linux package instead. It requires a distribu
 
 ## Linux installation
 
-The Linux package targets 64-bit Linux distributions using systemd. Download `oberiz-1.0.0-linux-x86_64.tar.gz` from the release, extract it and run:
+The Linux package targets 64-bit Linux distributions using systemd. Download `oberiz-1.0.1-linux-x86_64.tar.gz` from the release, extract it and run:
 
 ```bash
-tar -xzf oberiz-1.0.0-linux-x86_64.tar.gz
-cd oberiz-1.0.0-linux-x86_64
+tar -xzf oberiz-1.0.1-linux-x86_64.tar.gz
+cd oberiz-1.0.1-linux-x86_64
 sudo ./install.sh
 ```
 
@@ -105,13 +105,13 @@ The service uses the `oberiz` system account. Grant that account the required re
 
 ## Windows portable installation
 
-Download `oberiz-1.0.0-windows-x86_64.zip` from the release, extract it anywhere you want to keep Oberiz, then double-click `Start-Oberiz.bat`. It starts the included `Oberiz.exe` invisibly in the background and opens `http://127.0.0.1:2032`; no command window remains open.
+Download `oberiz-1.0.1-windows-x86_64.zip` from the release, extract it anywhere you want to keep Oberiz, then double-click `Start-Oberiz.bat`. It starts the included `Oberiz.exe` invisibly in the background and opens `http://127.0.0.1:2032`; no command window remains open.
 
 The `data` and `config` folders are created beside the executable, so the installation is portable and can be moved or backed up as one directory.
 
 ## Windows installer
 
-Download `oberiz-1.0.0-windows-x86_64-setup.exe` from the release and run it. The setup assistant installs Oberiz, creates Start Menu and optional desktop shortcuts, and offers to start it at the end. Oberiz then runs invisibly in the background, without a command window.
+Download `oberiz-1.0.1-windows-x86_64-setup.exe` from the release and run it. The setup assistant installs Oberiz, creates Start Menu and optional desktop shortcuts, and offers to start it at the end. Oberiz then runs invisibly in the background, without a command window.
 
 Application files are installed under `Program Files\Oberiz`. Your database, configuration and backups are stored separately in `%LOCALAPPDATA%\Oberiz`, so they survive application updates and uninstallation.
 
@@ -143,6 +143,8 @@ POST /api/v1/requests
 GET  /api/v1/requests/{id}
 ```
 
+The full contract is also published as an OpenAPI 3.0 document: [`docs/openapi.yaml`](docs/openapi.yaml).
+
 Cinetta uses the native API v1: it reads authenticated profiles and links every request with an idempotent client identifier. Each profile explicitly declares whether it accepts standard or 4K requests, so Cinetta only offers destinations matching the requested quality. Overseerr compatibility is enabled separately and exposes `/radarr/api/v3/*` and `/sonarr/api/v3/*`; it does not replace or constrain the native integration.
 
 ### Configure Overseerr
@@ -159,4 +161,8 @@ From **Settings → Backup & Restore**, you can create and restore consistent SQ
 
 ## Documentation
 
-Product documentation is stored in [`docs/README.md`](docs/README.md): technical state, API integration, importing, roadmap, RSS and version history.
+Product documentation is stored in [`docs/README.md`](docs/README.md): technical state, API integration, importing, roadmap, RSS and version history. The release-selection rules are documented in [`docs/Oberiz_Perfiles_y_Puntuacion.md`](docs/Oberiz_Perfiles_y_Puntuacion.md).
+
+## License
+
+Oberiz is licensed under the [GNU Affero General Public License v3.0 or later](LICENSE) (AGPL-3.0-or-later). If you run a modified version of Oberiz as a network service, the AGPL requires that you make your modified source code available to the users of that service.
