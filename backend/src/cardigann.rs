@@ -333,7 +333,7 @@ async fn search_indexer_once(
         .map_err(|e| format!("Error HTTP en {}: {e}", def.name))?;
 
         if !response.status().is_success() {
-            return Err(response_error(&def, &response, "search"));
+            return Err(response_error(def, &response, "search"));
         }
 
         let response_type = map_get(&path_block, "response")
@@ -347,9 +347,9 @@ async fn search_indexer_once(
         if response_type == "json" {
             let json: JsonValue = serde_json::from_str(&body)
                 .map_err(|e| format!("{} devolvió JSON no válido: {e}", def.name))?;
-            parse_json_rows(&def, &json, rows, fields, &mut template, &mut output)?;
+            parse_json_rows(def, &json, rows, fields, &mut template, &mut output)?;
         } else {
-            parse_html_rows(&def, &body, rows, fields, &mut template, &mut output)?;
+            parse_html_rows(def, &body, rows, fields, &mut template, &mut output)?;
         }
     }
 
@@ -410,7 +410,7 @@ fn parse_html_rows(
                 let Some(field_name) = key.as_str() else {
                     continue;
                 };
-                let value = extract_field(&row, block, &def.base_url, template, &extracted);
+                let value = extract_field(row, block, &def.base_url, template, &extracted);
                 if let Some(v) = value {
                     extracted.insert(field_name.to_string(), v.clone());
                     template.result.insert(field_name.to_string(), v);
@@ -1283,21 +1283,19 @@ async fn build_authenticated_client(def: &Definition) -> Result<Client, String> 
 /// values. Cardigann definitions normally identify it under `login.error`.
 fn login_page_error(login: &Value, html: &str) -> Option<String> {
     let document = Html::parse_document(html);
-    let errors = map_get(login, "error")?.as_sequence()?;
-    for rule in errors {
-        let selector_raw = yaml_string(map_get(rule, "selector"))?;
-        let selector = forgiving_selector(&selector_raw)?;
-        let message = document
-            .select(&selector)
-            .next()
-            .map(|element| element.text().collect::<Vec<_>>().join(" "))?;
-        let trimmed = message.split_whitespace().collect::<Vec<_>>().join(" ");
-        if !trimmed.is_empty() {
-            return Some(trimmed);
-        }
-        return Some("el sitio indicó un error sin mensaje".into());
+    let rule = map_get(login, "error")?.as_sequence()?.first()?;
+    let selector_raw = yaml_string(map_get(rule, "selector"))?;
+    let selector = forgiving_selector(&selector_raw)?;
+    let message = document
+        .select(&selector)
+        .next()
+        .map(|element| element.text().collect::<Vec<_>>().join(" "))?;
+    let trimmed = message.split_whitespace().collect::<Vec<_>>().join(" ");
+    if !trimmed.is_empty() {
+        Some(trimmed)
+    } else {
+        Some("el sitio indicó un error sin mensaje".into())
     }
-    None
 }
 
 fn page_has_login_form(html: &str) -> bool {
@@ -1360,10 +1358,12 @@ fn selector_input_values(
 /// credentials in an indexer definition. Preserve those defaults, while the
 /// definition itself remains authoritative for username/password and any
 /// explicitly selected CSRF field.
+type FormInputValues = Vec<(String, String)>;
+
 fn form_input_values(
     form_selector_raw: &str,
     html: &str,
-) -> Result<(Vec<(String, String)>, Option<String>), String> {
+) -> Result<(FormInputValues, Option<String>), String> {
     let document = Html::parse_document(html);
     let form_selector = forgiving_selector(form_selector_raw)
         .ok_or_else(|| format!("Selector de formulario no compatible: {form_selector_raw}"))?;

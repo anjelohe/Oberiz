@@ -503,6 +503,7 @@ pub struct Evaluation {
     pub rejection_reasons: Vec<String>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn evaluate_release(
     release: &ReleaseResult,
     profile: &QualityProfile,
@@ -878,6 +879,7 @@ fn contains_release_term(release_upper: &str, term: &str) -> bool {
     false
 }
 
+#[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod tests {
     use super::{
