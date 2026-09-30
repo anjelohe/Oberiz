@@ -79,7 +79,7 @@ fn client_identity(headers: &HeaderMap, peer: SocketAddr) -> String {
             .map(str::trim)
             .filter(|value| !value.is_empty());
         if let Some(client) = forwarded {
-            return client.to_string();
+            return rate_limit_key(client);
         }
         let real_ip = headers
             .get("x-real-ip")
@@ -87,10 +87,28 @@ fn client_identity(headers: &HeaderMap, peer: SocketAddr) -> String {
             .map(str::trim)
             .filter(|value| !value.is_empty());
         if let Some(client) = real_ip {
-            return client.to_string();
+            return rate_limit_key(client);
         }
     }
-    peer.ip().to_string()
+    rate_limit_key(&peer.ip().to_string())
+}
+
+/// Keys the login rate limiter by IPv6 /64 prefix rather than the full
+/// 128-bit address. A residential ISP typically hands one subscriber an
+/// entire /64 (or larger) block, so keying by the full address would let
+/// someone defeat the failed-attempt lockout just by trying again from a
+/// different address within their own block — each one looks like a brand
+/// new, never-failed client. IPv4 addresses are individually assigned, so
+/// they're used as-is; anything that doesn't parse as an IP (a malformed
+/// forwarded-for header) also falls back to the raw value unchanged.
+fn rate_limit_key(value: &str) -> String {
+    match value.parse::<IpAddr>() {
+        Ok(IpAddr::V6(addr)) => {
+            let s = addr.segments();
+            format!("{:x}:{:x}:{:x}:{:x}::/64", s[0], s[1], s[2], s[3])
+        }
+        _ => value.to_string(),
+    }
 }
 fn internal<E: std::fmt::Display>(error: E) -> (StatusCode, String) {
     (StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
@@ -142,8 +160,15 @@ fn session_cookie_header(value: &str, max_age_secs: i64) -> HeaderValue {
     } else {
         ""
     };
+    // Strict, not Lax: Lax still attaches the cookie on a plain top-level GET
+    // navigation from another site (a link, an auto-submitting redirect), so
+    // any state-changing endpoint that ever ends up reachable via GET would
+    // be a CSRF target. This app is only ever meant to be opened directly
+    // (typed URL, bookmark, the desktop tray), never arrived at by following
+    // a link from another site while a session is active, so Strict has no
+    // legitimate use case it breaks.
     HeaderValue::from_str(&format!(
-        "{COOKIE_NAME}={value}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age_secs}{secure}"
+        "{COOKIE_NAME}={value}; Path=/; HttpOnly; SameSite=Strict; Max-Age={max_age_secs}{secure}"
     ))
     .unwrap_or_else(|_| HeaderValue::from_static(""))
 }
@@ -408,4 +433,33 @@ pub async fn set_password(
     }
     revoke_all_sessions(&state.db).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod rate_limit_key_tests {
+    use super::rate_limit_key;
+
+    #[test]
+    fn collapses_different_addresses_in_the_same_ipv6_slash_64() {
+        let a = rate_limit_key("2001:db8:1234:5678:aaaa:bbbb:cccc:dddd");
+        let b = rate_limit_key("2001:db8:1234:5678:1:2:3:4");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn keeps_different_ipv6_slash_64_blocks_distinct() {
+        let a = rate_limit_key("2001:db8:1234:5678::1");
+        let b = rate_limit_key("2001:db8:1234:5679::1");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn keeps_ipv4_addresses_as_is() {
+        assert_eq!(rate_limit_key("203.0.113.7"), "203.0.113.7");
+    }
+
+    #[test]
+    fn falls_back_to_the_raw_value_for_non_ip_input() {
+        assert_eq!(rate_limit_key("not-an-ip"), "not-an-ip");
+    }
 }

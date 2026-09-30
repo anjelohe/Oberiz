@@ -32,7 +32,7 @@ mod tvdb;
 use automation::AutomationRuntime;
 use axum::{
     Json, Router,
-    extract::State,
+    extract::{DefaultBodyLimit, State},
     http::StatusCode,
     response::{Html, IntoResponse, Response},
     routing::get,
@@ -59,6 +59,14 @@ struct AppState {
     /// refreshes share this short-lived cache instead of repeatedly making the
     /// Web API serialize the same list.
     torrent_list_cache: Arc<Mutex<Option<TorrentListCache>>>,
+    /// Serializes the final "is this already active? if not, grab it" step
+    /// across every path that can commit a grab (RSS, the scheduled/on-add
+    /// automation cycle, manual grabs). Each path already checks cheaply
+    /// before searching, but a search takes real time, and two of these paths
+    /// can run concurrently — without holding this across the recheck-then-
+    /// insert step, both could pass their own check before either commits,
+    /// and grab the same release twice.
+    grab_lock: Arc<Mutex<()>>,
 }
 
 #[derive(Serialize)]
@@ -67,6 +75,35 @@ struct HealthResponse {
     name: &'static str,
     version: &'static str,
     database: &'static str,
+}
+
+/// A handful of standard, low-risk response headers with no equivalent
+/// anywhere else in the app: nothing here should ever be framed by another
+/// site, sniffed into a different content type, or leak the current URL via
+/// the Referer header on an outbound link.
+async fn security_headers(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let mut response = next.run(request).await;
+    let headers = response.headers_mut();
+    headers.insert(
+        axum::http::header::X_CONTENT_TYPE_OPTIONS,
+        axum::http::HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        axum::http::header::X_FRAME_OPTIONS,
+        axum::http::HeaderValue::from_static("DENY"),
+    );
+    headers.insert(
+        axum::http::header::REFERRER_POLICY,
+        axum::http::HeaderValue::from_static("no-referrer"),
+    );
+    headers.insert(
+        axum::http::HeaderName::from_static("cross-origin-opener-policy"),
+        axum::http::HeaderValue::from_static("same-origin"),
+    );
+    response
 }
 
 async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
@@ -134,6 +171,7 @@ async fn build_app_state() -> anyhow::Result<AppState> {
         automation_runtime: AutomationRuntime::default(),
         download_client: Arc::new(download_client::QBittorrentClient),
         torrent_list_cache: Arc::new(Mutex::new(None)),
+        grab_lock: Arc::new(Mutex::new(())),
     })
 }
 
@@ -143,6 +181,7 @@ fn spawn_schedulers(state: &AppState) {
     rss::spawn_scheduler(state.clone());
     importer::spawn_import_scheduler(state.clone());
     indexers::spawn_health_scheduler(state.clone());
+    series::spawn_metadata_refresh_scheduler(state.clone());
 }
 
 /// Builds the router and serves it until `shutdown` resolves. Shared by the
@@ -204,6 +243,14 @@ async fn run_server(
             state.clone(),
             auth::require_auth,
         ))
+        // Axum has no request-body cap of its own by default: the backup
+        // upload handler reads the whole body into memory as `Bytes` before
+        // it ever runs, so without this an oversized (or simply mistaken)
+        // upload is bounded only by however much RAM the process can grab.
+        // 512 MiB comfortably covers a real Oberiz database, which holds only
+        // metadata and history, never media files.
+        .layer(DefaultBodyLimit::max(512 * 1024 * 1024))
+        .layer(axum::middleware::from_fn(security_headers))
         .with_state(state);
 
     // On Windows, Tokio's asynchronous address resolution can stall before

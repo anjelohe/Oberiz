@@ -86,6 +86,12 @@ pub(crate) async fn process_rss_release(
         return Ok("ignored: title too short".into());
     }
 
+    // Tracks the most relevant non-grab outcome across every monitored title this
+    // release's own text happens to match, instead of returning on the very first
+    // one. A short/common title ("It", "Dune") can substring-match the wrong entry
+    // first; returning immediately there would silently stop the release from ever
+    // being evaluated against the title it actually corresponds to.
+    let mut last_outcome = "ignored: no monitored match".to_string();
     let movies=sqlx::query_as::<_,(i64,String,Option<String>,Option<i32>,Option<i64>)>(
         "SELECT id,title,original_title,year,quality_profile_id FROM movies WHERE monitored=1 ORDER BY id"
     ).fetch_all(&state.db).await.map_err(|e|e.to_string())?;
@@ -101,13 +107,15 @@ pub(crate) async fn process_rss_release(
             continue;
         }
         let Some(profile_id) = profile_id else {
-            return Ok(format!("skipped: {title} has no quality profile"));
+            last_outcome = format!("skipped: {title} has no quality profile");
+            continue;
         };
         let profile = profiles::get_quality_profile_by_id(&state.db, profile_id)
             .await
             .map_err(|e| e.1)?;
         if !profile.enabled {
-            return Ok(format!("skipped: {title} profile disabled"));
+            last_outcome = format!("skipped: {title} profile disabled");
+            continue;
         }
         let language = profiles::language_for_profile(&state.db, &profile)
             .await
@@ -129,18 +137,21 @@ pub(crate) async fn process_rss_release(
         candidate.score = evaluation.total_score;
         candidate.accepted = evaluation.accepted;
         if !candidate.accepted {
-            return Ok(format!(
-                "rejected: {}",
-                candidate.rejection_reasons.join(", ")
-            ));
+            last_outcome = format!("rejected: {}", candidate.rejection_reasons.join(", "));
+            continue;
         }
         let current=sqlx::query_scalar::<_,Option<i32>>("SELECT MAX(quality_score) FROM media_files WHERE media_type='movie' AND media_id=? AND file_exists=1")
             .bind(id).fetch_one(&state.db).await.unwrap_or(None);
         if current.is_some_and(|score| !profile.upgrade_allowed || candidate.score <= score + 25) {
-            return Ok("skipped: no quality upgrade".into());
+            last_outcome = "skipped: no quality upgrade".into();
+            continue;
         }
+        // Held through the grab so a concurrent automation cycle re-checking
+        // the same movie can't slip in between this check and the insert.
+        let _lock = state.grab_lock.lock().await;
         if already_grabbed(state, "movie", id, None, None).await {
-            return Ok("skipped: equivalent job already active".into());
+            last_outcome = "skipped: equivalent job already active".into();
+            continue;
         }
         grab_rss(
             state,
@@ -185,13 +196,15 @@ pub(crate) async fn process_rss_release(
             continue;
         }
         let Some(profile_id) = profile_id else {
-            return Ok(format!("skipped: {title} has no quality profile"));
+            last_outcome = format!("skipped: {title} has no quality profile");
+            continue;
         };
         let profile = profiles::get_quality_profile_by_id(&state.db, profile_id)
             .await
             .map_err(|e| e.1)?;
         if !profile.enabled {
-            return Ok(format!("skipped: {title} profile disabled"));
+            last_outcome = format!("skipped: {title} profile disabled");
+            continue;
         }
         let language = profiles::language_for_profile(&state.db, &profile)
             .await
@@ -213,19 +226,20 @@ pub(crate) async fn process_rss_release(
         candidate.score = evaluation.total_score;
         candidate.accepted = evaluation.accepted;
         if !candidate.accepted {
-            return Ok(format!(
-                "rejected: {}",
-                candidate.rejection_reasons.join(", ")
-            ));
+            last_outcome = format!("rejected: {}", candidate.rejection_reasons.join(", "));
+            continue;
         }
-        let missing=sqlx::query_scalar::<_,i64>("SELECT COUNT(*) FROM series_episodes WHERE series_id=? AND monitored=1 AND has_file=0 AND (air_date IS NULL OR air_date<=date('now'))")
+        let missing=sqlx::query_scalar::<_,i64>("SELECT COUNT(*) FROM series_episodes WHERE series_id=? AND monitored=1 AND has_file=0 AND (air_date IS NULL OR air_date<=date('now','localtime'))")
             .bind(id).fetch_one(&state.db).await.unwrap_or(0);
         if missing == 0 {
-            return Ok("skipped: series is already complete".into());
+            last_outcome = "skipped: series is already complete".into();
+            continue;
         }
         if is_complete_series_title(&item.title) && profile.rules.series_accept_complete {
+            let _lock = state.grab_lock.lock().await;
             if already_grabbed(state, "series", id, None, None).await {
-                return Ok("skipped: equivalent job already active".into());
+                last_outcome = "skipped: equivalent job already active".into();
+                continue;
             }
             grab_rss(
                 state,
@@ -254,7 +268,8 @@ pub(crate) async fn process_rss_release(
         static SEASON_EPISODE: LazyLock<regex::Regex> =
             LazyLock::new(|| regex::Regex::new(r"(?i)S(\d{1,2})(?:E(\d{1,3}))?").unwrap());
         let Some(caps) = SEASON_EPISODE.captures(&item.title) else {
-            return Ok("skipped: series release has no season/episode target".into());
+            last_outcome = "skipped: series release has no season/episode target".into();
+            continue;
         };
         let season = caps
             .get(1)
@@ -262,11 +277,13 @@ pub(crate) async fn process_rss_release(
             .unwrap_or(0);
         let episode = caps.get(2).and_then(|m| m.as_str().parse::<i32>().ok());
         if season <= 0 {
-            return Ok("skipped: invalid series target".into());
+            last_outcome = "skipped: invalid series target".into();
+            continue;
         }
         let is_pack = episode.is_none();
         if is_pack && !profile.rules.series_prefer_pack {
-            return Ok("skipped: season packs disabled by profile".into());
+            last_outcome = "skipped: season packs disabled by profile".into();
+            continue;
         }
         let exists = if let Some(ep) = episode {
             sqlx::query_scalar::<_,i64>("SELECT COUNT(*) FROM series_episodes WHERE series_id=? AND season_number=? AND episode_number=? AND monitored=1 AND has_file=0")
@@ -276,10 +293,13 @@ pub(crate) async fn process_rss_release(
                 .bind(id).bind(season).fetch_one(&state.db).await.unwrap_or(0)>0
         };
         if !exists {
-            return Ok("skipped: target is not wanted".into());
+            last_outcome = "skipped: target is not wanted".into();
+            continue;
         }
+        let _lock = state.grab_lock.lock().await;
         if already_grabbed(state, "series", id, Some(season), episode).await {
-            return Ok("skipped: equivalent job already active".into());
+            last_outcome = "skipped: equivalent job already active".into();
+            continue;
         }
         grab_rss(
             state,
@@ -306,7 +326,7 @@ pub(crate) async fn process_rss_release(
         .await;
         return Ok(format!("grabbed: {kind} {title}"));
     }
-    Ok("ignored: no monitored match".into())
+    Ok(last_outcome)
 }
 
 /// Whether this exact target has already been grabbed — actively downloading
@@ -314,6 +334,13 @@ pub(crate) async fn process_rss_release(
 /// (seeding finished and the seed policy removed the torrent) counts too:
 /// that job's files are already imported, so "cleaned up afterwards" must
 /// not read as "never happened" and let automation grab it all over again.
+// 'cleaned' deliberately does NOT count as active here: this gate sits behind
+// a caller-side check ("do I already have this at a good enough score/does it
+// have a file") for every media type that reaches it, so once a job is
+// cleaned, whether to grab again is that upstream check's call — treating
+// 'cleaned' as eternally active here would instead block legitimate quality
+// upgrades forever, since the original (now finished) job never stops
+// "counting".
 async fn already_grabbed(
     state: &AppState,
     media_type: &str,
@@ -324,7 +351,7 @@ async fn already_grabbed(
     sqlx::query_scalar::<_, i64>(
         r#"SELECT COUNT(*) FROM download_jobs
         WHERE media_type=? AND media_id=? AND season_number IS ? AND episode_number IS ?
-          AND status IN ('queued','downloading','completed','seeding','cleaned')"#,
+          AND status IN ('queued','downloading','completed','seeding')"#,
     )
     .bind(media_type)
     .bind(media_id)
@@ -380,17 +407,32 @@ fn is_complete_series_title(title: &str) -> bool {
 }
 
 fn matches_series_target(title: &str, season_number: i32, episode_number: Option<i32>) -> bool {
+    // "NxNN" (e.g. "2x05") is a release-naming convention some indexers still
+    // use, and the local-file importer already recognizes it (see
+    // importer/naming.rs) — but this function, which decides whether a search
+    // result actually satisfies the target before grabbing it, only checked
+    // for "sNNeNN". A `\b` before the season digit keeps this from matching
+    // inside a resolution like "1920x1080".
+    let season_x = regex::Regex::new(&format!(r"\b{season_number}x(\d{{1,3}})\b"))
+        .ok()
+        .and_then(|re| re.captures(title))
+        .and_then(|caps| caps.get(1)?.as_str().parse::<i32>().ok());
     let normalized = title.to_lowercase();
     let season_token = format!("s{season_number:02}");
-    if !normalized.contains(&season_token) {
+    let has_season = normalized.contains(&season_token) || season_x.is_some();
+    if !has_season {
         return false;
     }
     match episode_number {
-        Some(episode) => normalized.contains(&format!("e{episode:02}")),
+        Some(episode) => {
+            normalized.contains(&format!("e{episode:02}")) || season_x == Some(episode)
+        }
         None => {
-            !regex::Regex::new(r"(?i)S\d{1,2}E\d{1,3}")
-                .map(|re| re.is_match(&normalized))
-                .unwrap_or(true)
+            let looks_like_single_episode = season_x.is_some()
+                || regex::Regex::new(r"(?i)S\d{1,2}E\d{1,3}")
+                    .map(|re| re.is_match(&normalized))
+                    .unwrap_or(false);
+            !looks_like_single_episode
                 || normalized.contains("season")
                 || normalized.contains("complete")
                 || normalized.contains("pack")
@@ -453,7 +495,7 @@ pub async fn status(
         SELECT COUNT(*) FROM series_episodes e
         JOIN series s ON s.id=e.series_id
         WHERE s.monitored=1 AND e.monitored=1 AND e.has_file=0
-          AND (e.air_date IS NULL OR e.air_date<=date('now'))
+          AND (e.air_date IS NULL OR e.air_date<=date('now','localtime'))
     "#,
     )
     .fetch_one(&state.db)
@@ -481,14 +523,13 @@ pub async fn status(
 pub async fn run_now(
     State(state): State<AppState>,
 ) -> Result<Json<RunSummary>, (StatusCode, String)> {
-    if !state.automation_runtime.begin() {
+    let Some(_guard) = state.automation_runtime.begin() else {
         return Err((
             StatusCode::CONFLICT,
             "Automation is already running. Wait for the current cycle to finish.".into(),
         ));
-    }
+    };
     let result = run_cycle(&state).await;
-    state.automation_runtime.finish();
     Ok(Json(result))
 }
 
@@ -503,12 +544,12 @@ pub fn spawn_scheduler(state: AppState) {
                 .unwrap_or(30)
                 .clamp(5, 1440);
             if enabled {
-                if !state.automation_runtime.begin() {
+                let Some(_guard) = state.automation_runtime.begin() else {
                     sleep(Duration::from_secs(interval * 60)).await;
                     continue;
-                }
+                };
                 let summary = run_cycle(&state).await;
-                state.automation_runtime.finish();
+                drop(_guard);
                 tracing::info!(
                     searched = summary.searched,
                     grabbed = summary.grabbed,
@@ -534,14 +575,22 @@ pub(crate) async fn run_cycle(state: &AppState) -> RunSummary {
         .await
         .unwrap_or(0);
 
+    // Ordered least-recently-searched first (never-searched sorts first via the
+    // empty COALESCE), not by id: with MAX_SEARCHES_PER_CYCLE capping how many
+    // targets get a real search, plain id order would let whatever sorts last
+    // starve permanently instead of eventually getting its turn.
     let movies = sqlx::query_as::<_, (i64, String)>(
-        "SELECT id,title FROM movies WHERE monitored=1 ORDER BY id",
+        r#"SELECT m.id,m.title FROM movies m
+           LEFT JOIN automation_state a ON a.media_type='movie' AND a.media_id=m.id
+           WHERE m.monitored=1 ORDER BY COALESCE(a.last_search_at,''),m.id"#,
     )
     .fetch_all(&state.db)
     .await
     .unwrap_or_default();
     let series_rows = sqlx::query_as::<_, (i64, String)>(
-        "SELECT id,name FROM series WHERE monitored=1 ORDER BY id",
+        r#"SELECT s.id,s.name FROM series s
+           LEFT JOIN automation_state a ON a.media_type='series' AND a.media_id=s.id
+           WHERE s.monitored=1 ORDER BY COALESCE(a.last_search_at,''),s.id"#,
     )
     .fetch_all(&state.db)
     .await
@@ -550,21 +599,33 @@ pub(crate) async fn run_cycle(state: &AppState) -> RunSummary {
         .automation_runtime
         .reset(movies.len() + series_rows.len())
         .await;
-    for (id, title) in movies {
-        state
-            .automation_runtime
-            .item(format!("Movie · {title}"))
-            .await;
-        process_movie(state, id, &title, &mut summary, true).await;
-        state.automation_runtime.done().await;
-    }
-    for (series_id, title) in series_rows {
-        state
-            .automation_runtime
-            .item(format!("Series · {title}"))
-            .await;
-        process_series(state, series_id, &title, &mut summary, true).await;
-        state.automation_runtime.done().await;
+    // Alternates movies and series instead of exhausting the cycle on every
+    // movie before a single series gets a turn: with more monitored movies
+    // than MAX_SEARCHES_PER_CYCLE, series would otherwise never be searched.
+    let mut movies_iter = movies.into_iter();
+    let mut series_iter = series_rows.into_iter();
+    loop {
+        let movie_next = movies_iter.next();
+        let series_next = series_iter.next();
+        if movie_next.is_none() && series_next.is_none() {
+            break;
+        }
+        if let Some((id, title)) = movie_next {
+            state
+                .automation_runtime
+                .item(format!("Movie · {title}"))
+                .await;
+            process_movie(state, id, &title, &mut summary, true).await;
+            state.automation_runtime.done().await;
+        }
+        if let Some((series_id, title)) = series_next {
+            state
+                .automation_runtime
+                .item(format!("Series · {title}"))
+                .await;
+            process_series(state, series_id, &title, &mut summary, true).await;
+            state.automation_runtime.done().await;
+        }
     }
     summary
 }
@@ -662,6 +723,15 @@ async fn process_movie(
         summary.skipped += 1;
         return;
     }
+    // Unlike series, nothing upstream of this point checks for a job already in
+    // flight: `current_score` comes from imported media_files, which stays empty
+    // for the entire queued/downloading window, so without this a movie search
+    // could fire — and grab a second release — every cycle until the first
+    // finishes importing.
+    if already_grabbed(state, "movie", media_id, None, None).await {
+        summary.skipped += 1;
+        return;
+    }
     let response = match search_api::search_media_internal(state, &spec, periodic).await {
         Ok(v) => v,
         Err((_, e)) => {
@@ -681,6 +751,17 @@ async fn process_movie(
         && best.score <= score + 25
     {
         touch_search(state, "movie", media_id, "upgrade-wait").await;
+        summary.skipped += 1;
+        return;
+    }
+
+    // The search above took real time, during which RSS or another automation
+    // run could have grabbed this same movie — the cheap check earlier only
+    // ruled that out before searching. Re-check while holding the lock, right
+    // before committing, so whichever path gets here first is the only one
+    // that grabs.
+    let _lock = state.grab_lock.lock().await;
+    if already_grabbed(state, "movie", media_id, None, None).await {
         summary.skipped += 1;
         return;
     }
@@ -745,7 +826,7 @@ async fn process_series(
                  WHERE ef.episode_id=e.id AND mf.file_exists=1) AS current_score
         FROM series_episodes e
         WHERE e.series_id=? AND e.monitored=1
-          AND (e.air_date IS NULL OR e.air_date<=date('now'))
+          AND (e.air_date IS NULL OR e.air_date<=date('now','localtime'))
         ORDER BY e.season_number,e.episode_number
     "#).bind(series_id).fetch_all(&state.db).await.unwrap_or_default();
 
@@ -835,13 +916,21 @@ async fn process_series(
             .iter()
             .filter(|(_, _, has_file, _)| !*has_file)
             .count();
+        // Whether the pack attempt (if any) means missing episodes are covered:
+        // true when capped, when a pack job is already active, or when a pack
+        // was just grabbed. False when a pack search ran but found nothing —
+        // that falls through to per-episode search below instead of leaving
+        // those episodes permanently unsearched (they'd otherwise never get a
+        // turn as long as `series_prefer_pack` stays on and no pack exists).
+        let mut pack_covers_missing = false;
         if profile.rules.series_prefer_pack && missing >= 2 {
             if summary.searched >= MAX_SEARCHES_PER_CYCLE
                 || has_active_series_job(state, series_id, season_number, None, true).await
             {
                 summary.skipped += missing;
+                pack_covers_missing = true;
             } else {
-                process_series_target(
+                pack_covers_missing = process_series_target(
                     state,
                     series_id,
                     title,
@@ -858,7 +947,7 @@ async fn process_series(
         }
 
         for (episode_number, episode_name, has_file, current_score) in episodes {
-            if !has_file && profile.rules.series_prefer_pack && missing >= 2 {
+            if !has_file && pack_covers_missing {
                 continue;
             }
             if has_file
@@ -906,7 +995,7 @@ async fn process_series_target(
     current_score: Option<i32>,
     summary: &mut RunSummary,
     periodic: bool,
-) {
+) -> bool {
     let spec = match search_api::resolve_series_target_spec(
         state,
         series_id,
@@ -919,7 +1008,7 @@ async fn process_series_target(
         Err((_, e)) => {
             record_series_target_error(state, series_id, season_number, episode_number, &e).await;
             summary.errors += 1;
-            return;
+            return false;
         }
     };
 
@@ -928,7 +1017,7 @@ async fn process_series_target(
         Err((_, e)) => {
             record_series_target_error(state, series_id, season_number, episode_number, &e).await;
             summary.errors += 1;
-            return;
+            return false;
         }
     };
     summary.searched += 1;
@@ -951,7 +1040,7 @@ async fn process_series_target(
         )
         .await;
         summary.skipped += 1;
-        return;
+        return false;
     };
     if let Some(score) = current_score
         && best.score <= score + 25
@@ -967,7 +1056,25 @@ async fn process_series_target(
         )
         .await;
         summary.skipped += 1;
-        return;
+        return false;
+    }
+
+    // See process_movie's identical comment: the search above took real time,
+    // during which RSS or a concurrent automation run could have grabbed this
+    // exact season/episode. Re-check while holding the lock, right before
+    // committing.
+    let _lock = state.grab_lock.lock().await;
+    if has_active_series_job(
+        state,
+        series_id,
+        season_number,
+        episode_number,
+        is_season_pack,
+    )
+    .await
+    {
+        summary.skipped += 1;
+        return false;
     }
 
     let req = GrabRequest {
@@ -1019,10 +1126,12 @@ async fn process_series_target(
             )
             .await;
             summary.grabbed += 1;
+            true
         }
         Err((_, e)) => {
             record_series_target_error(state, series_id, season_number, episode_number, &e).await;
             summary.errors += 1;
+            false
         }
     }
 }
@@ -1106,6 +1215,26 @@ async fn try_complete_series(
         return Ok(CompleteSeriesAttempt::SearchedNoMatch);
     };
 
+    // See process_movie's identical comment: re-check while holding the lock,
+    // right before committing, since the search above took real time.
+    let _lock = state.grab_lock.lock().await;
+    let still_active = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COUNT(*) FROM download_jobs
+        WHERE media_type='series' AND media_id=?
+          AND season_number IS NULL AND episode_number IS NULL
+          AND is_season_pack=1
+          AND status IN ('queued','downloading','completed','seeding','cleaned')
+    "#,
+    )
+    .bind(series_id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(0);
+    if still_active > 0 {
+        return Ok(CompleteSeriesAttempt::AlreadyActive);
+    }
+
     let req = GrabRequest {
         indexer_id: best.indexer_id.clone(),
         indexer_name: Some(best.indexer_name.clone()),
@@ -1159,10 +1288,12 @@ async fn has_active_series_job(
     episode_number: Option<i32>,
     is_pack: bool,
 ) -> bool {
-    // 'cleaned' counts as active too: the seed policy removing a finished torrent
-    // from qBittorrent doesn't mean the grab never happened — its files are
-    // already imported, so treating it as "not active" would let this same
-    // season/episode be re-grabbed from scratch (see `already_grabbed` above).
+    // Pack jobs: 'cleaned' still counts as active. A season pack has no
+    // reliable per-episode "current score" to compare against (some episodes
+    // in the gap may never have had a file), so this is the only signal that
+    // a pack for this season was already handled; without it, a season stuck
+    // just short of complete (e.g. unaired episodes) would have its pack
+    // re-grabbed every cycle.
     let count = if is_pack {
         sqlx::query_scalar::<_, i64>(
             r#"
@@ -1177,11 +1308,16 @@ async fn has_active_series_job(
         .await
         .unwrap_or(0)
     } else {
+        // Single episode: unlike the pack case, the caller already checked
+        // has_file/current_score before reaching here, so 'cleaned' must NOT
+        // count as active — that upstream check is what decides whether a
+        // quality upgrade is being sought, and this gate would otherwise
+        // block it forever once the original job finishes and gets cleaned.
         sqlx::query_scalar::<_, i64>(
             r#"
             SELECT COUNT(*) FROM download_jobs
             WHERE media_type='series' AND media_id=? AND season_number=? AND episode_number=?
-              AND status IN ('queued','downloading','completed','seeding','cleaned')
+              AND status IN ('queued','downloading','completed','seeding')
         "#,
         )
         .bind(series_id)

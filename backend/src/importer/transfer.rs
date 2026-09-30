@@ -9,11 +9,11 @@ use std::{
 pub(super) fn transfer_file(src: &Path, dst: &Path, method: &str) -> std::io::Result<()> {
     match method {
         "hardlink" => fs::hard_link(src, dst),
-        "copy" => fs::copy(src, dst).map(|_| ()),
+        "copy" => copy_atomic(src, dst),
         "move" => move_file(src, dst),
         _ => match fs::hard_link(src, dst) {
             Ok(()) => Ok(()),
-            Err(_) => fs::copy(src, dst).map(|_| ()),
+            Err(_) => copy_atomic(src, dst),
         },
     }
 }
@@ -32,18 +32,39 @@ fn move_file(src: &Path, dst: &Path) -> std::io::Result<()> {
 /// The cross-device fallback, split out so it can be exercised directly by
 /// tests without needing to force a genuine cross-filesystem rename failure.
 fn copy_then_remove_source(src: &Path, dst: &Path) -> std::io::Result<()> {
-    let copied_bytes = fs::copy(src, dst)?;
-    let source_bytes = fs::metadata(src)?.len();
-    if copied_bytes != source_bytes {
-        let _ = fs::remove_file(dst);
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!(
-                "copied {copied_bytes} bytes but source is {source_bytes} bytes; source left untouched"
-            ),
-        ));
-    }
+    copy_atomic(src, dst)?;
     fs::remove_file(src)
+}
+
+/// Copies through a temporary sibling file and renames it into place only
+/// once the copy is verified complete (same size as the source). Copying
+/// straight to `dst` meant a crash or power loss mid-copy left a truncated
+/// file sitting at the real library path, indistinguishable from a finished
+/// import; the temp file this leaves behind instead is obviously incomplete
+/// and never on the path anything else reads media from.
+fn copy_atomic(src: &Path, dst: &Path) -> std::io::Result<()> {
+    let temp = temp_sibling(dst);
+    let result = (|| {
+        let copied_bytes = fs::copy(src, &temp)?;
+        let source_bytes = fs::metadata(src)?.len();
+        if copied_bytes != source_bytes {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("copied {copied_bytes} bytes but source is {source_bytes} bytes"),
+            ));
+        }
+        fs::rename(&temp, dst)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    result
+}
+
+fn temp_sibling(dst: &Path) -> PathBuf {
+    let mut name = dst.file_name().unwrap_or_default().to_os_string();
+    name.push(".oberiz-tmp");
+    dst.with_file_name(name)
 }
 
 pub(super) fn collect_media_files(path: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {

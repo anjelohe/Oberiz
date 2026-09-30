@@ -147,6 +147,16 @@ async fn scan_movies(state: &AppState) -> Result<RescanResult, (StatusCode, Stri
 
     let scan_id = start_scan(state, "movie", &root).await?;
     let files = collect_video_files(&root_path).map_err(fs_error)?;
+    // A mount point that exists but is empty (a network share that hasn't
+    // finished mounting yet, a NAS blip) would otherwise look identical to a
+    // library with nothing left in it — and the unconditional file_exists=0
+    // reset below would then tell automation every movie is missing and
+    // re-download the entire library. Refuse instead of guessing.
+    if files.is_empty() {
+        let message = "No video files found under the configured Movies path. Refusing to mark the library as missing — check that the path is mounted correctly.".to_string();
+        finish_scan(state, scan_id, 0, 0, Some(&message)).await?;
+        return Err((StatusCode::CONFLICT, message));
+    }
     let movies =
         sqlx::query_as::<_, (i64, String, Option<i32>)>("SELECT id,title,year FROM movies")
             .fetch_all(&state.db)
@@ -233,6 +243,14 @@ async fn scan_series(state: &AppState) -> Result<RescanResult, (StatusCode, Stri
 
     let scan_id = start_scan(state, "series", &root).await?;
     let files = collect_video_files(&root_path).map_err(fs_error)?;
+    // See scan_movies: an empty-but-present mount point must not be read as
+    // "the whole library is gone", or the unconditional resets below would
+    // make automation re-download every monitored series from scratch.
+    if files.is_empty() {
+        let message = "No video files found under the configured Series path. Refusing to mark the library as missing — check that the path is mounted correctly.".to_string();
+        finish_scan(state, scan_id, 0, 0, Some(&message)).await?;
+        return Err((StatusCode::CONFLICT, message));
+    }
     let series = sqlx::query_as::<_, (i64, String)>("SELECT id,name FROM series")
         .fetch_all(&state.db)
         .await
@@ -419,9 +437,14 @@ fn normalized(value: &str) -> String {
         .join(" ")
 }
 fn parse_episode_span(name: &str) -> Option<(i32, i32, Option<i32>)> {
+    // `\b` after the optional second episode number matters: without it, a
+    // release like "S01E02.1080p.mkv" let the digit run in "1080p" get
+    // captured as a bogus second episode ("2 to 108"), which would then mark
+    // over a hundred episodes as having a file. See importer/naming.rs's
+    // parse_episode_numbers, which already carries this fix.
     let patterns = [
-        r"(?i)S(\d{1,2})E(\d{1,3})(?:[-_. ]?E?(\d{1,3}))?",
-        r"(?i)(\d{1,2})x(\d{1,3})(?:[-_. ]?(\d{1,3}))?",
+        r"(?i)S(\d{1,2})E(\d{1,3})(?:[-_. ]?E?(\d{1,3})\b)?",
+        r"(?i)(\d{1,2})x(\d{1,3})(?:[-_. ]?(\d{1,3})\b)?",
     ];
     for pattern in patterns {
         let re = regex::Regex::new(pattern).ok()?;

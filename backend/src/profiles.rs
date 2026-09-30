@@ -554,8 +554,15 @@ pub fn evaluate_release(
         ));
     }
 
+    // Unknown seed count (RSS releases never carry one — the feed format has no
+    // such field) must not read as "0 seeds": that would reject every RSS
+    // release outright under any profile with a minimum above zero. Only
+    // reject when a seed count was actually reported and it's too low.
     let seeds = release.seeders.unwrap_or(0);
-    if seeds < profile.min_seeders {
+    if release
+        .seeders
+        .is_some_and(|value| value < profile.min_seeders)
+    {
         rejected.push(format!(
             "Solo {seeds} seeds; mínimo {}",
             profile.min_seeders

@@ -201,6 +201,7 @@ export function Dashboard(){
           <header><div><span className="system-heart">♡</span><h3>System Status</h3></div><button onClick={()=>window.location.hash='/settings'}>Settings</button></header>
           <div className="system-services">
             <article><span className="service-badge tmdb">TMDB</span><div><strong>TMDB</strong><b className={settings?.tmdb_api_key_set?'ok':'bad'}>● {settings?.tmdb_api_key_set?'Configured':'Not configured'}</b><small>Metadata, posters and media information</small></div></article>
+            <article><span className="service-badge tvdb">TVDB</span><div><strong>TVDB</strong><b className={settings?.tvdb_api_key_set?'ok':'bad'}>● {settings?.tvdb_api_key_set?'Configured':'Not configured'}</b><small>Series identifiers for episode matching</small></div></article>
             <article><span className="service-badge qb">qb</span><div><strong>qBittorrent</strong><b className={qb?'ok':'bad'}>● {qb?'Connected':'Unavailable'}</b><small>{qb?`${qb.version} · ${qb.latency_ms} ms`:'Check Settings connection'}</small></div></article>
           </div>
           <div className="system-mini-grid">

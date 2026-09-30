@@ -4,6 +4,7 @@ use axum::{
     http::StatusCode,
 };
 use serde::{Deserialize, Serialize};
+use tokio::time::{Duration, sleep};
 
 use crate::{AppState, automation, history, profiles, settings, tmdb};
 
@@ -201,16 +202,16 @@ async fn find_series(db: &sqlx::SqlitePool, id: i64) -> Result<Option<Series>, s
                (SELECT COUNT(*) FROM series_episodes e WHERE e.series_id=s.id AND e.season_number>0) AS episode_count,
                (SELECT COUNT(*) FROM series_episodes e WHERE e.series_id=s.id AND e.season_number>0 AND e.monitored=1) AS monitored_episode_count,
                (SELECT COUNT(*) FROM series_episodes e WHERE e.series_id=s.id AND e.season_number>0 AND e.has_file=1) AS available_episode_count,
-               (SELECT COUNT(*) FROM series_episodes e WHERE e.series_id=s.id AND e.season_number>0 AND e.monitored=1 AND e.has_file=0 AND (e.air_date IS NULL OR e.air_date<=date('now'))) AS missing_episode_count,
-               (SELECT COUNT(*) FROM series_episodes e WHERE e.series_id=s.id AND e.season_number>0 AND e.monitored=1 AND e.air_date>date('now')) AS future_episode_count,
+               (SELECT COUNT(*) FROM series_episodes e WHERE e.series_id=s.id AND e.season_number>0 AND e.monitored=1 AND e.has_file=0 AND (e.air_date IS NULL OR e.air_date<=date('now','localtime'))) AS missing_episode_count,
+               (SELECT COUNT(*) FROM series_episodes e WHERE e.series_id=s.id AND e.season_number>0 AND e.monitored=1 AND e.air_date>date('now','localtime')) AS future_episode_count,
                (SELECT MAX(ss.season_number) FROM series_seasons ss WHERE ss.series_id=s.id AND ss.season_number>0) AS latest_season_number,
-               (SELECT e.season_number FROM series_episodes e WHERE e.series_id=s.id AND e.season_number>0 AND e.monitored=1 AND e.has_file=0 AND (e.air_date IS NULL OR e.air_date<=date('now')) ORDER BY e.season_number,e.episode_number LIMIT 1) AS next_missing_season,
-               (SELECT e.episode_number FROM series_episodes e WHERE e.series_id=s.id AND e.season_number>0 AND e.monitored=1 AND e.has_file=0 AND (e.air_date IS NULL OR e.air_date<=date('now')) ORDER BY e.season_number,e.episode_number LIMIT 1) AS next_missing_episode,
-               (SELECT e.name FROM series_episodes e WHERE e.series_id=s.id AND e.season_number>0 AND e.monitored=1 AND e.has_file=0 AND (e.air_date IS NULL OR e.air_date<=date('now')) ORDER BY e.season_number,e.episode_number LIMIT 1) AS next_missing_name,
-               (SELECT e.season_number FROM series_episodes e WHERE e.series_id=s.id AND e.season_number>0 AND e.monitored=1 AND e.has_file=0 AND e.air_date>date('now') ORDER BY e.air_date,e.season_number,e.episode_number LIMIT 1) AS next_upcoming_season,
-               (SELECT e.episode_number FROM series_episodes e WHERE e.series_id=s.id AND e.season_number>0 AND e.monitored=1 AND e.has_file=0 AND e.air_date>date('now') ORDER BY e.air_date,e.season_number,e.episode_number LIMIT 1) AS next_upcoming_episode,
-               (SELECT e.name FROM series_episodes e WHERE e.series_id=s.id AND e.season_number>0 AND e.monitored=1 AND e.has_file=0 AND e.air_date>date('now') ORDER BY e.air_date,e.season_number,e.episode_number LIMIT 1) AS next_upcoming_name,
-               (SELECT e.air_date FROM series_episodes e WHERE e.series_id=s.id AND e.season_number>0 AND e.monitored=1 AND e.has_file=0 AND e.air_date>date('now') ORDER BY e.air_date,e.season_number,e.episode_number LIMIT 1) AS next_upcoming_air_date,
+               (SELECT e.season_number FROM series_episodes e WHERE e.series_id=s.id AND e.season_number>0 AND e.monitored=1 AND e.has_file=0 AND (e.air_date IS NULL OR e.air_date<=date('now','localtime')) ORDER BY e.season_number,e.episode_number LIMIT 1) AS next_missing_season,
+               (SELECT e.episode_number FROM series_episodes e WHERE e.series_id=s.id AND e.season_number>0 AND e.monitored=1 AND e.has_file=0 AND (e.air_date IS NULL OR e.air_date<=date('now','localtime')) ORDER BY e.season_number,e.episode_number LIMIT 1) AS next_missing_episode,
+               (SELECT e.name FROM series_episodes e WHERE e.series_id=s.id AND e.season_number>0 AND e.monitored=1 AND e.has_file=0 AND (e.air_date IS NULL OR e.air_date<=date('now','localtime')) ORDER BY e.season_number,e.episode_number LIMIT 1) AS next_missing_name,
+               (SELECT e.season_number FROM series_episodes e WHERE e.series_id=s.id AND e.season_number>0 AND e.monitored=1 AND e.has_file=0 AND e.air_date>date('now','localtime') ORDER BY e.air_date,e.season_number,e.episode_number LIMIT 1) AS next_upcoming_season,
+               (SELECT e.episode_number FROM series_episodes e WHERE e.series_id=s.id AND e.season_number>0 AND e.monitored=1 AND e.has_file=0 AND e.air_date>date('now','localtime') ORDER BY e.air_date,e.season_number,e.episode_number LIMIT 1) AS next_upcoming_episode,
+               (SELECT e.name FROM series_episodes e WHERE e.series_id=s.id AND e.season_number>0 AND e.monitored=1 AND e.has_file=0 AND e.air_date>date('now','localtime') ORDER BY e.air_date,e.season_number,e.episode_number LIMIT 1) AS next_upcoming_name,
+               (SELECT e.air_date FROM series_episodes e WHERE e.series_id=s.id AND e.season_number>0 AND e.monitored=1 AND e.has_file=0 AND e.air_date>date('now','localtime') ORDER BY e.air_date,e.season_number,e.episode_number LIMIT 1) AS next_upcoming_air_date,
                s.created_at,s.updated_at
         FROM series s
         LEFT JOIN quality_profiles q ON q.id=s.quality_profile_id
@@ -433,16 +434,16 @@ pub async fn list_series(
                (SELECT COUNT(*) FROM series_episodes e WHERE e.series_id=s.id AND e.season_number>0) AS episode_count,
                (SELECT COUNT(*) FROM series_episodes e WHERE e.series_id=s.id AND e.season_number>0 AND e.monitored=1) AS monitored_episode_count,
                (SELECT COUNT(*) FROM series_episodes e WHERE e.series_id=s.id AND e.season_number>0 AND e.has_file=1) AS available_episode_count,
-               (SELECT COUNT(*) FROM series_episodes e WHERE e.series_id=s.id AND e.season_number>0 AND e.monitored=1 AND e.has_file=0 AND (e.air_date IS NULL OR e.air_date<=date('now'))) AS missing_episode_count,
-               (SELECT COUNT(*) FROM series_episodes e WHERE e.series_id=s.id AND e.season_number>0 AND e.monitored=1 AND e.air_date>date('now')) AS future_episode_count,
+               (SELECT COUNT(*) FROM series_episodes e WHERE e.series_id=s.id AND e.season_number>0 AND e.monitored=1 AND e.has_file=0 AND (e.air_date IS NULL OR e.air_date<=date('now','localtime'))) AS missing_episode_count,
+               (SELECT COUNT(*) FROM series_episodes e WHERE e.series_id=s.id AND e.season_number>0 AND e.monitored=1 AND e.air_date>date('now','localtime')) AS future_episode_count,
                (SELECT MAX(ss.season_number) FROM series_seasons ss WHERE ss.series_id=s.id AND ss.season_number>0) AS latest_season_number,
-               (SELECT e.season_number FROM series_episodes e WHERE e.series_id=s.id AND e.season_number>0 AND e.monitored=1 AND e.has_file=0 AND (e.air_date IS NULL OR e.air_date<=date('now')) ORDER BY e.season_number,e.episode_number LIMIT 1) AS next_missing_season,
-               (SELECT e.episode_number FROM series_episodes e WHERE e.series_id=s.id AND e.season_number>0 AND e.monitored=1 AND e.has_file=0 AND (e.air_date IS NULL OR e.air_date<=date('now')) ORDER BY e.season_number,e.episode_number LIMIT 1) AS next_missing_episode,
-               (SELECT e.name FROM series_episodes e WHERE e.series_id=s.id AND e.season_number>0 AND e.monitored=1 AND e.has_file=0 AND (e.air_date IS NULL OR e.air_date<=date('now')) ORDER BY e.season_number,e.episode_number LIMIT 1) AS next_missing_name,
-               (SELECT e.season_number FROM series_episodes e WHERE e.series_id=s.id AND e.season_number>0 AND e.monitored=1 AND e.has_file=0 AND e.air_date>date('now') ORDER BY e.air_date,e.season_number,e.episode_number LIMIT 1) AS next_upcoming_season,
-               (SELECT e.episode_number FROM series_episodes e WHERE e.series_id=s.id AND e.season_number>0 AND e.monitored=1 AND e.has_file=0 AND e.air_date>date('now') ORDER BY e.air_date,e.season_number,e.episode_number LIMIT 1) AS next_upcoming_episode,
-               (SELECT e.name FROM series_episodes e WHERE e.series_id=s.id AND e.season_number>0 AND e.monitored=1 AND e.has_file=0 AND e.air_date>date('now') ORDER BY e.air_date,e.season_number,e.episode_number LIMIT 1) AS next_upcoming_name,
-               (SELECT e.air_date FROM series_episodes e WHERE e.series_id=s.id AND e.season_number>0 AND e.monitored=1 AND e.has_file=0 AND e.air_date>date('now') ORDER BY e.air_date,e.season_number,e.episode_number LIMIT 1) AS next_upcoming_air_date,
+               (SELECT e.season_number FROM series_episodes e WHERE e.series_id=s.id AND e.season_number>0 AND e.monitored=1 AND e.has_file=0 AND (e.air_date IS NULL OR e.air_date<=date('now','localtime')) ORDER BY e.season_number,e.episode_number LIMIT 1) AS next_missing_season,
+               (SELECT e.episode_number FROM series_episodes e WHERE e.series_id=s.id AND e.season_number>0 AND e.monitored=1 AND e.has_file=0 AND (e.air_date IS NULL OR e.air_date<=date('now','localtime')) ORDER BY e.season_number,e.episode_number LIMIT 1) AS next_missing_episode,
+               (SELECT e.name FROM series_episodes e WHERE e.series_id=s.id AND e.season_number>0 AND e.monitored=1 AND e.has_file=0 AND (e.air_date IS NULL OR e.air_date<=date('now','localtime')) ORDER BY e.season_number,e.episode_number LIMIT 1) AS next_missing_name,
+               (SELECT e.season_number FROM series_episodes e WHERE e.series_id=s.id AND e.season_number>0 AND e.monitored=1 AND e.has_file=0 AND e.air_date>date('now','localtime') ORDER BY e.air_date,e.season_number,e.episode_number LIMIT 1) AS next_upcoming_season,
+               (SELECT e.episode_number FROM series_episodes e WHERE e.series_id=s.id AND e.season_number>0 AND e.monitored=1 AND e.has_file=0 AND e.air_date>date('now','localtime') ORDER BY e.air_date,e.season_number,e.episode_number LIMIT 1) AS next_upcoming_episode,
+               (SELECT e.name FROM series_episodes e WHERE e.series_id=s.id AND e.season_number>0 AND e.monitored=1 AND e.has_file=0 AND e.air_date>date('now','localtime') ORDER BY e.air_date,e.season_number,e.episode_number LIMIT 1) AS next_upcoming_name,
+               (SELECT e.air_date FROM series_episodes e WHERE e.series_id=s.id AND e.season_number>0 AND e.monitored=1 AND e.has_file=0 AND e.air_date>date('now','localtime') ORDER BY e.air_date,e.season_number,e.episode_number LIMIT 1) AS next_upcoming_air_date,
                s.created_at,s.updated_at
         FROM series s LEFT JOIN quality_profiles q ON q.id=s.quality_profile_id
         ORDER BY s.created_at DESC
@@ -723,6 +724,39 @@ pub(crate) async fn refresh_series_metadata_internal(
     series_id: i64,
 ) -> Result<(), (StatusCode, String)> {
     sync_series_metadata(state, series_id, None).await
+}
+
+/// Nothing else keeps a monitored series' episode list current: metadata only
+/// refreshed when a user clicked "Refresh" or an external client (Overseerr
+/// and similar) happened to hit the public API. Left alone, a still-airing
+/// show's newly announced episodes would never appear in `series_episodes`,
+/// so automation would never know to search for them.
+pub fn spawn_metadata_refresh_scheduler(state: AppState) {
+    tokio::spawn(async move {
+        loop {
+            let due = sqlx::query_scalar::<_, i64>(
+                "SELECT id FROM series WHERE monitored=1
+                 AND (metadata_synced_at IS NULL OR metadata_synced_at < datetime('now','-24 hours'))
+                 ORDER BY COALESCE(metadata_synced_at,'')",
+            )
+            .fetch_all(&state.db)
+            .await
+            .unwrap_or_default();
+            for series_id in due {
+                if let Err((_, error)) = refresh_series_metadata_internal(&state, series_id).await {
+                    history::record(
+                        &state.db,
+                        "series.metadata_refresh_error",
+                        &series_id.to_string(),
+                        Some(&error),
+                        "error",
+                    )
+                    .await;
+                }
+            }
+            sleep(Duration::from_secs(6 * 60 * 60)).await;
+        }
+    });
 }
 
 async fn sync_series_metadata(

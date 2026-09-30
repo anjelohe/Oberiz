@@ -15,5 +15,18 @@ ExecStart=/opt/oberiz/oberiz
 Restart=on-failure
 RestartSec=5
 
+# Standard sandboxing that doesn't depend on where the user points their media
+# library (which can legitimately be almost anywhere, including under /home) —
+# so this deliberately stops short of ProtectSystem=strict/ProtectHome, which
+# would need a ReadWritePaths allowlist that can't be known ahead of time.
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+PrivateTmp=true
+
 [Install]
 WantedBy=multi-user.target
