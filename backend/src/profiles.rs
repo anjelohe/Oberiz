@@ -283,6 +283,7 @@ pub async fn update_quality_profile(
     if result.rows_affected() == 0 {
         return Err((StatusCode::NOT_FOUND, "Perfil no encontrado".into()));
     }
+    crate::rss::mark_config_changed(&state.db).await;
     Ok(Json(get_quality_profile_by_id(&state.db, id).await?))
 }
 
@@ -742,7 +743,7 @@ fn lookup_score(scores: &HashMap<String, i32>, value: &str) -> Option<i32> {
         .map(|(_, v)| *v)
 }
 
-fn title_match_score(release: &str, title: &str, original: Option<&str>) -> i32 {
+pub(crate) fn title_match_score(release: &str, title: &str, original: Option<&str>) -> i32 {
     let rel = normalize_title(release);
     let a = token_overlap(&rel, &normalize_title(title));
     let b = original

@@ -125,6 +125,11 @@ fn now_secs() -> i64 {
 fn token_hash(token: &str) -> String {
     hex_encode(&Sha256::digest(token.as_bytes()))
 }
+/// Matches `set_password`'s own limit on a new password, so a candidate this
+/// long is rejected as invalid input before it ever reaches Argon2, rather
+/// than treated as a (very expensive) wrong guess.
+const MAX_PASSWORD_LEN: usize = 128;
+
 fn hash_password(password: &str) -> Result<String, (StatusCode, String)> {
     let salt = SaltString::generate(&mut OsRng);
     Argon2::default()
@@ -138,6 +143,36 @@ fn verify_password(password: &str, hash: &str) -> bool {
             .verify_password(password.as_bytes(), &parsed)
             .is_ok()
     })
+}
+/// Argon2 is deliberately slow — that's the point against offline cracking —
+/// but running it inline in an async handler blocks the Tokio worker thread
+/// for that whole stretch, and a burst of logins can tie up every worker at
+/// once. `spawn_blocking` moves the hashing onto the blocking thread pool so
+/// the rest of the app (API, schedulers) keeps responding while it runs.
+/// Caps how many Argon2 hashes can run at once, independent of how many
+/// requests are in flight. `spawn_blocking` alone bounds nothing here —
+/// tokio's blocking thread pool defaults to hundreds of threads, so without
+/// this a large-enough burst of login/password requests still means a large
+/// multiple of the single-hash CPU cost all running simultaneously. Small
+/// and fixed rather than tied to core count: Argon2's whole point is to be
+/// expensive, so a handful running at once is already real, sustained CPU
+/// pressure on top of serving everything else.
+fn argon2_permits() -> &'static tokio::sync::Semaphore {
+    static SEMAPHORE: OnceLock<tokio::sync::Semaphore> = OnceLock::new();
+    SEMAPHORE.get_or_init(|| tokio::sync::Semaphore::new(4))
+}
+async fn verify_password_blocking(password: String, hash: String) -> bool {
+    let _permit = argon2_permits().acquire().await;
+    tokio::task::spawn_blocking(move || verify_password(&password, &hash))
+        .await
+        .unwrap_or(false)
+}
+async fn hash_password_blocking(password: String) -> Result<String, (StatusCode, String)> {
+    let _permit = argon2_permits().acquire().await;
+    match tokio::task::spawn_blocking(move || hash_password(&password)).await {
+        Ok(result) => result,
+        Err(e) => Err(internal(e)),
+    }
 }
 fn extract_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
     let raw = headers.get(header::COOKIE)?.to_str().ok()?;
@@ -172,28 +207,24 @@ fn session_cookie_header(value: &str, max_age_secs: i64) -> HeaderValue {
     ))
     .unwrap_or_else(|_| HeaderValue::from_static(""))
 }
-fn rate_limited(client: &str) -> bool {
+/// Checks this client isn't currently blocked and reserves (counts) this
+/// attempt, both in the same lock-held step — before any Argon2 work runs,
+/// not after it fails. The two used to be separate calls (a `rate_limited`
+/// check, then `record_failed_login` only once `verify_password_blocking`
+/// had already finished): a burst of concurrent requests from the same
+/// client all read "not blocked yet" and all paid the full Argon2 cost,
+/// since none of them had incremented the counter yet either. Returns
+/// false when the client is already blocked.
+fn reserve_login_attempt(client: &str) -> bool {
     let now = Instant::now();
     let mut attempts = attempts()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let Some(attempt) = attempts.get_mut(client) else {
-        return false;
-    };
-    if attempt.blocked_until.is_some_and(|until| now < until) {
-        return true;
-    }
-    if now.duration_since(attempt.last_failure) > LOGIN_RESET_AFTER {
-        attempts.remove(client);
+    if let Some(attempt) = attempts.get(client)
+        && attempt.blocked_until.is_some_and(|until| now < until)
+    {
         return false;
     }
-    false
-}
-fn record_failed_login(client: &str) {
-    let now = Instant::now();
-    let mut attempts = attempts()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let attempt = attempts.entry(client.to_owned()).or_insert(LoginAttempt {
         failures: 0,
         last_failure: now,
@@ -212,6 +243,7 @@ fn record_failed_login(client: &str) {
             .min(LOGIN_MAX_BLOCK);
         attempt.blocked_until = Some(now + delay);
     }
+    true
 }
 fn clear_login_attempts(client: &str) {
     attempts()
@@ -353,12 +385,6 @@ pub async fn login(
     Json(payload): Json<LoginRequest>,
 ) -> Result<Response, (StatusCode, String)> {
     let client = client_identity(&headers, address);
-    if rate_limited(&client) {
-        return Err((
-            StatusCode::TOO_MANY_REQUESTS,
-            "Too many failed sign-in attempts. Try again later.".into(),
-        ));
-    }
     let hash = settings::get_value(&state.db, PASSWORD_HASH_KEY)
         .await
         .map_err(internal)?
@@ -369,8 +395,16 @@ pub async fn login(
             "Password protection is not enabled".into(),
         ));
     }
-    if !verify_password(&payload.password, &hash) {
-        record_failed_login(&client);
+    if payload.password.len() > MAX_PASSWORD_LEN {
+        return Err((StatusCode::BAD_REQUEST, "Password is too long".into()));
+    }
+    if !reserve_login_attempt(&client) {
+        return Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            "Too many failed sign-in attempts. Try again later.".into(),
+        ));
+    }
+    if !verify_password_blocking(payload.password, hash).await {
         return Err((StatusCode::UNAUTHORIZED, "Incorrect password".into()));
     }
     clear_login_attempts(&client);
@@ -402,8 +436,15 @@ pub async fn set_password(
         .await
         .map_err(internal)?
         .filter(|value| !value.is_empty());
-    if let Some(hash) = &existing_hash
-        && !verify_password(&payload.current_password.unwrap_or_default(), hash)
+    let current_password = payload.current_password.unwrap_or_default();
+    if current_password.len() > MAX_PASSWORD_LEN {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Current password is too long".into(),
+        ));
+    }
+    if let Some(hash) = existing_hash.clone()
+        && !verify_password_blocking(current_password, hash).await
     {
         return Err((
             StatusCode::UNAUTHORIZED,
@@ -423,7 +464,8 @@ pub async fn set_password(
                     "Password must be between 8 and 128 characters".into(),
                 ));
             }
-            settings::set_value(&state.db, PASSWORD_HASH_KEY, &hash_password(new_password)?)
+            let hashed = hash_password_blocking(new_password.to_string()).await?;
+            settings::set_value(&state.db, PASSWORD_HASH_KEY, &hashed)
                 .await
                 .map_err(internal)?;
         }

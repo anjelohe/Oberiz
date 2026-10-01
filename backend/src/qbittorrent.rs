@@ -895,12 +895,25 @@ fn database_error(error: sqlx::Error) -> (StatusCode, String) {
     )
 }
 
-fn oberiz_tags(user_tags: &str, _job_id: Option<i64>, _reseed: bool) -> String {
+fn oberiz_tags(user_tags: &str, job_id: Option<i64>, _reseed: bool) -> String {
     let mut tags = Vec::<String>::new();
     for raw in user_tags.split(',') {
         let clean = raw.trim().replace(['\r', '\n'], " ");
         if !clean.is_empty() && !tags.iter().any(|x| x.eq_ignore_ascii_case(&clean)) {
             tags.push(clean);
+        }
+    }
+    // Carries the job id into qBittorrent itself so a job whose `qb_hash`
+    // never got persisted — the request was cancelled, the handler crashed,
+    // or the connection dropped between a successful add and the follow-up
+    // UPDATE — can still be found again: run_cycle's reconciliation already
+    // falls back to parsing this tag (see importer::tag_job_id) when a
+    // lookup by hash finds nothing, but that fallback was dead as long as
+    // nothing actually wrote the tag.
+    if let Some(job_id) = job_id {
+        let marker = format!("_oberiz_job_{job_id}");
+        if !tags.iter().any(|x| x.eq_ignore_ascii_case(&marker)) {
+            tags.push(marker);
         }
     }
     tags.join(",")
@@ -1008,54 +1021,66 @@ async fn wait_for_new_torrent(
     let wanted_title = normalize_title(title);
     for _ in 0..40 {
         let torrents = list_torrents_fresh(state).await?;
-        if let Some(expected) = expected_hash
-            && let Some(torrent) = torrents
+        if let Some(expected) = expected_hash {
+            // A known hash is the only acceptable identity here: if it hasn't
+            // appeared yet, keep waiting for it specifically instead of
+            // falling through to "the only new torrent" below — someone else
+            // adding a different torrent at the same moment would otherwise
+            // get mistaken for ours, and its category/tags (and later, its
+            // files) would be applied to a download that was never ours.
+            if let Some(torrent) = torrents
                 .iter()
                 .find(|t| t.hash.eq_ignore_ascii_case(expected))
-        {
-            return Ok(QBittorrentTorrent {
-                hash: torrent.hash.clone(),
-                name: torrent.name.clone(),
-                size: torrent.size,
-                total_size: torrent.total_size,
-                amount_left: torrent.amount_left,
-                progress: torrent.progress,
-                availability: torrent.availability,
-                dlspeed: torrent.dlspeed,
-                upspeed: torrent.upspeed,
-                dl_limit: torrent.dl_limit,
-                up_limit: torrent.up_limit,
-                downloaded: torrent.downloaded,
-                downloaded_session: torrent.downloaded_session,
-                uploaded: torrent.uploaded,
-                uploaded_session: torrent.uploaded_session,
-                eta: torrent.eta,
-                ratio: torrent.ratio,
-                ratio_limit: torrent.ratio_limit,
-                num_seeds: torrent.num_seeds,
-                num_complete: torrent.num_complete,
-                num_leechs: torrent.num_leechs,
-                num_incomplete: torrent.num_incomplete,
-                state: torrent.state.clone(),
-                priority: torrent.priority,
-                force_start: torrent.force_start,
-                seq_dl: torrent.seq_dl,
-                f_l_piece_prio: torrent.f_l_piece_prio,
-                super_seeding: torrent.super_seeding,
-                category: torrent.category.clone(),
-                tags: torrent.tags.clone(),
-                tracker: torrent.tracker.clone(),
-                save_path: torrent.save_path.clone(),
-                content_path: torrent.content_path.clone(),
-                magnet_uri: torrent.magnet_uri.clone(),
-                added_on: torrent.added_on,
-                completion_on: torrent.completion_on,
-                last_activity: torrent.last_activity,
-                time_active: torrent.time_active,
-                seeding_time: torrent.seeding_time,
-            });
+            {
+                return Ok(QBittorrentTorrent {
+                    hash: torrent.hash.clone(),
+                    name: torrent.name.clone(),
+                    size: torrent.size,
+                    total_size: torrent.total_size,
+                    amount_left: torrent.amount_left,
+                    progress: torrent.progress,
+                    availability: torrent.availability,
+                    dlspeed: torrent.dlspeed,
+                    upspeed: torrent.upspeed,
+                    dl_limit: torrent.dl_limit,
+                    up_limit: torrent.up_limit,
+                    downloaded: torrent.downloaded,
+                    downloaded_session: torrent.downloaded_session,
+                    uploaded: torrent.uploaded,
+                    uploaded_session: torrent.uploaded_session,
+                    eta: torrent.eta,
+                    ratio: torrent.ratio,
+                    ratio_limit: torrent.ratio_limit,
+                    num_seeds: torrent.num_seeds,
+                    num_complete: torrent.num_complete,
+                    num_leechs: torrent.num_leechs,
+                    num_incomplete: torrent.num_incomplete,
+                    state: torrent.state.clone(),
+                    priority: torrent.priority,
+                    force_start: torrent.force_start,
+                    seq_dl: torrent.seq_dl,
+                    f_l_piece_prio: torrent.f_l_piece_prio,
+                    super_seeding: torrent.super_seeding,
+                    category: torrent.category.clone(),
+                    tags: torrent.tags.clone(),
+                    tracker: torrent.tracker.clone(),
+                    save_path: torrent.save_path.clone(),
+                    content_path: torrent.content_path.clone(),
+                    magnet_uri: torrent.magnet_uri.clone(),
+                    added_on: torrent.added_on,
+                    completion_on: torrent.completion_on,
+                    last_activity: torrent.last_activity,
+                    time_active: torrent.time_active,
+                    seeding_time: torrent.seeding_time,
+                });
+            }
+            sleep(Duration::from_millis(250)).await;
+            continue;
         }
 
+        // Only reached when we never had a hash to identify the torrent by
+        // (e.g. a magnet link with no btih we could parse) — a best-effort
+        // fallback, not used when a specific hash is expected but pending.
         let mut fresh = torrents
             .into_iter()
             .filter(|t| !before.contains(&t.hash))
@@ -1092,8 +1117,35 @@ async fn apply_and_verify_metadata(
     hash: &str,
     category: &str,
     tags: &str,
+    save_path: Option<&str>,
 ) -> Result<QBittorrentTorrent, (StatusCode, String)> {
     let config = load_config(state).await?;
+
+    if let Some(save_path) = save_path.filter(|p| !p.trim().is_empty()) {
+        // qBittorrent treats adding a torrent whose infohash it already knows
+        // as a no-op beyond refreshing category/tags — it keeps seeding from
+        // wherever that existing entry's savepath already points. Without
+        // this, reseed's freshly reconstructed files at the new job folder
+        // would simply never be the files qBittorrent is actually serving
+        // from, making the whole reconstruction pointless. setLocation moves
+        // it there and recheck makes it verify pieces against what's now on
+        // disk at that path instead of trusting stale progress state.
+        authenticated_form_post(
+            &config,
+            "/api/v2/torrents/setLocation",
+            &[
+                ("hashes", hash.to_string()),
+                ("location", save_path.to_string()),
+            ],
+        )
+        .await?;
+        authenticated_form_post(
+            &config,
+            "/api/v2/torrents/recheck",
+            &[("hashes", hash.to_string())],
+        )
+        .await?;
+    }
 
     // qBittorrent's dedicated APIs are the authoritative way to set these after add.
     authenticated_form_post(
@@ -1242,7 +1294,7 @@ pub(crate) async fn add_url(
         && torrent_by_hash(state, hash).await?.is_some()
     {
         let tags = oberiz_tags(user_tags, job_id, false);
-        let torrent = apply_and_verify_metadata(state, hash, category, &tags).await?;
+        let torrent = apply_and_verify_metadata(state, hash, category, &tags, None).await?;
         return Ok(torrent.hash);
     }
     let before = snapshot_hashes(state).await?;
@@ -1268,7 +1320,7 @@ pub(crate) async fn add_url(
     }
 
     let torrent = wait_for_new_torrent(state, &before, title, expected.as_deref()).await?;
-    let torrent = apply_and_verify_metadata(state, &torrent.hash, category, &tags).await?;
+    let torrent = apply_and_verify_metadata(state, &torrent.hash, category, &tags, None).await?;
     Ok(torrent.hash)
 }
 
@@ -1290,7 +1342,8 @@ pub(crate) async fn add_torrent_bytes_with_options(
         && torrent_by_hash(state, &info_hash).await?.is_some()
     {
         let tags = oberiz_tags(user_tags, job_id, reseed);
-        let torrent = apply_and_verify_metadata(state, &info_hash, category, &tags).await?;
+        let torrent =
+            apply_and_verify_metadata(state, &info_hash, category, &tags, save_path).await?;
         return Ok(torrent.hash);
     }
 
@@ -1376,7 +1429,8 @@ pub(crate) async fn add_torrent_bytes_with_options(
 
     if added {
         let torrent = wait_for_new_torrent(state, &before, title, None).await?;
-        let torrent = apply_and_verify_metadata(state, &torrent.hash, category, &tags).await?;
+        let torrent =
+            apply_and_verify_metadata(state, &torrent.hash, category, &tags, None).await?;
         return Ok(torrent.hash);
     }
     unreachable!()

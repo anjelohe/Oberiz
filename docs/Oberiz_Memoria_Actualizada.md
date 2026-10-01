@@ -2,8 +2,8 @@
 
 > Estado del proyecto, decisiones tomadas, trabajo realizado y roadmap previsto.
 
-**Fecha de esta memoria:** 30 de septiembre de 2026  
-**Estado actual:** Oberiz v1.0.9 es la versión pública vigente. Incluye biblioteca real, automatización de películas y series, RSS incremental con prioridad de indexador, importación, Calendar, API pública v1, diagnóstico, backup/restore SQLite, perfiles refinados y acceso de administrador protegido.
+**Fecha de esta memoria:** 1 de octubre de 2026  
+**Estado actual:** Oberiz v1.0.10 es la versión pública vigente. Incluye biblioteca real, automatización de películas y series, RSS incremental con prioridad de indexador, importación, Calendar, API pública v1, diagnóstico, backup/restore SQLite, perfiles refinados y acceso de administrador protegido.
 
 ---
 
@@ -12,6 +12,65 @@
 - **Filtros de Downloads:** incorporar selectores combinables por tracker, categoría de qBittorrent y etiquetas, además de los filtros actuales por estado y búsqueda de texto.
 
 ---
+
+## v1.0.10 — Revisión exhaustiva de datos, API, interfaz y seguridad (2026-10-01)
+
+A raíz de una auditoría externa de 54 observaciones sobre todo el código (datos/automatización, seguridad, frontend/entrega y API pública), verificadas una a una contra el código real antes de aplicar ningún cambio.
+
+### Datos, automatización e importación
+
+- Un pack parcial ya no marca como presentes episodios que no venían en el pack.
+- La identificación del torrent correcto en qBittorrent ahora se hace siempre por infohash cuando es calculable, nunca por "el único torrent nuevo que apareció".
+- La puntuación de calidad guardada en biblioteca y la del candidato de un upgrade ahora se calculan bajo la misma escala — antes podían bloquear o permitir upgrades por comparar magnitudes distintas.
+- Un pack ya limpiado tras sembrar deja de bloquear para siempre la reparación de episodios borrados o nuevos.
+- RSS y el barrido programado respetan los perfiles específicos de temporada/episodio en vez de aplicar siempre el perfil general de la serie.
+- Reseed aísla cada job en su propia carpeta y comprueba identidad real de archivo antes de borrar nada, evitando que dos torrents con nombres iguales se pisen o que una configuración reseed=biblioteca borre el único archivo existente.
+- El reescaneo de biblioteca ahora corre en una única transacción: ya no hay una ventana donde otros procesos ven la biblioteca vacía a mitad de escaneo.
+- Renombrar un archivo multi-episodio ya conserva el rango completo (antes se perdía el segundo episodio).
+- Un upgrade que genera el mismo nombre de archivo que la versión anterior ya sustituye el archivo en vez de quedarse bloqueado indefinidamente con un error de conflicto.
+- La igualdad de archivos para detectar duplicados ya compara contenido real, no solo tamaño en bytes.
+- El reescaneo ya no reasigna por error archivos entre títulos con nombres parecidos (remakes, series homónimas) ni destruye metadata de calidad que la importación ya había verificado.
+- RSS reintenta automáticamente un release que falló por un error transitorio (red, base de datos) en vez de descartarlo para siempre; además reconsidera un release que se había descartado por configuración (serie no monitorizada, perfil deshabilitado) si esa configuración cambia después.
+- Reseed restablece correctamente el estado de un job ya limpiado, y ahora aplica la nueva ruta de guardado a qBittorrent cuando el torrent ya existía en el cliente.
+- Un grab cuya confirmación se pierde por un corte de red ya puede recuperarse en el siguiente ciclo en vez de quedar huérfano.
+- "Duplicado" ya no se declara como resultado exitoso cuando el fallo real de base de datos no tenía nada que ver con una duplicidad genuina.
+- Las comprobaciones de descargas ya en curso entienden la jerarquía serie completa / temporada / episodio, evitando descargas solapadas del mismo contenido por distintas vías (RSS, programado, manual).
+- El recorrido de carpetas de biblioteca y de contenido descargado ya no sigue enlaces simbólicos de directorio, evitando un bucle que podría agotar la pila del proceso.
+- Nuevo diario de transferencias: si el proceso se interrumpe justo después de mover un archivo pero antes de registrar la asociación, el siguiente intento la recupera en vez de perderla.
+- Un mapping de reseed inválido se detecta y se avisa en el momento de importar, no meses después al intentar reseedear.
+
+### API pública (compatible con Radarr/Sonarr/Overseerr)
+
+- Actualizar un título existente ya valida que el perfil de calidad sea del tipo correcto (película/serie), igual que al crear uno nuevo.
+- La idempotencia de peticiones con `client_request_id` ahora la garantiza un índice único en base de datos, no solo una comprobación previa — una carrera entre dos peticiones concurrentes ya no puede crear duplicados.
+- Extender las temporadas solicitadas de una serie ya no borra la petición anterior antes de confirmar que la nueva se ha podido crear.
+- Una lista de temporadas vacía o inválida, o un modo de monitorización desconocido, se rechazan explícitamente en vez de interpretarse silenciosamente como "monitorizar todo".
+- La búsqueda de IDs en la capa de compatibilidad con Radarr/Sonarr ya decodifica correctamente parámetros codificados en la URL.
+- El estado "disponible" de una serie en la API pública ya tiene prioridad sobre "descargando" cuando todo lo solicitado ya está importado, aunque el torrent siga sembrando.
+- Unificado el cálculo de fecha (local, no UTC) entre calendario, vistas de "próximos/faltantes" y la API pública.
+
+### Interfaz
+
+- Corregida una condición de carrera donde una búsqueda de releases tardía podía aplicarse al título equivocado tras cambiar de selección.
+- La biblioteca de películas/series ya no desaparece por completo si qBittorrent no responde; se muestra un aviso claro y el resto de la biblioteca sigue siendo usable.
+- El selector de carpetas usa siempre la ruta completa que da el servidor en vez de intentar adivinar el separador de ruta.
+- "Test Connection" en Settings ya no descarta cambios sin guardar en otras secciones del formulario.
+- El campo de términos preferidos en perfiles de calidad ya se puede editar con normalidad, letra a letra.
+- El indicador de estado del sistema y las tarjetas del Dashboard distinguen ahora "sin datos todavía" de "comprobado y saludable", en vez de asumir que todo va bien por defecto.
+- Diálogos modales (selector de carpetas, búsqueda de releases, editor de perfiles) cierran con Escape, atrapan el foco mientras están abiertos y lo devuelven al control que los abrió.
+- Errores en acciones de biblioteca (monitorizar, borrar, activar indexador) ya se muestran en vez de fallar en silencio.
+- La búsqueda global vuelve a reflejar altas y bajas de biblioteca sin necesitar recargar la página.
+- El instalador de Linux detiene el servicio antes de sustituir archivos y confirma que el proceso nuevo arrancó correctamente, en vez de confiar en que `enable --now` reinicia una instancia ya activa.
+
+### Seguridad
+
+Segunda ronda de endurecimiento tras una auditoría externa específica de seguridad: límites de profundidad y tamaño en el procesamiento de datos de terceros (parsers y respuestas HTTP), políticas más estrictas sobre a qué destinos pueden viajar credenciales de indexadores y sobre redirecciones HTTP, restricciones adicionales frente a peticiones de red hacia destinos internos, comportamiento más seguro del arranque inicial del navegador de carpetas, protecciones reforzadas en el flujo de login (coste de cómputo acotado y conteo de intentos antes de procesar, no después), defensas de rutas de archivo resistentes a enlaces simbólicos, y exclusión explícita de las sesiones de usuario al restaurar una copia de seguridad.
+
+### Empaquetado y distribución
+
+- El pipeline de publicación de releases ahora exige que el formateo, linting, tests y build pasen para el commit exacto que se publica antes de generar ningún paquete, y no actualiza la imagen Docker `:latest` si falla cualquier otra plataforma.
+- El paquete Linux se compila de forma estática contra musl en vez de depender de la versión de glibc del servidor de compilación, ampliando la compatibilidad con distribuciones más antiguas.
+- Documentación de Windows corregida: la ubicación real de datos de la edición instalada y el procedimiento correcto para detener el servicio (vía el icono de bandeja o el Panel de Servicios, no matando el proceso desde el Administrador de tareas).
 
 ## v1.0.9 — Correcciones de automatización/RSS/importador y endurecimiento de seguridad (2026-09-30)
 

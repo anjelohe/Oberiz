@@ -467,6 +467,31 @@ pub(crate) async fn grab_internal(
     state: &AppState,
     req: &GrabRequest,
 ) -> Result<(), (StatusCode, String)> {
+    let source = req
+        .indexer_name
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(req.indexer_id.as_str());
+    let media_type = req.media_type.as_deref().unwrap_or("movie");
+    let media_id = req.media_id.unwrap_or(0);
+
+    let parsed = releases::parse(&req.title);
+    let (media_title, year) = media_identity(state, media_type, media_id, &req.title).await?;
+
+    // A stale search result from a different title can otherwise be grabbed
+    // under this media_id if the client-side request got out of sync (see
+    // FE-01): reject before touching the indexer or qBittorrent if the
+    // release shares no title tokens at all with the actual target.
+    if media_id > 0 && profiles::title_match_score(&req.title, &media_title, None) == 0 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "El release «{}» no coincide con el título de destino «{media_title}»; no se envió a descargar",
+                req.title
+            ),
+        ));
+    }
+
     let payload = cardigann::fetch_release_bytes_or_url(
         state,
         &req.indexer_id,
@@ -475,14 +500,6 @@ pub(crate) async fn grab_internal(
     )
     .await
     .map_err(|e| (StatusCode::BAD_GATEWAY, e))?;
-
-    let source = req
-        .indexer_name
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or(req.indexer_id.as_str());
-    let media_type = req.media_type.as_deref().unwrap_or("movie");
-    let media_id = req.media_id.unwrap_or(0);
 
     let profile = resolve_grab_profile(
         state,
@@ -498,9 +515,6 @@ pub(crate) async fn grab_internal(
     } else {
         req.category.clone().unwrap_or_default().trim().to_string()
     };
-
-    let parsed = releases::parse(&req.title);
-    let (media_title, year) = media_identity(state, media_type, media_id, &req.title).await?;
     let tags_template = profile
         .as_ref()
         .map(|p| p.qbittorrent_tags_template.as_str())
@@ -601,7 +615,31 @@ pub(crate) async fn grab_internal(
     {
         // qBittorrent can return an already-known hash when the same release is submitted
         // again. The unique hash index then rejects the new row; do not leave it in `queued`,
-        // because that would block every later automated search for this media.
+        // because that would block every later automated search for this media. But any
+        // other failure here (a lock timeout, a dropped connection, disk I/O) is not a
+        // duplicate at all — it's qBittorrent now downloading a torrent that got no job
+        // association. Reporting that as success would hide a real failure behind a label
+        // that tells callers "this is fine, a job already has it" when none does.
+        let is_duplicate = error
+            .as_database_error()
+            .is_some_and(|e| e.is_unique_violation());
+        if !is_duplicate {
+            let message = format!("No se pudo vincular el job al hash de qBittorrent: {error}");
+            let _ = sqlx::query("UPDATE download_jobs SET status='error',last_error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?")
+                .bind(&message)
+                .bind(job_id)
+                .execute(&state.db)
+                .await;
+            history::record(
+                &state.db,
+                "release.grab_failed",
+                &req.title,
+                Some(&message),
+                "error",
+            )
+            .await;
+            return Err(internal(error));
+        }
         let message = format!("Torrent already linked to another job: {error}");
         sqlx::query("UPDATE download_jobs SET status='duplicate',last_error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?")
             .bind(&message)
@@ -665,9 +703,17 @@ async fn resolve_grab_profile(
     episode_number: Option<i32>,
 ) -> Result<Option<profiles::QualityProfile>, (StatusCode, String)> {
     if let Some(id) = requested {
-        return Ok(Some(
-            profiles::get_quality_profile_by_id(&state.db, id).await?,
-        ));
+        let profile = profiles::get_quality_profile_by_id(&state.db, id).await?;
+        if profile.media_type != media_type {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "El perfil '{}' es de tipo {} y no aplica a un grab de {media_type}",
+                    profile.name, profile.media_type
+                ),
+            ));
+        }
+        return Ok(Some(profile));
     }
     if media_id <= 0 {
         return Ok(None);

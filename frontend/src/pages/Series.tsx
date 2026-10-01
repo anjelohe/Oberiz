@@ -23,9 +23,20 @@ type SearchTarget={
 function jobFor(item:SeriesType,jobs:ImportJob[]){
   return jobs.find(j=>j.media_type==='series'&&j.media_id===item.id)
 }
-function stateFor(item:SeriesType,job?:ImportJob){
-  if(job?.status==='downloading'||job?.status==='completed')return 'downloading'
-  if(job?.status==='seeding'||job?.status==='cleaned')return 'available'
+function stateFor(item:SeriesType,jobs:ImportJob[]){
+  // Availability comes from the series' own verified episode counts, not
+  // from any one job's status: a single episode's job sitting at
+  // seeding/cleaned used to mark the whole series 'available' even with
+  // most episodes missing, and a series fully imported/scanned with no
+  // jobs at all (library-only content) could never be 'available'. Looking
+  // across every job for this series — not just the first one found — for
+  // an active download also means one finished job doesn't hide another
+  // that's still queued/downloading/importing.
+  const seriesJobs=jobs.filter(j=>j.media_type==='series'&&j.media_id===item.id)
+  if(seriesJobs.some(j=>j.status==='queued'||j.status==='downloading'||j.status==='completed')){
+    return 'downloading'
+  }
+  if(item.episode_count>0&&item.available_episode_count>=item.episode_count)return 'available'
   return item.monitored?'monitored':'unmonitored'
 }
 function monitorLabel(mode:string){
@@ -47,6 +58,7 @@ export function Series(){
   const [status,setStatus]=useState<StatusFilter>('all')
   const [sort,setSort]=useState('added')
   const [error,setError]=useState('')
+  const [downloadsError,setDownloadsError]=useState('')
   const [expanded,setExpanded]=useState<number|null>(null)
   const [details,setDetails]=useState<Record<number,SeriesDetailResponse>>({})
   const [expandedSeasons,setExpandedSeasons]=useState<Record<string,boolean>>({})
@@ -54,8 +66,12 @@ export function Series(){
   const [busy,setBusy]=useState('')
 
   async function reload(){
-    const [s,j,d]=await Promise.all([getSeries(),getImports(),getDownloadsLive()])
-    setItems(s);setJobs(j);setTorrents(d.torrents)
+    const [s,j,d]=await Promise.allSettled([getSeries(),getImports(),getDownloadsLive()])
+    if(s.status==='fulfilled'){setItems(s.value);setError('')}
+    else setError(s.reason instanceof Error?s.reason.message:String(s.reason))
+    if(j.status==='fulfilled')setJobs(j.value)
+    if(d.status==='fulfilled'){setTorrents(d.value.torrents);setDownloadsError('')}
+    else setDownloadsError(d.reason instanceof Error?d.reason.message:String(d.reason))
   }
   async function loadDetail(id:number){
     const detail=await getSeriesDetail(id)
@@ -64,19 +80,32 @@ export function Series(){
   }
 
   useEffect(()=>{
-    void reload().catch(e=>setError(String(e)))
+    void reload()
     void getQualityProfiles('series').then(setProfiles).catch(()=>{})
     const changed=(ev:Event)=>{if((ev as CustomEvent<string>).detail==='series')void reload()}
     window.addEventListener('oberiz-library-changed',changed)
-    const timer=setInterval(()=>void getDownloadsLive().then(d=>setTorrents(d.torrents)).catch(()=>{}),5000)
+    // Polls the full reload, not just downloads: a job finishing import flips
+    // status/available on the series/job rows themselves, not just torrent
+    // progress, and those used to only refresh on next page load.
+    const timer=setInterval(()=>void reload(),5000)
     return()=>{clearInterval(timer);window.removeEventListener('oberiz-library-changed',changed)}
   },[])
+
+  // The expanded series' season/episode breakdown is cached in `details` and
+  // otherwise only refetched on explicit user actions (expand, refresh
+  // metadata) — so has_file flips from an import finishing in the
+  // background would sit stale in an already-open series indefinitely.
+  useEffect(()=>{
+    if(expanded==null)return
+    const timer=setInterval(()=>void loadDetail(expanded).catch(()=>{}),5000)
+    return()=>clearInterval(timer)
+  },[expanded])
 
 
   const visible=useMemo(()=>{
     const q=query.trim().toLowerCase()
     let list=items.filter(item=>{
-      const state=stateFor(item,jobFor(item,jobs))
+      const state=stateFor(item,jobs)
       return (!q||`${item.name} ${item.original_name??''} ${item.year??''} ${item.quality_profile_name??''}`.toLowerCase().includes(q))
         && (status==='all'||state===status)
     })
@@ -87,7 +116,7 @@ export function Series(){
   const monitoredEpisodes=items.reduce((sum,x)=>sum+(x.monitored_episode_count||0),0)
   const upcomingEpisodes=items.reduce((sum,x)=>sum+(x.future_episode_count||0),0)
   const available=items.filter(x=>x.episode_count>0&&x.available_episode_count>=x.episode_count).length
-  const downloading=items.filter(x=>stateFor(x,jobFor(x,jobs))==='downloading').length
+  const downloading=items.filter(x=>stateFor(x,jobs)==='downloading').length
   const recent=[...items].sort((a,b)=>b.id-a.id).slice(0,5)
 
   const torrentFor=(job?:ImportJob)=>job?.qb_hash?torrents.find(t=>t.hash===job.qb_hash):undefined
@@ -109,6 +138,14 @@ export function Series(){
     if(!details[item.id]){
       try{await loadDetail(item.id)}catch(e){setError(e instanceof Error?e.message:String(e))}
     }
+  }
+
+  async function removeSeries(item:SeriesType){
+    if(!confirm(`Delete ${item.name}?`))return
+    setBusy(`delete-${item.id}`)
+    try{await deleteSeries(item.id);setExpanded(null);await reload()}
+    catch(e){setError(e instanceof Error?e.message:String(e))}
+    finally{setBusy('')}
   }
 
   async function refreshMetadata(item:SeriesType){
@@ -169,6 +206,7 @@ export function Series(){
 
 
     {error&&<div className="error-box">{error}</div>}
+    {downloadsError&&<div className="error-box">qBittorrent unavailable: {downloadsError}. Library metadata stays usable; download progress is paused.</div>}
 
     <section className="series-filterbar">
       <div className="series-filterchips">
@@ -185,7 +223,7 @@ export function Series(){
     <div className="series-layout">
       <div className="series-list">
         {visible.map(item=>{
-          const job=jobFor(item,jobs), state=stateFor(item,job)
+          const job=jobFor(item,jobs), state=stateFor(item,jobs)
           const torrent=torrentFor(job)
           const liveProgress=torrent?Math.max(0,Math.min(100,torrent.progress*100)):state==='available'?100:0
           const statusText=state==='available'?'Up to date':state==='downloading'?'Downloading':item.monitored?'Monitored':'On hold'
@@ -247,7 +285,7 @@ export function Series(){
                     </select>
                   </label>
                   <button className="ghost-button" disabled={busy===`refresh-${item.id}`} onClick={()=>void refreshMetadata(item)}>{busy===`refresh-${item.id}`?'Refreshing…':'Refresh TMDB'}</button>
-                  <button className="danger-button" onClick={async()=>{if(confirm(`Delete ${item.name}?`)){await deleteSeries(item.id);setExpanded(null);await reload()}}}>Delete Series</button>
+                  <button className="danger-button" onClick={()=>void removeSeries(item)}>Delete Series</button>
                 </div>
 
                 <div className="season-list">

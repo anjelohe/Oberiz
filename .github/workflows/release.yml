@@ -26,8 +26,12 @@ permissions:
 # cannot) — the version is left in a trailing comment for readability.
 # Dependabot (.github/dependabot.yml) opens a PR to bump these.
 jobs:
-  linux-package:
-    if: ${{ inputs.windows_only != true }}
+  # Nothing packages or publishes for this tag/ref until its own checks pass:
+  # ci.yml only triggers on pushes to main and on PRs, never on a tag push,
+  # so without this a tag could point at a commit that fails tests/clippy/
+  # build and every job below would still happily package and publish it —
+  # including overwriting the :latest Docker image.
+  verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -37,6 +41,55 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, as of 2026-09
+        with:
+          components: rustfmt, clippy
+      - name: Check formatting
+        run: cargo fmt --manifest-path backend/Cargo.toml --check
+      - name: Clippy
+        run: cargo clippy --manifest-path backend/Cargo.toml --all-targets --all-features -- -D warnings
+      - name: Backend tests
+        run: cargo test --manifest-path backend/Cargo.toml --locked
+      - name: Frontend typecheck and build
+        run: |
+          npm ci --prefix frontend
+          npm run build --prefix frontend
+      - name: Version matches the tag/release being built
+        # An arbitrary tag or a typo'd workflow_dispatch release_version
+        # otherwise sails through unnoticed and publishes artifacts labeled
+        # with a version that doesn't match what Cargo.toml/package.json
+        # actually say was built.
+        run: |
+          ref="${{ inputs.release_version || github.ref_name }}"
+          expected="${ref#v}"
+          backend_version=$(grep -m1 '^version = "' backend/Cargo.toml | sed -E 's/version = "(.*)"/\1/')
+          frontend_version=$(node -p "require('./frontend/package.json').version")
+          if [ "$backend_version" != "$expected" ] || [ "$frontend_version" != "$expected" ]; then
+            echo "::error::Tag/release_version '$ref' (expects version '$expected') does not match backend Cargo.toml ($backend_version) and/or frontend package.json ($frontend_version)."
+            exit 1
+          fi
+
+  linux-package:
+    needs: verify
+    if: ${{ success() && inputs.windows_only != true }}
+    runs-on: ubuntu-latest
+    env:
+      # Built against musl instead of this runner's glibc — see the comment
+      # in build-linux-package.sh — so the published tarball has no
+      # unverified minimum-glibc requirement implied by whichever version
+      # happens to ship on ubuntu-latest.
+      CARGO_BUILD_TARGET: x86_64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, as of 2026-09
+        with:
+          targets: x86_64-unknown-linux-musl
+      - name: Install musl build tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
       - name: Build Linux installer
         run: bash scripts/build-linux-package.sh
       - name: Generate SBOM (CycloneDX, backend dependency tree)
@@ -55,6 +108,8 @@ jobs:
             dist/SHA256SUMS-linux.txt
 
   windows-package:
+    needs: verify
+    if: ${{ success() }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -109,7 +164,13 @@ jobs:
             dist/SHA256SUMS-windows.txt
 
   docker-image:
-    if: ${{ inputs.windows_only != true }}
+    # Also waits on the other two packaging jobs, not just verify: pushing
+    # :latest from here while a sibling platform build is failing would
+    # publish an image for a "release" that isn't actually fully built,
+    # with no way to tell from the image tag alone that something else
+    # failed.
+    needs: [verify, linux-package, windows-package]
+    if: ${{ success() && inputs.windows_only != true }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -140,8 +201,14 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/oberiz:latest
 
   publish-release:
-    needs: [linux-package, windows-package, docker-image]
-    if: ${{ always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
+    # verify's result is checked explicitly, not just folded into the
+    # failure/cancelled scan below: when verify fails, linux-package/
+    # windows-package/docker-image all skip themselves (their own `if:`
+    # requires success()) rather than failing — and a skipped result isn't
+    # 'failure' or 'cancelled', so without this a failed verify would still
+    # let this job run and publish a release built from nothing.
+    needs: [verify, linux-package, windows-package, docker-image]
+    if: ${{ always() && needs.verify.result == 'success' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0

@@ -85,13 +85,20 @@ export function Dashboard(){
   const [qb,setQb]=useState<QbTest|null>(null)
   const [automation,setAutomation]=useState<AutomationStatus|null>(null)
   const [rss,setRss]=useState<RssStatus|null>(null)
+  // Queue Health and indexer coverage used to fall back to "everything is
+  // fine" (100%, "online") whenever these fetches failed, because an empty
+  // `downloads`/`indexers` default is indistinguishable from a genuinely
+  // empty queue/config. Tracking the fetch outcome itself separately from
+  // the data lets those cards say "unknown" instead of fabricating health.
+  const [downloadsFailed,setDownloadsFailed]=useState(false)
+  const [indexersFailed,setIndexersFailed]=useState(false)
 
   async function load(){
     await Promise.all([
       getMovies().then(setMovies).catch(()=>{}),
       getSeries().then(setSeries).catch(()=>{}),
-      getDownloadsLive().then(x=>setDownloads(x.torrents??[])).catch(()=>{}),
-      fetch('/api/indexers').then(r=>r.ok?r.json():Promise.reject()).then(setIndexers).catch(()=>{}),
+      getDownloadsLive().then(x=>{setDownloads(x.torrents??[]);setDownloadsFailed(false)}).catch(()=>setDownloadsFailed(true)),
+      fetch('/api/indexers').then(r=>r.ok?r.json():Promise.reject()).then(x=>{setIndexers(x);setIndexersFailed(false)}).catch(()=>setIndexersFailed(true)),
       fetch('/api/history?limit=12').then(r=>r.ok?r.json():Promise.reject()).then(setHistory).catch(()=>{}),
       getCalendar(30,true).then(setCalendar).catch(()=>{}),
       getLibrarySummary().then(setStorage).catch(()=>{}),
@@ -104,7 +111,7 @@ export function Dashboard(){
 
   useEffect(()=>{
     void load()
-    const timer=setInterval(()=>void getDownloadsLive().then(x=>setDownloads(x.torrents??[])).catch(()=>{}),5000)
+    const timer=setInterval(()=>void getDownloadsLive().then(x=>{setDownloads(x.torrents??[]);setDownloadsFailed(false)}).catch(()=>setDownloadsFailed(true)),5000)
     return()=>clearInterval(timer)
   },[])
 
@@ -113,7 +120,7 @@ export function Dashboard(){
   const activeSpeed=downloads.reduce((a,x)=>a+(x.dlspeed||0),0)
   const activeBytes=active.reduce((a,x)=>a+(x.total_size||x.size||0),0)
   const completed=downloads.filter(x=>x.progress>=.999999)
-  const queueHealth=downloads.length?Math.round(downloads.filter(x=>!/error|missing/i.test(x.state)).length/downloads.length*100):100
+  const queueHealth=downloadsFailed?null:downloads.length?Math.round(downloads.filter(x=>!/error|missing/i.test(x.state)).length/downloads.length*100):100
   const monitoredCoverage=movies.length?monitoredMovies/movies.length*100:0
   const downloadProgress=active.length?active.reduce((sum,item)=>sum+item.progress,0)/active.length*100:0
   const indexerCoverage=indexers.total?indexers.enabled/indexers.total*100:0
@@ -134,8 +141,8 @@ export function Dashboard(){
     <section className="dashboard-ref-stats">
       <article className="dashboard-ref-stat"><span className="stat-orb movie"><Icon name="movies" size={26}/></span><div><small>Monitored Movies</small><strong>{monitoredMovies}</strong><em>{movies.length} total in library</em></div><MetricBars value={monitoredCoverage} label={`${Math.round(monitoredCoverage)}% covered`}/></article>
       <article className="dashboard-ref-stat"><span className="stat-orb download"><Icon name="downloads" size={27}/></span><div><small>Active Downloads</small><strong>{active.length}</strong><em>{active.length?`${fmtSpeed(activeSpeed)} · ${fmtBytes(activeBytes)} queued`:'No active transfers'}</em></div><MetricBars value={downloadProgress} label={active.length?`${Math.round(downloadProgress)}% average`:'Idle'}/></article>
-      <article className="dashboard-ref-stat"><span className="stat-orb indexer"><Icon name="indexers" size={27}/></span><div><small>Active Indexers</small><strong>{indexers.enabled} / {indexers.total}</strong><em>{indexers.invalid?'Needs attention':'All configured indexers online'}</em></div><MetricBars value={indexerCoverage} label={`${indexers.enabled} / ${indexers.total} online`}/></article>
-      <article className="dashboard-ref-stat"><span className="stat-orb health">♡</span><div><small>Queue Health</small><strong>{queueHealth}%</strong><em>{queueHealth===100?'Everything looks good':'Check download queue'}</em></div><MetricBars value={queueHealth} label={`${queueHealth}% healthy`}/></article>
+      <article className="dashboard-ref-stat"><span className="stat-orb indexer"><Icon name="indexers" size={27}/></span><div><small>Active Indexers</small><strong>{indexersFailed?'—':`${indexers.enabled} / ${indexers.total}`}</strong><em>{indexersFailed?'Could not load indexers':indexers.invalid?'Needs attention':`${indexers.enabled} enabled (not a live health check)`}</em></div><MetricBars value={indexersFailed?0:indexerCoverage} label={indexersFailed?'Unknown':`${indexers.enabled} / ${indexers.total} enabled`}/></article>
+      <article className="dashboard-ref-stat"><span className="stat-orb health">♡</span><div><small>Queue Health</small><strong>{queueHealth===null?'—':`${queueHealth}%`}</strong><em>{queueHealth===null?'Could not reach qBittorrent':queueHealth===100?'Everything looks good':'Check download queue'}</em></div><MetricBars value={queueHealth??0} label={queueHealth===null?'Unknown':`${queueHealth}% healthy`}/></article>
     </section>
 
     <section className="dashboard-ref-grid">

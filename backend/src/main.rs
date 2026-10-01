@@ -164,6 +164,8 @@ async fn build_app_state() -> anyhow::Result<AppState> {
     settings::migrate_legacy_api_key(&db).await?;
     let http = reqwest::Client::builder()
         .user_agent(concat!("Oberiz/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(30))
         .build()?;
     Ok(AppState {
         db,

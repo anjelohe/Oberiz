@@ -150,9 +150,30 @@ pub(crate) async fn create_request_internal(
             // current season selection is applied again; movies and ordinary retries stay
             // fully idempotent.
             if exists && !(payload.media_type=="series" && payload.requested_seasons.is_some()) { return load_view(state,id).await; }
-            sqlx::query("DELETE FROM media_requests WHERE id=?").bind(id).execute(&state.db).await.map_err(internal)?;
+            // Deleting the old row here, before ensure_series's TMDB refresh
+            // even runs, used to mean a network failure partway through left
+            // the client's request gone with nothing to replace it — not an
+            // idempotent extend, just data loss. The row is now left alone;
+            // the INSERT below upserts onto it (same id preserved) only
+            // once every step up to that point has actually succeeded.
         }
     let monitored = payload.monitored.unwrap_or(true);
+    // An absent field and a client that explicitly sent an empty/all-invalid
+    // list used to collapse to the same thing (None) here, and the absent
+    // case's "no seasons specified" meaning — fall through to monitor_mode,
+    // defaulting to "all" — then silently applied to the explicit case too.
+    // A client that meant "none of these seasons" (or sent a typo'd/zeroed
+    // list) could end up monitoring, and automation searching for, the
+    // entire backlog instead of being told the request was invalid.
+    if let Some(seasons) = payload.requested_seasons.as_ref()
+        && !seasons.is_empty()
+        && !seasons.iter().any(|season| *season > 0)
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "requested_seasons no contiene ningún número de temporada válido (>0)".into(),
+        ));
+    }
     let requested_seasons = payload
         .requested_seasons
         .as_ref()
@@ -170,6 +191,16 @@ pub(crate) async fn create_request_internal(
             "future"
         } else {
             "none"
+        }
+    } else if payload.media_type == "series" {
+        // Validated here too, not only on the internal series API: an
+        // unrecognized mode reaching apply_monitor_mode_internal's fallback
+        // arm there is treated as "all" — monitor and search for every
+        // episode — rather than rejected, so a typo must be caught before
+        // it gets that far.
+        match payload.monitor_mode.as_deref() {
+            Some(mode) => series::validate_monitor_mode(mode)?,
+            None => "all",
         }
     } else {
         payload.monitor_mode.as_deref().unwrap_or("all")
@@ -198,12 +229,53 @@ pub(crate) async fn create_request_internal(
         .map(|seasons| serde_json::to_string(&seasons))
         .transpose()
         .map_err(internal)?;
-    let id=sqlx::query_scalar::<_,i64>(r#"
+    // An upsert, not a plain INSERT: when client_name/client_request_id
+    // match an existing row (via the UNIQUE index from migration 0018 —
+    // NULLs never match each other, so requests without an idempotency key
+    // always insert fresh), this updates that row in place instead of
+    // requiring a separate DELETE beforehand. Same id preserved across an
+    // "extend seasons" request, and no window where the old row is gone but
+    // the new one doesn't exist yet.
+    let insert_result = sqlx::query_scalar::<_,i64>(r#"
         INSERT INTO media_requests(media_type,tmdb_id,media_id,quality_profile_id,client_request_id,client_name,monitored,monitor_mode,requested_seasons,monitor_future_seasons,requested_by)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?) RETURNING id
+        VALUES(?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(client_name,client_request_id) DO UPDATE SET
+          media_type=excluded.media_type,tmdb_id=excluded.tmdb_id,media_id=excluded.media_id,
+          quality_profile_id=excluded.quality_profile_id,monitored=excluded.monitored,
+          monitor_mode=excluded.monitor_mode,requested_seasons=excluded.requested_seasons,
+          monitor_future_seasons=excluded.monitor_future_seasons,requested_by=excluded.requested_by,
+          updated_at=CURRENT_TIMESTAMP
+        RETURNING id
     "#).bind(&payload.media_type).bind(payload.tmdb_id).bind(media_id).bind(payload.quality_profile_id)
         .bind(client_request_id).bind(client_name).bind(monitored).bind(monitor_mode).bind(requested_seasons_json).bind(monitor_future_seasons).bind(&payload.requested_by)
-        .fetch_one(&state.db).await.map_err(internal)?;
+        .fetch_one(&state.db).await;
+    let id = match insert_result {
+        Ok(id) => id,
+        Err(error) => {
+            // A third request can still race both of these: it inserts
+            // between this one's ON CONFLICT check and its own commit. The
+            // UNIQUE index rejects that one outright rather than letting a
+            // duplicate through, and returning the winner it describes —
+            // rather than erroring — keeps a genuine race idempotent too,
+            // not just sequential retries.
+            let is_duplicate_key = client_name.is_some()
+                && client_request_id.is_some()
+                && error
+                    .as_database_error()
+                    .is_some_and(|e| e.is_unique_violation());
+            if !is_duplicate_key {
+                return Err(internal(error));
+            }
+            sqlx::query_scalar::<_, i64>(
+                "SELECT id FROM media_requests WHERE client_name=? AND client_request_id=? ORDER BY id DESC LIMIT 1",
+            )
+            .bind(client_name)
+            .bind(client_request_id)
+            .fetch_one(&state.db)
+            .await
+            .map_err(internal)?
+        }
+    };
 
     let bg = state.clone();
     let media_type = payload.media_type.clone();
@@ -299,14 +371,22 @@ async fn to_view(
         .await
         .map_err(internal)?;
         let searched = automation_has_started(state, "series", media_id).await?;
-        let status = if active > 0 {
+        // Availability checked before any active job, same precedence the
+        // movie branch above already uses: a seeding torrent (seeding
+        // counts toward `active`) for one episode used to report the whole
+        // series as "downloading" even once every requested episode had
+        // already been imported, instead of "available" — acquisition
+        // status and ongoing-seeding housekeeping are different things, and
+        // a caller of this public API has no way to tell them apart from
+        // "downloading" alone.
+        let status = if missing == 0 && files > 0 {
+            "available"
+        } else if active > 0 {
             "downloading"
         } else if missing > 0 && searched {
             "searching"
         } else if missing > 0 {
             "pending"
-        } else if files > 0 {
-            "available"
         } else {
             "monitoring"
         };
@@ -353,6 +433,19 @@ async fn ensure_movie(
     profile_id: Option<i64>,
     monitored: bool,
 ) -> Result<i64, (StatusCode, String)> {
+    // Checked before either branch, not only before creating a new movie:
+    // that used to let a series profile be silently applied to an existing
+    // movie through this same endpoint, since the update path returned
+    // before this check was ever reached.
+    if let Some(id) = profile_id {
+        let p = profiles::get_quality_profile_by_id(&state.db, id).await?;
+        if p.media_type != "movie" {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "Quality Profile is not for movies".into(),
+            ));
+        }
+    }
     if let Some(id) = sqlx::query_scalar::<_, i64>("SELECT id FROM movies WHERE tmdb_id=?")
         .bind(tmdb_id)
         .fetch_optional(&state.db)
@@ -362,15 +455,6 @@ async fn ensure_movie(
         sqlx::query("UPDATE movies SET monitored=?,quality_profile_id=COALESCE(?,quality_profile_id),updated_at=CURRENT_TIMESTAMP WHERE id=?")
             .bind(monitored).bind(profile_id).bind(id).execute(&state.db).await.map_err(internal)?;
         return Ok(id);
-    }
-    if let Some(id) = profile_id {
-        let p = profiles::get_quality_profile_by_id(&state.db, id).await?;
-        if p.media_type != "movie" {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                "Quality Profile is not for movies".into(),
-            ));
-        }
     }
     let credential = settings::get_value(&state.db, "tmdb.api_key")
         .await
@@ -431,6 +515,17 @@ async fn ensure_series(
     requested_seasons: Option<&[i32]>,
     monitor_future_seasons: bool,
 ) -> Result<i64, (StatusCode, String)> {
+    // Checked before either branch, not only before creating a new series:
+    // see the identical comment in ensure_movie above.
+    if let Some(id) = profile_id {
+        let p = profiles::get_quality_profile_by_id(&state.db, id).await?;
+        if p.media_type != "series" {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "Quality Profile is not for series".into(),
+            ));
+        }
+    }
     if let Some(id) = sqlx::query_scalar::<_, i64>("SELECT id FROM series WHERE tmdb_id=?")
         .bind(tmdb_id)
         .fetch_optional(&state.db)
@@ -444,15 +539,6 @@ async fn ensure_series(
             apply_requested_seasons(state, id, seasons, monitor_future_seasons).await?;
         }
         return Ok(id);
-    }
-    if let Some(id) = profile_id {
-        let p = profiles::get_quality_profile_by_id(&state.db, id).await?;
-        if p.media_type != "series" {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                "Quality Profile is not for series".into(),
-            ));
-        }
     }
     let credential = settings::get_value(&state.db, "tmdb.api_key")
         .await
