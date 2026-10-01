@@ -136,13 +136,19 @@ pub(crate) async fn process_rss_release(
         candidate.match_score = evaluation.match_score;
         candidate.score = evaluation.total_score;
         candidate.accepted = evaluation.accepted;
+        candidate.rejection_reasons = evaluation.rejection_reasons.clone();
         if !candidate.accepted {
             last_outcome = format!("rejected: {}", candidate.rejection_reasons.join(", "));
             continue;
         }
         let current=sqlx::query_scalar::<_,Option<i32>>("SELECT MAX(quality_score) FROM media_files WHERE media_type='movie' AND media_id=? AND file_exists=1")
             .bind(id).fetch_one(&state.db).await.unwrap_or(None);
-        if current.is_some_and(|score| !profile.upgrade_allowed || candidate.score <= score + 25) {
+        // Compared on the match+profile-rule scale, not candidate.score (which
+        // also folds in seeders) — `current` is the file's quality_score,
+        // persisted on that same stable scale (see importer::stable_quality_score).
+        let candidate_quality = candidate.match_score + candidate.profile_score;
+        if current.is_some_and(|score| !profile.upgrade_allowed || candidate_quality <= score + 25)
+        {
             last_outcome = "skipped: no quality upgrade".into();
             continue;
         }
@@ -195,38 +201,15 @@ pub(crate) async fn process_rss_release(
         {
             continue;
         }
-        let Some(profile_id) = profile_id else {
+        let Some(series_profile_id) = profile_id else {
             last_outcome = format!("skipped: {title} has no quality profile");
             continue;
         };
-        let profile = profiles::get_quality_profile_by_id(&state.db, profile_id)
+        let series_profile = profiles::get_quality_profile_by_id(&state.db, series_profile_id)
             .await
             .map_err(|e| e.1)?;
-        if !profile.enabled {
+        if !series_profile.enabled {
             last_outcome = format!("skipped: {title} profile disabled");
-            continue;
-        }
-        let language = profiles::language_for_profile(&state.db, &profile)
-            .await
-            .map_err(|e| e.1)?;
-        let mut candidate = release_for_rss(item);
-        let evaluation = profiles::evaluate_release(
-            &candidate,
-            &profile,
-            language.as_ref(),
-            &title,
-            original.as_deref(),
-            None,
-            "series",
-            None,
-        );
-        candidate.base_score = candidate.score;
-        candidate.profile_score = evaluation.profile_score;
-        candidate.match_score = evaluation.match_score;
-        candidate.score = evaluation.total_score;
-        candidate.accepted = evaluation.accepted;
-        if !candidate.accepted {
-            last_outcome = format!("rejected: {}", candidate.rejection_reasons.join(", "));
             continue;
         }
         let missing=sqlx::query_scalar::<_,i64>("SELECT COUNT(*) FROM series_episodes WHERE series_id=? AND monitored=1 AND has_file=0 AND (air_date IS NULL OR air_date<=date('now','localtime'))")
@@ -235,7 +218,33 @@ pub(crate) async fn process_rss_release(
             last_outcome = "skipped: series is already complete".into();
             continue;
         }
-        if is_complete_series_title(&item.title) && profile.rules.series_accept_complete {
+        if is_complete_series_title(&item.title) && series_profile.rules.series_accept_complete {
+            // Complete-series releases have no single season/episode to resolve
+            // an override for, so the series-level profile is the right one.
+            let language = profiles::language_for_profile(&state.db, &series_profile)
+                .await
+                .map_err(|e| e.1)?;
+            let mut candidate = release_for_rss(item);
+            let evaluation = profiles::evaluate_release(
+                &candidate,
+                &series_profile,
+                language.as_ref(),
+                &title,
+                original.as_deref(),
+                None,
+                "series",
+                None,
+            );
+            candidate.base_score = candidate.score;
+            candidate.profile_score = evaluation.profile_score;
+            candidate.match_score = evaluation.match_score;
+            candidate.score = evaluation.total_score;
+            candidate.accepted = evaluation.accepted;
+            candidate.rejection_reasons = evaluation.rejection_reasons.clone();
+            if !candidate.accepted {
+                last_outcome = format!("rejected: {}", candidate.rejection_reasons.join(", "));
+                continue;
+            }
             let _lock = state.grab_lock.lock().await;
             if already_grabbed(state, "series", id, None, None).await {
                 last_outcome = "skipped: equivalent job already active".into();
@@ -246,7 +255,7 @@ pub(crate) async fn process_rss_release(
                 &candidate,
                 "series",
                 id,
-                Some(profile.id),
+                Some(series_profile.id),
                 None,
                 None,
                 true,
@@ -281,8 +290,54 @@ pub(crate) async fn process_rss_release(
             continue;
         }
         let is_pack = episode.is_none();
+        // Resolves the season/episode-specific profile override (if any)
+        // instead of assuming the series-level default applies: RSS used to
+        // evaluate and grab every release under the series' own profile even
+        // when a season or episode had its own override configured, so a 4K
+        // or strict-language override, say, could be silently bypassed by RSS
+        // while the scheduled search correctly respected it.
+        let effective_profile_id =
+            series::effective_profile_for_episode(state, id, season, episode)
+                .await
+                .map_err(|e| e.1)?
+                .unwrap_or(series_profile_id);
+        let profile = if effective_profile_id == series_profile_id {
+            series_profile
+        } else {
+            profiles::get_quality_profile_by_id(&state.db, effective_profile_id)
+                .await
+                .map_err(|e| e.1)?
+        };
+        if !profile.enabled {
+            last_outcome = format!("skipped: {title} target profile disabled");
+            continue;
+        }
         if is_pack && !profile.rules.series_prefer_pack {
             last_outcome = "skipped: season packs disabled by profile".into();
+            continue;
+        }
+        let language = profiles::language_for_profile(&state.db, &profile)
+            .await
+            .map_err(|e| e.1)?;
+        let mut candidate = release_for_rss(item);
+        let evaluation = profiles::evaluate_release(
+            &candidate,
+            &profile,
+            language.as_ref(),
+            &title,
+            original.as_deref(),
+            None,
+            "series",
+            Some(season),
+        );
+        candidate.base_score = candidate.score;
+        candidate.profile_score = evaluation.profile_score;
+        candidate.match_score = evaluation.match_score;
+        candidate.score = evaluation.total_score;
+        candidate.accepted = evaluation.accepted;
+        candidate.rejection_reasons = evaluation.rejection_reasons.clone();
+        if !candidate.accepted {
+            last_outcome = format!("rejected: {}", candidate.rejection_reasons.join(", "));
             continue;
         }
         let exists = if let Some(ep) = episode {
@@ -329,18 +384,22 @@ pub(crate) async fn process_rss_release(
     Ok(last_outcome)
 }
 
-/// Whether this exact target has already been grabbed — actively downloading
-/// right now, or successfully finished at some point in the past. `cleaned`
-/// (seeding finished and the seed policy removed the torrent) counts too:
-/// that job's files are already imported, so "cleaned up afterwards" must
-/// not read as "never happened" and let automation grab it all over again.
-// 'cleaned' deliberately does NOT count as active here: this gate sits behind
-// a caller-side check ("do I already have this at a good enough score/does it
-// have a file") for every media type that reaches it, so once a job is
-// cleaned, whether to grab again is that upstream check's call — treating
-// 'cleaned' as eternally active here would instead block legitimate quality
-// upgrades forever, since the original (now finished) job never stops
-// "counting".
+/// Whether this exact target has already been grabbed or is in flight.
+/// 'cleaned' deliberately does NOT count as active here: this gate sits
+/// behind a caller-side check ("do I already have this at a good enough
+/// score/does it have a file") for every media type that reaches it, so once
+/// a job is cleaned, whether to grab again is that upstream check's call —
+/// treating 'cleaned' as eternally active here would instead block legitimate
+/// quality upgrades forever, since the original (now finished) job never
+/// stops "counting".
+/// Whether an active job already covers this target. An exact (season,
+/// episode) match isn't the only way that can be true for a series: a
+/// season-pack job (episode_number NULL) already covers every episode in
+/// that season, and a complete-series job (season_number NULL too) covers
+/// everything. Checking only for an exact tuple match let RSS/scheduled/
+/// manual grabs miss each other's scope entirely — an episode request next
+/// to an in-flight pack for the same season, or either next to an in-flight
+/// complete-series job, none of which share one (season, episode) tuple.
 async fn already_grabbed(
     state: &AppState,
     media_type: &str,
@@ -350,13 +409,23 @@ async fn already_grabbed(
 ) -> bool {
     sqlx::query_scalar::<_, i64>(
         r#"SELECT COUNT(*) FROM download_jobs
-        WHERE media_type=? AND media_id=? AND season_number IS ? AND episode_number IS ?
-          AND status IN ('queued','downloading','completed','seeding')"#,
+        WHERE media_type=? AND media_id=?
+          AND status IN ('queued','downloading','completed','seeding')
+          AND (
+            (season_number IS ? AND episode_number IS ?)
+            OR (season_number IS NULL AND episode_number IS NULL)
+            OR (? IS NOT NULL AND season_number = ? AND episode_number IS NULL)
+            OR (? IS NULL AND season_number = ? AND episode_number IS NOT NULL)
+          )"#,
     )
     .bind(media_type)
     .bind(media_id)
     .bind(season)
     .bind(episode)
+    .bind(episode)
+    .bind(season)
+    .bind(episode)
+    .bind(season)
     .fetch_one(&state.db)
     .await
     .unwrap_or(0)
@@ -748,7 +817,7 @@ async fn process_movie(
     };
 
     if let Some(score) = current_score
-        && best.score <= score + 25
+        && best.match_score + best.profile_score <= score + 25
     {
         touch_search(state, "movie", media_id, "upgrade-wait").await;
         summary.skipped += 1;
@@ -877,40 +946,31 @@ async fn process_series(
     }
 
     for (season_number, episodes) in by_season {
-        let first_episode = episodes.first().map(|x| x.0);
-        let profile_id = match series::effective_profile_for_episode(
+        // Resolved with episode=None (season/series level), not the first
+        // episode's own override: a pack covers the whole season, so its
+        // profile must be a season-wide decision, not whatever the first
+        // listed episode happens to be individually configured with.
+        let pack_profile_id = match series::effective_profile_for_episode(
             state,
             series_id,
             season_number,
-            first_episode,
+            None,
         )
         .await
         {
             Ok(v) => v,
             Err((_, error)) => {
-                record_series_target_error(state, series_id, season_number, first_episode, &error)
-                    .await;
+                record_series_target_error(state, series_id, season_number, None, &error).await;
                 summary.errors += 1;
-                continue;
+                None
             }
         };
-        let Some(profile_id) = profile_id else {
-            summary.skipped += episodes.len();
-            continue;
+        let pack_profile = match pack_profile_id {
+            Some(id) => profiles::get_quality_profile_by_id(&state.db, id)
+                .await
+                .ok(),
+            None => None,
         };
-        let profile = match profiles::get_quality_profile_by_id(&state.db, profile_id).await {
-            Ok(v) => v,
-            Err((_, error)) => {
-                record_series_target_error(state, series_id, season_number, first_episode, &error)
-                    .await;
-                summary.errors += 1;
-                continue;
-            }
-        };
-        if !profile.enabled {
-            summary.skipped += episodes.len();
-            continue;
-        }
 
         let missing = episodes
             .iter()
@@ -923,7 +983,10 @@ async fn process_series(
         // those episodes permanently unsearched (they'd otherwise never get a
         // turn as long as `series_prefer_pack` stays on and no pack exists).
         let mut pack_covers_missing = false;
-        if profile.rules.series_prefer_pack && missing >= 2 {
+        if let Some(pack_profile) = pack_profile.as_ref().filter(|p| p.enabled)
+            && pack_profile.rules.series_prefer_pack
+            && missing >= 2
+        {
             if summary.searched >= MAX_SEARCHES_PER_CYCLE
                 || has_active_series_job(state, series_id, season_number, None, true).await
             {
@@ -937,7 +1000,7 @@ async fn process_series(
                     season_number,
                     None,
                     true,
-                    &profile,
+                    pack_profile,
                     None,
                     summary,
                     periodic,
@@ -948,6 +1011,56 @@ async fn process_series(
 
         for (episode_number, episode_name, has_file, current_score) in episodes {
             if !has_file && pack_covers_missing {
+                continue;
+            }
+            // Resolved per episode, not reused from the season/pack lookup
+            // above: a specific episode can carry its own profile override
+            // (a different cutoff, a disabled profile, 4K/strict-language
+            // requirements) that must govern that one target, not whatever
+            // the pack-level or first-episode profile happened to be.
+            let profile_id = match series::effective_profile_for_episode(
+                state,
+                series_id,
+                season_number,
+                Some(episode_number),
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err((_, error)) => {
+                    record_series_target_error(
+                        state,
+                        series_id,
+                        season_number,
+                        Some(episode_number),
+                        &error,
+                    )
+                    .await;
+                    summary.errors += 1;
+                    continue;
+                }
+            };
+            let Some(profile_id) = profile_id else {
+                summary.skipped += 1;
+                continue;
+            };
+            let profile = match profiles::get_quality_profile_by_id(&state.db, profile_id).await {
+                Ok(v) => v,
+                Err((_, error)) => {
+                    record_series_target_error(
+                        state,
+                        series_id,
+                        season_number,
+                        Some(episode_number),
+                        &error,
+                    )
+                    .await;
+                    summary.errors += 1;
+                    continue;
+                }
+            };
+            if !profile.enabled {
+                summary.skipped += 1;
                 continue;
             }
             if has_file
@@ -1043,7 +1156,7 @@ async fn process_series_target(
         return false;
     };
     if let Some(score) = current_score
-        && best.score <= score + 25
+        && best.match_score + best.profile_score <= score + 25
     {
         touch_series_target(
             state,
@@ -1180,13 +1293,19 @@ async fn try_complete_series(
         return Ok(CompleteSeriesAttempt::NotApplicable);
     }
 
+    // 'cleaned' excluded: the caller only reaches try_complete_series when
+    // the series currently has zero available episodes and >=2 missing (see
+    // process_series), so a historical "this was handled once" record must
+    // not block repairing a season that has since regressed. Checking only
+    // for another complete-series job (as this used to) missed that a
+    // season-pack or per-episode job can just as easily already be covering
+    // this series — a complete-series grab on top of that would be a
+    // redundant, overlapping download of content already in flight.
     let active = sqlx::query_scalar::<_, i64>(
         r#"
         SELECT COUNT(*) FROM download_jobs
         WHERE media_type='series' AND media_id=?
-          AND season_number IS NULL AND episode_number IS NULL
-          AND is_season_pack=1
-          AND status IN ('queued','downloading','completed','seeding','cleaned')
+          AND status IN ('queued','downloading','completed','seeding')
     "#,
     )
     .bind(series_id)
@@ -1222,9 +1341,7 @@ async fn try_complete_series(
         r#"
         SELECT COUNT(*) FROM download_jobs
         WHERE media_type='series' AND media_id=?
-          AND season_number IS NULL AND episode_number IS NULL
-          AND is_season_pack=1
-          AND status IN ('queued','downloading','completed','seeding','cleaned')
+          AND status IN ('queued','downloading','completed','seeding')
     "#,
     )
     .bind(series_id)
@@ -1288,18 +1405,30 @@ async fn has_active_series_job(
     episode_number: Option<i32>,
     is_pack: bool,
 ) -> bool {
-    // Pack jobs: 'cleaned' still counts as active. A season pack has no
-    // reliable per-episode "current score" to compare against (some episodes
-    // in the gap may never have had a file), so this is the only signal that
-    // a pack for this season was already handled; without it, a season stuck
-    // just short of complete (e.g. unaired episodes) would have its pack
-    // re-grabbed every cycle.
+    // 'cleaned' does NOT count as active, for both branches: the caller only
+    // reaches this check when the *current* missing-episode count for this
+    // season is already known to be >=2 (process_series recomputes it fresh
+    // every cycle from has_file), so a job history that says "this pack was
+    // handled once" must not override what the library actually looks like
+    // right now. A stale 'cleaned' record from before an episode was deleted,
+    // or before a new one aired, would otherwise block ever repairing it.
+    // Either branch also treats an active complete-series job as covering
+    // this target, and the per-episode branch also treats an active
+    // season-pack job for this season as covering it — a pack or a
+    // complete-series download in flight already satisfies a pack/episode
+    // request for the same content, so without this a scheduler/RSS/manual
+    // path that doesn't share scope with another could start an overlapping
+    // duplicate of something already being fetched.
     let count = if is_pack {
         sqlx::query_scalar::<_, i64>(
             r#"
             SELECT COUNT(*) FROM download_jobs
-            WHERE media_type='series' AND media_id=? AND season_number=? AND is_season_pack=1
-              AND status IN ('queued','downloading','completed','seeding','cleaned')
+            WHERE media_type='series' AND media_id=?
+              AND status IN ('queued','downloading','completed','seeding')
+              AND (
+                (season_number=? AND is_season_pack=1)
+                OR (season_number IS NULL AND episode_number IS NULL)
+              )
         "#,
         )
         .bind(series_id)
@@ -1308,21 +1437,22 @@ async fn has_active_series_job(
         .await
         .unwrap_or(0)
     } else {
-        // Single episode: unlike the pack case, the caller already checked
-        // has_file/current_score before reaching here, so 'cleaned' must NOT
-        // count as active — that upstream check is what decides whether a
-        // quality upgrade is being sought, and this gate would otherwise
-        // block it forever once the original job finishes and gets cleaned.
         sqlx::query_scalar::<_, i64>(
             r#"
             SELECT COUNT(*) FROM download_jobs
-            WHERE media_type='series' AND media_id=? AND season_number=? AND episode_number=?
+            WHERE media_type='series' AND media_id=?
               AND status IN ('queued','downloading','completed','seeding')
+              AND (
+                (season_number=? AND episode_number=?)
+                OR (season_number=? AND episode_number IS NULL)
+                OR (season_number IS NULL AND episode_number IS NULL)
+              )
         "#,
         )
         .bind(series_id)
         .bind(season_number)
         .bind(episode_number)
+        .bind(season_number)
         .fetch_one(&state.db)
         .await
         .unwrap_or(0)

@@ -418,10 +418,13 @@ async fn search_indexer_once(
             .unwrap_or_else(|| "html".into())
             .to_lowercase();
 
-        let body = response
-            .text()
-            .await
-            .map_err(|e| sanitize_reqwest_error(&e))?;
+        let body_bytes = read_capped_bytes(
+            response,
+            MAX_SEARCH_RESPONSE_BYTES,
+            "La respuesta de búsqueda",
+        )
+        .await?;
+        let body = String::from_utf8_lossy(&body_bytes).into_owned();
 
         if response_type == "json" {
             let json: JsonValue = serde_json::from_str(&body)
@@ -909,13 +912,160 @@ fn same_or_related_host(base_url: &str, candidate_url: &str) -> bool {
             .and_then(|u| u.host_str().map(str::to_lowercase))
     };
     match (host(base_url), host(candidate_url)) {
+        // Only "candidate is a subdomain of base" authorizes reusing
+        // credentials — a tracker's own CDN subdomain (dl.tracker.com under
+        // tracker.com) is the legitimate case this exists for. The reverse
+        // ("base is a subdomain of candidate") used to also pass, which
+        // accepted ANY ancestor of base as related, public suffix included:
+        // a base of tracker.co.uk made a bare "co.uk" link in a release
+        // count as related, authorizing our credentials for a domain that
+        // has nothing to do with this indexer.
         (Some(base), Some(candidate)) => {
-            base == candidate
-                || candidate.ends_with(&format!(".{base}"))
-                || base.ends_with(&format!(".{candidate}"))
+            base == candidate || candidate.ends_with(&format!(".{base}"))
         }
         _ => false,
     }
+}
+
+/// Whether every address a host resolves to is a public, routable address.
+/// A release or redirect can point anywhere — this is what keeps a
+/// compromised/malicious tracker from using Oberiz as a blind GET proxy
+/// into loopback, private, or link-local addresses on the server's own
+/// network. Only applied to hosts `same_or_related_host` already rejected as
+/// unrelated to the indexer's configured base_url, since that one is an
+/// explicit admin choice (including a deliberately configured LAN indexer).
+///
+/// This resolves the hostname once up front and does not pin that address
+/// for the connection reqwest then makes — a DNS answer that changes
+/// between this check and the actual connect (DNS rebinding) is not
+/// defended against.
+/// Resolves `host` and returns one specific address to use, only if every
+/// address it resolved to is public (any private/loopback/link-local
+/// address among them disqualifies the whole host, not just that address —
+/// a multi-homed name that answers with both is treated as untrustworthy
+/// rather than picking the "good" one). The caller pins the connection to
+/// exactly the address returned here (see `authorize_fetch`) instead of
+/// letting the HTTP client re-resolve the name itself when it actually
+/// connects: resolving once to decide and then resolving again to connect
+/// leaves a window for the name to answer differently the second time
+/// (DNS rebinding) and land the connection inside the private network this
+/// check was meant to keep it out of.
+async fn resolve_pinned_public_address(host: &str, port: u16) -> Option<std::net::SocketAddr> {
+    let addrs: Vec<_> = tokio::net::lookup_host((host, port)).await.ok()?.collect();
+    if addrs.is_empty() || !addrs.iter().all(|addr| is_public_ip(addr.ip())) {
+        return None;
+    }
+    addrs.into_iter().next()
+}
+
+fn is_public_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            !(v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_multicast()
+                || v4.is_documentation())
+        }
+        std::net::IpAddr::V6(v6) => {
+            let is_unique_local = (v6.segments()[0] & 0xfe00) == 0xfc00;
+            let is_unicast_link_local = (v6.segments()[0] & 0xffc0) == 0xfe80;
+            !(v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || is_unique_local
+                || is_unicast_link_local)
+        }
+    }
+}
+
+/// Decides which client a fetch to `url` should use, and blocks it outright
+/// when it isn't related to the indexer and resolves outside the public
+/// internet (see `resolves_to_public_address`). Centralizing this means the
+/// SSRF check automatically covers every place a Cardigann-driven fetch
+/// picks between the authenticated client and the bare shared one.
+async fn authorize_fetch(
+    def: &Definition,
+    client: &Client,
+    url: &str,
+) -> Result<(Client, bool), String> {
+    let related = same_or_related_host(&def.base_url, url);
+    if related {
+        return Ok((client.clone(), true));
+    }
+    let parsed =
+        Url::parse(url).map_err(|e| format!("{} proporcionó una URL inválida: {e}", def.name))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| format!("{} proporcionó una URL sin host válido", def.name))?
+        .to_string();
+    let port = parsed
+        .port_or_known_default()
+        .ok_or_else(|| format!("{} proporcionó una URL con esquema no soportado", def.name))?;
+    let Some(addr) = resolve_pinned_public_address(&host, port).await else {
+        return Err(format!(
+            "{} enlaza a {host}, que no resuelve a una dirección pública; la petición se rechaza",
+            def.name
+        ));
+    };
+    // A fresh, single-use client pinned to exactly the address just
+    // validated — state.http would instead re-resolve `host` itself at
+    // connect time, which is the DNS-rebinding window resolve_pinned_public_
+    // address's own doc comment explains.
+    let pinned = Client::builder()
+        .resolve(&host, addr)
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|e| sanitize_reqwest_error(&e))?;
+    Ok((pinned, false))
+}
+
+/// `client` is built with `redirect::Policy::none()`, so a 3xx response here
+/// means the caller still has to go get it. Re-validates the destination
+/// against `same_or_related_host` before deciding whether credentials go
+/// with it, exactly like the first request did — and only follows one hop:
+/// a destination that redirects again is refused rather than chased
+/// indefinitely.
+async fn follow_redirect_once(
+    def: &Definition,
+    client: &Client,
+    download_headers: &[(String, String)],
+    response: reqwest::Response,
+) -> Result<reqwest::Response, String> {
+    if !response.status().is_redirection() {
+        return Ok(response);
+    }
+    let location = response
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| format!("{} respondió con una redirección sin Location", def.name))?
+        .to_string();
+    let target = response
+        .url()
+        .join(&location)
+        .map_err(|e| format!("Location de redirección inválida: {e}"))?;
+    let (effective_client, related) = authorize_fetch(def, client, target.as_str()).await?;
+    let mut request = effective_client.get(target.clone());
+    if related {
+        for (key, value) in download_headers {
+            request = request.header(key.as_str(), value.as_str());
+        }
+    }
+    let next = request
+        .send()
+        .await
+        .map_err(|e| sanitize_reqwest_error(&e))?;
+    if next.status().is_redirection() {
+        return Err(format!(
+            "{} encadena más de una redirección; se rechaza en vez de seguir la cadena sin límite",
+            def.name
+        ));
+    }
+    Ok(next)
 }
 
 pub async fn fetch_release_bytes_or_url(
@@ -940,12 +1090,8 @@ pub async fn fetch_release_bytes_or_url(
         && let Some(details) = details_url
         && let Some(download) = map_get(&def.yaml, "download")
     {
-        let related = same_or_related_host(&def.base_url, details);
-        let mut request = if related {
-            client.get(details)
-        } else {
-            state.http.get(details)
-        };
+        let (effective_client, related) = authorize_fetch(&def, &client, details).await?;
+        let mut request = effective_client.get(details);
         if related {
             for (key, value) in &download_headers {
                 request = request.header(key, value);
@@ -955,13 +1101,13 @@ pub async fn fetch_release_bytes_or_url(
             .send()
             .await
             .map_err(|e| sanitize_reqwest_error(&e))?;
+        let response = follow_redirect_once(&def, &client, &download_headers, response).await?;
         if !response.status().is_success() {
             return Err(format!("Página de detalle HTTP {}", response.status()));
         }
-        let body = response
-            .text()
-            .await
-            .map_err(|e| sanitize_reqwest_error(&e))?;
+        let body_bytes =
+            read_capped_bytes(response, MAX_DETAIL_PAGE_BYTES, "La página de detalle").await?;
+        let body = String::from_utf8_lossy(&body_bytes).into_owned();
         let doc = Html::parse_document(&body);
 
         if let Some(selectors) = map_get(download, "selectors").and_then(Value::as_sequence) {
@@ -1001,12 +1147,8 @@ pub async fn fetch_release_bytes_or_url(
         return Ok(GrabPayload::Url(url));
     }
 
-    let related = same_or_related_host(&def.base_url, &url);
-    let mut request = if related {
-        client.get(&url)
-    } else {
-        state.http.get(&url)
-    };
+    let (effective_client, related) = authorize_fetch(&def, &client, &url).await?;
+    let mut request = effective_client.get(&url);
     if related {
         for (key, value) in &download_headers {
             request = request.header(key, value);
@@ -1016,23 +1158,58 @@ pub async fn fetch_release_bytes_or_url(
         .send()
         .await
         .map_err(|e| sanitize_reqwest_error(&e))?;
+    let response = follow_redirect_once(&def, &client, &download_headers, response).await?;
     if !response.status().is_success() {
         return Err(format!(
             "La descarga del .torrent devolvió HTTP {}",
             response.status()
         ));
     }
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|e| sanitize_reqwest_error(&e))?;
+    let bytes = read_capped_bytes(response, MAX_TORRENT_BYTES, "La descarga del .torrent").await?;
     if let Err(reason) = validate_torrent_metainfo(&bytes) {
         return Err(format!(
             "{} no devolvió un archivo .torrent válido ({reason}); no se envió a qBittorrent",
             def.name,
         ));
     }
-    Ok(GrabPayload::Torrent(bytes.to_vec()))
+    Ok(GrabPayload::Torrent(bytes))
+}
+
+/// Caps for external response bodies. A tracker or any host reachable through
+/// a release link is an untrusted party that could otherwise hold a
+/// connection open and stream unbounded data, exhausting memory regardless of
+/// the response timeout.
+const MAX_SEARCH_RESPONSE_BYTES: usize = 15 * 1024 * 1024;
+const MAX_DETAIL_PAGE_BYTES: usize = 15 * 1024 * 1024;
+const MAX_TORRENT_BYTES: usize = 15 * 1024 * 1024;
+
+/// Reads a response body up to `max_bytes`, rejecting both an oversized
+/// `Content-Length` up front and a chunked/unlabelled body that grows past
+/// the limit while streaming, instead of buffering the whole thing first.
+async fn read_capped_bytes(
+    mut response: reqwest::Response,
+    max_bytes: usize,
+    context: &str,
+) -> Result<Vec<u8>, String> {
+    if let Some(len) = response.content_length()
+        && len > max_bytes as u64
+    {
+        return Err(format!(
+            "{context} supera el tamaño máximo permitido ({len} bytes)"
+        ));
+    }
+    let mut buf = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| sanitize_reqwest_error(&e))?
+    {
+        if buf.len() + chunk.len() > max_bytes {
+            return Err(format!("{context} supera el tamaño máximo permitido"));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(buf)
 }
 
 /// Check the small, essential part of bencoded torrent metainfo before passing
@@ -1048,7 +1225,7 @@ fn validate_torrent_metainfo(bytes: &[u8]) -> Result<(), &'static str> {
     while pos < bytes.len() && bytes[pos] != b'e' {
         let key = read_bencode_string(bytes, &mut pos)?;
         let info_value_is_dictionary = key == b"info" && bytes.get(pos) == Some(&b'd');
-        skip_bencode_value(bytes, &mut pos)?;
+        skip_bencode_value(bytes, &mut pos, 0)?;
         has_info_dictionary |= info_value_is_dictionary;
     }
     if bytes.get(pos) != Some(&b'e') {
@@ -1075,7 +1252,7 @@ pub(crate) fn torrent_v1_info_hash(bytes: &[u8]) -> Option<String> {
     while pos < bytes.len() && bytes[pos] != b'e' {
         let key = read_bencode_string(bytes, &mut pos).ok()?;
         let value_start = pos;
-        skip_bencode_value(bytes, &mut pos).ok()?;
+        skip_bencode_value(bytes, &mut pos, 0).ok()?;
         if key == b"info" && bytes.get(value_start) == Some(&b'd') {
             let mut digest = Sha1::new();
             digest.update(bytes.get(value_start..pos)?);
@@ -1112,7 +1289,15 @@ fn read_bencode_string<'a>(bytes: &'a [u8], pos: &mut usize) -> Result<&'a [u8],
     Ok(value)
 }
 
-fn skip_bencode_value(bytes: &[u8], pos: &mut usize) -> Result<(), &'static str> {
+/// Caps how deeply nested lists/dictionaries can go. A malicious tracker could
+/// otherwise hand us metainfo with enough nesting to exhaust the call stack
+/// and crash the whole process (API, search, imports and schedulers with it).
+const MAX_BENCODE_DEPTH: usize = 128;
+
+fn skip_bencode_value(bytes: &[u8], pos: &mut usize, depth: usize) -> Result<(), &'static str> {
+    if depth > MAX_BENCODE_DEPTH {
+        return Err("bencode anidado en exceso");
+    }
     match bytes.get(*pos).copied() {
         Some(b'0'..=b'9') => {
             read_bencode_string(bytes, pos)?;
@@ -1139,7 +1324,7 @@ fn skip_bencode_value(bytes: &[u8], pos: &mut usize) -> Result<(), &'static str>
         Some(b'l') => {
             *pos += 1;
             while bytes.get(*pos) != Some(&b'e') {
-                skip_bencode_value(bytes, pos)?;
+                skip_bencode_value(bytes, pos, depth + 1)?;
             }
             *pos += 1;
             Ok(())
@@ -1148,7 +1333,7 @@ fn skip_bencode_value(bytes: &[u8], pos: &mut usize) -> Result<(), &'static str>
             *pos += 1;
             while bytes.get(*pos) != Some(&b'e') {
                 read_bencode_string(bytes, pos)?;
-                skip_bencode_value(bytes, pos)?;
+                skip_bencode_value(bytes, pos, depth + 1)?;
             }
             *pos += 1;
             Ok(())
@@ -1296,15 +1481,25 @@ async fn build_authenticated_client(def: &Definition) -> Result<Client, String> 
         }
     }
 
+    // A shared jar, not `.cookie_store(true)` on one client: the login flow
+    // below needs a client that follows redirects normally (a login POST
+    // redirecting to a dashboard is common), but the client this function
+    // returns — later reused to fetch the actual release/torrent — must not
+    // auto-follow redirects at all (see S-03 below). Sharing the jar is what
+    // lets a session cookie set during login still apply to that second,
+    // stricter client.
+    let jar = std::sync::Arc::new(reqwest::cookie::Jar::default());
+    let user_agent = concat!(
+        "Mozilla/5.0 (compatible; Oberiz/",
+        env!("CARGO_PKG_VERSION"),
+        ")"
+    );
     let client = Client::builder()
-        .cookie_store(true)
-        .default_headers(default_headers)
+        .cookie_provider(jar.clone())
+        .default_headers(default_headers.clone())
+        .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(18))
-        .user_agent(concat!(
-            "Mozilla/5.0 (compatible; Oberiz/",
-            env!("CARGO_PKG_VERSION"),
-            ")"
-        ))
+        .user_agent(user_agent)
         .build()
         .map_err(|e| sanitize_reqwest_error(&e))?;
 
@@ -1415,7 +1610,24 @@ async fn build_authenticated_client(def: &Definition) -> Result<Client, String> 
         }
     }
 
-    Ok(client)
+    // Reusing the same session (shared jar) but a client that never
+    // auto-follows a redirect: reqwest's `remove_sensitive_headers` only
+    // strips a small fixed set of standard headers (Authorization, Cookie,
+    // Proxy-Authorization, WWW-Authenticate) on a cross-host redirect, never
+    // a custom header a definition injected into `default_headers` here —
+    // an `X-Api-Key` would otherwise ride along automatically to wherever a
+    // malicious or misconfigured redirect points. `follow_redirect_once`
+    // below re-validates the destination before ever presenting credentials
+    // to it.
+    Client::builder()
+        .cookie_provider(jar)
+        .default_headers(default_headers)
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(18))
+        .user_agent(user_agent)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| sanitize_reqwest_error(&e))
 }
 
 /// Return the tracker-provided form error without retaining any submitted
@@ -2161,6 +2373,22 @@ mod same_or_related_host_tests {
             "https://nottracker.example/x.torrent"
         ));
     }
+
+    #[test]
+    fn rejects_a_public_suffix_ancestor_of_the_base_host() {
+        // A base of tracker.co.uk must never make a bare "co.uk" link count
+        // as related: that's an ancestor of the base, not a subdomain of it,
+        // and authorizing credentials for it would hand them to an
+        // unrelated registry-level domain.
+        assert!(!same_or_related_host(
+            "https://tracker.co.uk",
+            "https://co.uk/evil"
+        ));
+        assert!(!same_or_related_host(
+            "https://cdn.tracker.example",
+            "https://tracker.example/x.torrent"
+        ));
+    }
 }
 
 #[cfg(test)]
@@ -2182,5 +2410,128 @@ mod redact_sensitive_query_params_tests {
         let url = Url::parse("https://tracker.example/search?q=movie&cat=movies").unwrap();
         let redacted = redact_sensitive_query_params(&url);
         assert_eq!(redacted.as_str(), url.as_str());
+    }
+}
+
+#[cfg(test)]
+mod is_public_ip_tests {
+    use super::is_public_ip;
+
+    #[test]
+    fn rejects_loopback_private_and_link_local_ipv4() {
+        assert!(!is_public_ip("127.0.0.1".parse().unwrap()));
+        assert!(!is_public_ip("10.0.0.5".parse().unwrap()));
+        assert!(!is_public_ip("172.16.0.5".parse().unwrap()));
+        assert!(!is_public_ip("192.168.1.1".parse().unwrap()));
+        assert!(!is_public_ip("169.254.1.1".parse().unwrap()));
+        assert!(!is_public_ip("0.0.0.0".parse().unwrap()));
+    }
+
+    #[test]
+    fn rejects_loopback_and_link_local_ipv6() {
+        assert!(!is_public_ip("::1".parse().unwrap()));
+        assert!(!is_public_ip("fe80::1".parse().unwrap()));
+        assert!(!is_public_ip("fc00::1".parse().unwrap()));
+    }
+
+    #[test]
+    fn accepts_ordinary_public_addresses() {
+        assert!(is_public_ip("8.8.8.8".parse().unwrap()));
+        assert!(is_public_ip("2001:4860:4860::8888".parse().unwrap()));
+    }
+}
+
+#[cfg(test)]
+mod bencode_depth_limit_tests {
+    use super::{MAX_BENCODE_DEPTH, torrent_v1_info_hash, validate_torrent_metainfo};
+
+    fn deeply_nested_list_payload(depth: usize) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(depth * 2 + 32);
+        bytes.extend_from_slice(b"d4:infod4:name");
+        bytes.extend(std::iter::repeat_n(b'l', depth));
+        bytes.extend(std::iter::repeat_n(b'e', depth));
+        bytes.extend_from_slice(b"ee");
+        bytes
+    }
+
+    #[test]
+    fn validate_torrent_metainfo_rejects_excessive_nesting_instead_of_overflowing() {
+        let payload = deeply_nested_list_payload(MAX_BENCODE_DEPTH * 10);
+        assert!(validate_torrent_metainfo(&payload).is_err());
+    }
+
+    #[test]
+    fn torrent_v1_info_hash_rejects_excessive_nesting_instead_of_overflowing() {
+        let payload = deeply_nested_list_payload(MAX_BENCODE_DEPTH * 10);
+        assert_eq!(torrent_v1_info_hash(&payload), None);
+    }
+
+    #[test]
+    fn validate_torrent_metainfo_still_accepts_normal_nesting() {
+        let payload = deeply_nested_list_payload(MAX_BENCODE_DEPTH / 2);
+        assert!(validate_torrent_metainfo(&payload).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod read_capped_bytes_tests {
+    use super::read_capped_bytes;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    /// Serves a single HTTP/1.1 response on a fresh local port and returns its
+    /// URL. `declared_content_length` of `None` sends the body chunked
+    /// instead, since real trackers may omit Content-Length too.
+    async fn serve_once(body: Vec<u8>, declared_content_length: Option<usize>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut discard = [0u8; 1024];
+            let _ = socket.read(&mut discard).await;
+            match declared_content_length {
+                Some(len) => {
+                    let header = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n"
+                    );
+                    socket.write_all(header.as_bytes()).await.unwrap();
+                    socket.write_all(&body).await.unwrap();
+                }
+                None => {
+                    let header = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
+                    socket.write_all(header.as_bytes()).await.unwrap();
+                    let chunk_header = format!("{:x}\r\n", body.len());
+                    socket.write_all(chunk_header.as_bytes()).await.unwrap();
+                    socket.write_all(&body).await.unwrap();
+                    socket.write_all(b"\r\n0\r\n\r\n").await.unwrap();
+                }
+            }
+            let _ = socket.shutdown().await;
+        });
+        format!("http://{addr}/")
+    }
+
+    #[tokio::test]
+    async fn rejects_oversized_content_length_without_reading_the_body() {
+        let url = serve_once(b"x".to_vec(), Some(100)).await;
+        let response = reqwest::get(&url).await.unwrap();
+        let result = read_capped_bytes(response, 10, "test").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn accepts_a_body_within_the_limit() {
+        let url = serve_once(b"hello".to_vec(), Some(5)).await;
+        let response = reqwest::get(&url).await.unwrap();
+        let result = read_capped_bytes(response, 10, "test").await.unwrap();
+        assert_eq!(result, b"hello");
+    }
+
+    #[tokio::test]
+    async fn rejects_a_chunked_body_that_exceeds_the_limit_while_streaming() {
+        let url = serve_once(vec![b'a'; 50], None).await;
+        let response = reqwest::get(&url).await.unwrap();
+        let result = read_capped_bytes(response, 10, "test").await;
+        assert!(result.is_err());
     }
 }

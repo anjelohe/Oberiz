@@ -408,7 +408,8 @@ export const createQBittorrentCategory = (name:string, save_path:string) => json
 export const updateQBittorrentCategory = (name:string, save_path:string) => json<{status:string}>(`/api/qbittorrent/categories/${encodeURIComponent(name)}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,save_path})})
 export const deleteQBittorrentCategory = (name:string) => json<{status:string}>(`/api/qbittorrent/categories/${encodeURIComponent(name)}`,{method:'DELETE'})
 export const getQBittorrentTags = () => json<{status:string;tags:string[]}>('/api/qbittorrent/tags')
-export type DirectoryListing = {path:string;parent:string|null;roots:string[];directories:string[]}
+export type DirectoryEntry = {name:string;path:string}
+export type DirectoryListing = {path:string;parent:string|null;roots:string[];directories:DirectoryEntry[]}
 export const getDirectories = (path?:string) => json<DirectoryListing>(`/api/filesystem/directories${path?`?path=${encodeURIComponent(path)}`:''}`)
 export const createQBittorrentTags = (tags:string[]) => json<{status:string}>('/api/qbittorrent/tags',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tags})})
 export const deleteQBittorrentTags = (tags:string[]) => json<{status:string}>('/api/qbittorrent/tags',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({tags})})

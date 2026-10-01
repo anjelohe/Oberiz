@@ -3,8 +3,33 @@
 //! are actually media worth importing.
 use std::{
     fs,
+    io::Read,
     path::{Path, PathBuf},
 };
+
+/// Whether two files hold exactly the same bytes. Equal size alone is not
+/// enough to call two files "the same" — two different releases can happen
+/// to land on an equal byte count — so this always reads and compares the
+/// actual content, short-circuiting on the first mismatch.
+pub(super) fn files_have_identical_content(a: &Path, b: &Path) -> std::io::Result<bool> {
+    if fs::metadata(a)?.len() != fs::metadata(b)?.len() {
+        return Ok(false);
+    }
+    let mut fa = fs::File::open(a)?;
+    let mut fb = fs::File::open(b)?;
+    let mut buf_a = [0u8; 64 * 1024];
+    let mut buf_b = [0u8; 64 * 1024];
+    loop {
+        let na = fa.read(&mut buf_a)?;
+        let nb = fb.read(&mut buf_b)?;
+        if na != nb || buf_a[..na] != buf_b[..nb] {
+            return Ok(false);
+        }
+        if na == 0 {
+            return Ok(true);
+        }
+    }
+}
 
 pub(super) fn transfer_file(src: &Path, dst: &Path, method: &str) -> std::io::Result<()> {
     match method {
@@ -83,7 +108,15 @@ pub(super) fn collect_media_files(path: &Path, out: &mut Vec<PathBuf>) -> std::i
         return Ok(());
     }
     for entry in fs::read_dir(path)? {
-        let p = entry?.path();
+        let entry = entry?;
+        // Don't follow directory symlinks while walking a torrent's content
+        // path: a link back to an ancestor, or a cycle between two
+        // directories, would otherwise recurse until the stack or the
+        // process's open-file limit gives out.
+        if entry.file_type()?.is_symlink() {
+            continue;
+        }
+        let p = entry.path();
         if p.is_dir() {
             collect_media_files(&p, out)?;
         } else {
@@ -123,6 +156,51 @@ mod tests {
         ));
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn files_have_identical_content_rejects_equal_size_different_bytes() {
+        let root = temp_dir("identical-size-mismatch");
+        let a = root.join("a.mkv");
+        let b = root.join("b.mkv");
+        fs::write(&a, b"NEW!").unwrap();
+        fs::write(&b, b"OLD!").unwrap();
+
+        assert!(!files_have_identical_content(&a, &b).unwrap());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn files_have_identical_content_accepts_genuinely_equal_files() {
+        let root = temp_dir("identical-match");
+        let a = root.join("a.mkv");
+        let b = root.join("b.mkv");
+        fs::write(&a, b"same payload bytes").unwrap();
+        fs::write(&b, b"same payload bytes").unwrap();
+
+        assert!(files_have_identical_content(&a, &b).unwrap());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn collect_media_files_does_not_follow_a_symlink_cycle() {
+        let root = temp_dir("symlink-cycle");
+        fs::create_dir_all(root.join("real")).unwrap();
+        fs::write(root.join("real").join("episode.mkv"), b"video").unwrap();
+        // A directory symlink pointing back at its own ancestor: following it
+        // would recurse forever.
+        std::os::unix::fs::symlink(&root, root.join("real").join("loop")).unwrap();
+
+        let mut found = Vec::new();
+        collect_media_files(&root, &mut found).unwrap();
+
+        assert_eq!(found.len(), 1);
+        assert!(found[0].ends_with("episode.mkv"));
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

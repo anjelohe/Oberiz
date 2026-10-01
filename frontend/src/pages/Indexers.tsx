@@ -47,7 +47,18 @@ export function Indexers(){
   useEffect(()=>{void load().catch(e=>setError(String(e)))},[load])
 
   async function sync(){setBusy(true);setError('');try{const r=await fetch('/api/indexers/sync',{method:'POST'});if(!r.ok)throw new Error(await r.text());await load()}catch(e){setError(e instanceof Error?e.message:String(e))}finally{setBusy(false)}}
-  async function open(item:Indexer){setTest('');const r=await fetch(`/api/indexers/${encodeURIComponent(item.id)}`);if(!r.ok){setError(await r.text());return}const d:Detail=await r.json();setSelected(d);const initial:Record<string,any>={};d.settings.forEach(s=>initial[s.name]=s.value??s.default??(s.field_type==='checkbox'?false:''));setValues(initial)}
+  async function open(item:Indexer){
+    setTest('');setError('')
+    try{
+      const r=await fetch(`/api/indexers/${encodeURIComponent(item.id)}`)
+      if(!r.ok){setError(await r.text());return}
+      const d:Detail=await r.json()
+      setSelected(d)
+      const initial:Record<string,any>={}
+      d.settings.forEach(s=>initial[s.name]=s.value??s.default??(s.field_type==='checkbox'?false:''))
+      setValues(initial)
+    }catch(e){setError(e instanceof Error?e.message:String(e))}
+  }
   async function save(closeAfterSaving=true):Promise<boolean>{
     if(!selected)return false;setBusy(true);setTest('')
     try{
@@ -66,16 +77,22 @@ export function Indexers(){
     finally{setBusy(false)}
   }
   async function toggle(item:Indexer){
-    const r=await fetch(`/api/indexers/${encodeURIComponent(item.id)}/enabled`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:!item.enabled})})
-    if(!r.ok){setError(await r.text());return}
-    await load()
+    setError('')
+    try{
+      const r=await fetch(`/api/indexers/${encodeURIComponent(item.id)}/enabled`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:!item.enabled})})
+      if(!r.ok){setError(await r.text());return}
+      await load()
+    }catch(e){setError(e instanceof Error?e.message:String(e))}
   }
 
   async function removeConfigured(item:Indexer){
     if(!confirm(`Remove ${item.name} from configured indexers?\n\nThe definition will remain available in Add Indexer. Seed policies and download history are preserved.`))return
-    const r=await fetch(`/api/indexers/${encodeURIComponent(item.id)}`,{method:'DELETE'})
-    if(!r.ok){setError(await r.text());return}
-    await load()
+    setError('')
+    try{
+      const r=await fetch(`/api/indexers/${encodeURIComponent(item.id)}`,{method:'DELETE'})
+      if(!r.ok){setError(await r.text());return}
+      await load()
+    }catch(e){setError(e instanceof Error?e.message:String(e))}
   }
 
   const configured=useMemo(()=>{

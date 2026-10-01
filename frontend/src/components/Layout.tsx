@@ -1,7 +1,7 @@
 import { ReactNode, useEffect, useRef, useState } from 'react'
 import { Icon } from './Icon'
 import { AddMediaModal } from './AddMediaModal'
-import { Movie, Series, getMovies, getSeries } from '../lib/api'
+import { Diagnostics, Movie, Series, getDiagnostics, getMovies, getSeries } from '../lib/api'
 
 export type Page = 'dashboard'|'movies'|'series'|'profiles'|'downloads'|'imports'|'indexers'|'history'|'calendar'|'settings'
 
@@ -26,6 +26,8 @@ export function Layout({
   const [query,setQuery]=useState('')
   const [movies,setMovies]=useState<Movie[]>([])
   const [series,setSeries]=useState<Series[]>([])
+  const [diagnostics,setDiagnostics]=useState<Diagnostics|null>(null)
+  const [diagnosticsFailed,setDiagnosticsFailed]=useState(false)
   const searchRef=useRef<HTMLInputElement>(null)
 
   useEffect(()=>{
@@ -33,7 +35,32 @@ export function Layout({
     window.addEventListener('oberiz-open-add-media',handler)
     return()=>window.removeEventListener('oberiz-open-add-media',handler)
   },[])
-  useEffect(()=>{void Promise.all([getMovies(),getSeries()]).then(([movieRows,seriesRows])=>{setMovies(movieRows);setSeries(seriesRows)}).catch(()=>{})},[])
+  useEffect(()=>{
+    function refresh(){void Promise.all([getMovies(),getSeries()]).then(([movieRows,seriesRows])=>{setMovies(movieRows);setSeries(seriesRows)}).catch(()=>{})}
+    refresh()
+    // Global search used to only load this once on mount: adding or
+    // deleting a title left it invisible/still-listed in search results
+    // until a full page reload, long after the rest of the app had moved on.
+    window.addEventListener('oberiz-library-changed',refresh)
+    return()=>window.removeEventListener('oberiz-library-changed',refresh)
+  },[])
+  useEffect(()=>{
+    // The sidebar badge used to just say "All Systems Operational" as fixed
+    // text regardless of what was actually happening — it couldn't tell a
+    // healthy install from a dead database or qBittorrent apart. This polls
+    // real diagnostics and distinguishes "didn't check yet"/"check itself
+    // failed" from an actually-confirmed problem, instead of defaulting to
+    // a green claim in both cases.
+    function refresh(){
+      getDiagnostics().then(d=>{setDiagnostics(d);setDiagnosticsFailed(false)}).catch(()=>setDiagnosticsFailed(true))
+    }
+    refresh()
+    const timer=window.setInterval(refresh,30000)
+    return()=>window.clearInterval(timer)
+  },[])
+  const systemHealthy=diagnostics!==null&&diagnostics.database==='ok'&&diagnostics.recent_errors.length===0
+  const systemStatus=diagnosticsFailed?'unknown':diagnostics===null?'unknown':systemHealthy?'ok':'warn'
+  const systemLabel=systemStatus==='unknown'?'Status unknown':systemStatus==='warn'?'Needs attention':'All Systems Operational'
   useEffect(()=>{
     const shortcut=(event:KeyboardEvent)=>{if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='k'){event.preventDefault();searchRef.current?.focus()}}
     window.addEventListener('keydown',shortcut)
@@ -64,8 +91,8 @@ export function Layout({
         </select>
       </label>
       <div className="sidebar-theme-icons" role="group" aria-label="Theme"><button className={theme==='dark'?'active':''} type="button" onClick={()=>onTheme('dark')} title="Dark theme" aria-label="Dark theme" aria-pressed={theme==='dark'}>◐</button><button className={theme==='middle'?'active':''} type="button" onClick={()=>onTheme('middle')} title="Middle theme" aria-label="Middle theme" aria-pressed={theme==='middle'}>●</button><button className={theme==='light'?'active':''} type="button" onClick={()=>onTheme('light')} title="Light theme" aria-label="Light theme" aria-pressed={theme==='light'}>☀</button></div>
-      <button className="system-ok" onClick={()=>navigate('settings')} title="Open system diagnostics"><span/> All Systems Operational</button>
-      <div className="version"><b>v1.0.9</b><span>Self-hosted Media Automation</span></div>
+      <button className={`system-ok ${systemStatus==='warn'?'warn':systemStatus==='unknown'?'unknown':''}`} onClick={()=>navigate('settings')} title="Open system diagnostics"><span/> {systemLabel}</button>
+      <div className="version"><b>v1.0.10</b><span>Self-hosted Media Automation</span></div>
     </aside>
 
     <main className="main">

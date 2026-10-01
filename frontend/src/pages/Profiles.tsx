@@ -5,6 +5,7 @@ import {
   QBittorrentCategory, saveLanguageProfile, saveQualityProfile, setDefaultQualityProfile,
 } from '../lib/api'
 import { Icon } from '../components/Icon'
+import { useModalA11y } from '../lib/useModalA11y'
 import './Profiles.css'
 
 type Tab='movie'|'series'|'language'
@@ -43,6 +44,14 @@ function QualityEditor({profile,cloneFrom,initialMedia,languages,onClose,onSaved
   const [message,setMessage]=useState('')
   const [categories,setCategories]=useState<QBittorrentCategory[]>([])
   const [categoriesError,setCategoriesError]=useState('')
+  // A plain string draft, not derived from draft.rules.prefer_terms on every
+  // render: re-serializing the parsed map back to text on each keystroke
+  // rewrote whatever the user had just typed (typing "P" parsed to {P:0},
+  // which re-rendered as "P:0" before they could type anything else).
+  const [preferTermsText,setPreferTermsText]=useState(()=>
+    Object.entries(draft.rules.prefer_terms).map(([k,v])=>`${k}:${v}`).join(', ')
+  )
+  const dialogRef=useModalA11y<HTMLDivElement>(true,onClose)
 
   async function loadCategories(){
     setCategoriesError('')
@@ -70,8 +79,8 @@ function QualityEditor({profile,cloneFrom,initialMedia,languages,onClose,onSaved
   }
 
   return <div className="profile-modal-backdrop" onMouseDown={onClose}>
-    <div className="profile-modal" onMouseDown={e=>e.stopPropagation()}>
-      <div className="profile-modal-head"><div><span>QUALITY PROFILE</span><h2>{profile?'Edit profile':cloneFrom?'Clone profile':'New profile'}</h2></div><button onClick={onClose}>×</button></div>
+    <div ref={dialogRef} className="profile-modal" role="dialog" aria-modal="true" aria-labelledby="quality-editor-title" tabIndex={-1} onMouseDown={e=>e.stopPropagation()}>
+      <div className="profile-modal-head"><div><span>QUALITY PROFILE</span><h2 id="quality-editor-title">{profile?'Edit profile':cloneFrom?'Clone profile':'New profile'}</h2></div><button onClick={onClose} aria-label="Close">×</button></div>
       <div className="profile-form-grid">
         <label>Name<input value={draft.name} onChange={e=>setDraft({...draft,name:e.target.value})}/></label>
         <label>Media type<select value={draft.media_type} onChange={e=>setDraft({...draft,media_type:e.target.value as 'movie'|'series'})}><option value="movie">Movies</option><option value="series">Series</option></select></label>
@@ -136,8 +145,10 @@ function QualityEditor({profile,cloneFrom,initialMedia,languages,onClose,onSaved
       </div>
       <div className="profile-form-grid wide">
         <label>Reject terms<input value={draft.rules.reject_terms.join(', ')} onChange={e=>setDraft({...draft,rules:{...draft.rules,reject_terms:e.target.value.split(',').map(x=>x.trim()).filter(Boolean)}})} placeholder="CAM, TELESYNC, SCREENER"/></label>
-        <label>Preferred terms (TERM:score)<input value={Object.entries(draft.rules.prefer_terms).map(([k,v])=>`${k}:${v}`).join(', ')} onChange={e=>{
-          const values:Record<string,number>={};e.target.value.split(',').forEach(part=>{const [key,val]=part.split(':');if(key?.trim())values[key.trim()]=Number(val)||0});setDraft({...draft,rules:{...draft.rules,prefer_terms:values}})
+        <label>Preferred terms (TERM:score)<input value={preferTermsText} onChange={e=>{
+          const text=e.target.value
+          setPreferTermsText(text)
+          const values:Record<string,number>={};text.split(',').forEach(part=>{const [key,val]=part.split(':');if(key?.trim())values[key.trim()]=Number(val)||0});setDraft({...draft,rules:{...draft.rules,prefer_terms:values}})
         }} placeholder="PROPER:10, REPACK:10"/></label>
       </div>
       <div className="profile-modal-actions"><span>{message}</span><button className="ghost-button" onClick={onClose}>Cancel</button><button className="primary-button" onClick={()=>void save()}>Save Profile</button></div>
@@ -148,9 +159,10 @@ function QualityEditor({profile,cloneFrom,initialMedia,languages,onClose,onSaved
 function LanguageEditor({profile,onClose,onSaved}:{profile:LanguageProfile|null;onClose:()=>void;onSaved:()=>Promise<void>}){
   const [draft,setDraft]=useState<Omit<LanguageProfile,'id'|'created_at'|'updated_at'>>(profile?{...profile,scores:{...profile.scores},allowed_languages:[...profile.allowed_languages]}:{name:'New Language Profile',allowed_languages:[...LANGUAGES],scores:{Spanish:120,Dual:100},allow_unknown:true})
   const [message,setMessage]=useState('')
+  const dialogRef=useModalA11y<HTMLDivElement>(true,onClose)
   async function save(){try{profile?await saveLanguageProfile(profile.id,draft):await createLanguageProfile(draft);await onSaved();onClose()}catch(e){setMessage(e instanceof Error?e.message:String(e))}}
-  return <div className="profile-modal-backdrop" onMouseDown={onClose}><div className="profile-modal language-modal" onMouseDown={e=>e.stopPropagation()}>
-    <div className="profile-modal-head"><div><span>LANGUAGE PROFILE</span><h2>{profile?'Edit language profile':'New language profile'}</h2></div><button onClick={onClose}>×</button></div>
+  return <div className="profile-modal-backdrop" onMouseDown={onClose}><div ref={dialogRef} className="profile-modal language-modal" role="dialog" aria-modal="true" aria-labelledby="language-editor-title" tabIndex={-1} onMouseDown={e=>e.stopPropagation()}>
+    <div className="profile-modal-head"><div><span>LANGUAGE PROFILE</span><h2 id="language-editor-title">{profile?'Edit language profile':'New language profile'}</h2></div><button onClick={onClose} aria-label="Close">×</button></div>
     <label className="full-label">Name<input value={draft.name} onChange={e=>setDraft({...draft,name:e.target.value})}/></label>
     <label className="profile-check"><input type="checkbox" checked={draft.allow_unknown} onChange={e=>setDraft({...draft,allow_unknown:e.target.checked})}/> Allow releases where language cannot be identified</label>
     <div className="language-rules">{LANGUAGES.map(lang=>{
