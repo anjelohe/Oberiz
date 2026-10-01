@@ -60,6 +60,10 @@ button { cursor: pointer; }
 .system-ok{width:calc(100% - 20px);text-align:left;cursor:pointer}
 .sidebar-theme-icons{display:none}.version{display:grid;gap:2px}.version b{font:inherit;color:#7d9895}.version span{font-size:11px}
 .system-ok span { display: inline-block; width: 9px; height: 9px; background: var(--green); border-radius: 50%; margin-right: 8px; box-shadow: 0 0 8px var(--green); }
+.system-ok.warn { border-color: rgba(255,197,77,.32); background: rgba(102,78,10,.2); color: var(--yellow); }
+.system-ok.warn span { background: var(--yellow); box-shadow: 0 0 8px var(--yellow); }
+.system-ok.unknown { border-color: rgba(148,163,184,.28); background: rgba(71,85,105,.18); color: #9aa7b4; }
+.system-ok.unknown span { background: #9aa7b4; box-shadow: none; }
 .version { padding: 0 10px; font-size: 11px; color: #7d9895; line-height: 1.5; }
 .app-shell.sidebar-collapsed{grid-template-columns:82px 1fr}.sidebar-collapsed .sidebar{padding-inline:10px;gap:19px}.sidebar-collapsed .sidebar-brand-row{justify-content:center;padding:0;gap:4px}.sidebar-collapsed .brand{flex:0 0 43px;padding:0}.sidebar-collapsed .brand img{width:128px;height:54px;max-width:none;object-position:left center}.sidebar-collapsed .sidebar-collapse{width:27px;height:32px;border-radius:7px;font-size:14px}.sidebar-collapsed .nav-item{justify-content:center;padding:0}.sidebar-collapsed .nav-item span,.sidebar-collapsed .sidebar-theme{display:none}.sidebar-collapsed .sidebar-theme-icons{display:flex;justify-content:center;gap:5px}.sidebar-theme-icons button{width:27px;height:27px;border:1px solid rgba(74,146,140,.28);border-radius:7px;background:#092020;color:#87a39d;font-size:14px}.sidebar-theme-icons button.active{border-color:rgba(30,239,165,.66);background:rgba(12,139,96,.26);color:#41f6b4}.sidebar-collapsed .system-ok{display:grid;place-items:center;width:40px;height:34px;margin:0 auto;padding:0}.sidebar-collapsed .system-ok span{margin:0}.sidebar-collapsed .system-ok{font-size:0}.sidebar-collapsed .version{display:grid;text-align:center;padding:0;font-size:10px}.sidebar-collapsed .version span{display:none}.sidebar-collapsed .version b{font-size:10px;color:#89a49e}
 

@@ -18,9 +18,11 @@ use std::{
     path::{Path, PathBuf},
 };
 use tokio::time::{Duration, sleep};
-use transfer::{collect_media_files, transfer_file};
+use transfer::{collect_media_files, files_have_identical_content, transfer_file};
 
-use crate::{AppState, history, qbittorrent, releases, settings};
+use crate::{
+    AppState, cardigann::ReleaseResult, history, profiles, qbittorrent, releases, series, settings,
+};
 
 /// Marks jobs missing only after qBittorrent answered successfully.
 /// This also clears an old queued job that never received a qBittorrent hash, so a failed
@@ -29,7 +31,10 @@ pub(crate) async fn reconcile_missing_torrents(
     state: &AppState,
 ) -> Result<usize, (StatusCode, String)> {
     let torrents = state.download_client.list_torrents(state).await?;
-    let present: HashSet<String> = torrents.into_iter().map(|torrent| torrent.hash).collect();
+    let present: HashSet<String> = torrents
+        .iter()
+        .map(|torrent| torrent.hash.clone())
+        .collect();
     let jobs = sqlx::query_as::<_, (i64, String, Option<String>)>(
         r#"
         SELECT id,release_title,qb_hash FROM download_jobs
@@ -50,6 +55,27 @@ pub(crate) async fn reconcile_missing_torrents(
     let mut missing = 0;
     for (id, title, hash) in jobs {
         if hash.as_ref().is_some_and(|value| present.contains(value)) {
+            continue;
+        }
+        // The hand-off UPDATE that records qb_hash on the job can be lost to
+        // a cancelled request or a crash even though qBittorrent genuinely
+        // added the torrent (C17): before writing this job off as missing,
+        // check whether a present torrent carries this job's id tag and
+        // reattach it instead of abandoning a real, already-downloading
+        // torrent that automation would otherwise grab all over again.
+        if hash.is_none()
+            && let Some(found) = torrents
+                .iter()
+                .find(|torrent| tag_job_id(&torrent.tags) == Some(id))
+        {
+            sqlx::query(
+                "UPDATE download_jobs SET qb_hash=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            )
+            .bind(&found.hash)
+            .bind(id)
+            .execute(&state.db)
+            .await
+            .map_err(internal)?;
             continue;
         }
         let reason = if hash.is_some() {
@@ -285,14 +311,19 @@ pub async fn reseed(
         .await
         .map_err(internal)?
         .unwrap_or_default();
-    let base = if !configured.trim().is_empty() {
+    let reseed_root = if !configured.trim().is_empty() {
         PathBuf::from(configured)
     } else if !downloads.trim().is_empty() {
         PathBuf::from(downloads).join("reseed")
     } else {
         PathBuf::from("./reseed")
     };
-    refuse_system_directory(&base)?;
+    refuse_system_directory(&reseed_root)?;
+    // A job-specific subfolder, not a single shared reseed root: two torrents
+    // can easily share an original_rel (episode.mkv, movie.mkv, a flat root
+    // layout), and a second reseed would otherwise delete and overwrite the
+    // first reseed's files out from under a torrent that's still active.
+    let base = reseed_root.join(format!("job-{}", job.id));
     fs::create_dir_all(&base).map_err(fs_error)?;
 
     let library_root = PathBuf::from(&library);
@@ -302,6 +333,18 @@ pub async fn reseed(
         let dst = resolve_within(&base, &mapping.original_rel)?;
         if let Some(parent) = dst.parent() {
             fs::create_dir_all(parent).map_err(fs_error)?;
+        }
+        // Canonicalize before comparing: a misconfigured reseed path that
+        // lands back inside the library (or a symlink) can make `src` and
+        // `dst` the same real file even when their input paths look
+        // different. Removing `dst` unconditionally in that case would
+        // delete the only copy of the file before hard_link/copy ran.
+        let same_file = matches!(
+            (fs::canonicalize(&src), fs::canonicalize(&dst)),
+            (Ok(s), Ok(d)) if s == d
+        );
+        if same_file {
+            continue;
         }
         if dst.exists() {
             let _ = fs::remove_file(&dst);
@@ -325,12 +368,19 @@ pub async fn reseed(
             true,
         )
         .await?;
-    let _ =
-        sqlx::query("UPDATE download_jobs SET qb_hash=?,updated_at=CURRENT_TIMESTAMP WHERE id=?")
-            .bind(&qb_hash)
-            .bind(job.id)
-            .execute(&state.db)
-            .await;
+    // Resets the seeding lifecycle, not just qb_hash: a job reseeded after
+    // its previous seed was already cleaned up (status='cleaned',
+    // cleaned_at set) would otherwise stay invisible to run_cycle's cleanup
+    // check forever (`job.cleaned_at.is_none()`), so this brand new torrent's
+    // seed policy — ratio, seed time, eventual deletion — would simply never
+    // be evaluated again.
+    let _ = sqlx::query(
+        "UPDATE download_jobs SET qb_hash=?,status='seeding',cleaned_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+    )
+    .bind(&qb_hash)
+    .bind(job.id)
+    .execute(&state.db)
+    .await;
 
     sqlx::query("UPDATE download_jobs SET reseed_count=reseed_count+1,updated_at=CURRENT_TIMESTAMP WHERE id=?")
         .bind(id).execute(&state.db).await.map_err(internal)?;
@@ -476,6 +526,7 @@ async fn import_job(
 
     let parsed = releases::parse(&job.release_title);
     let quality_json = serde_json::to_string(&parsed).unwrap_or_else(|_| "{}".into());
+    let quality_score = stable_quality_score(state, job, &title, year, &parsed).await;
 
     for mapping in &mappings {
         let path = library_root.join(&mapping.library_rel);
@@ -497,7 +548,7 @@ async fn import_job(
             .bind(&job.media_type).bind(job.media_id).bind(job.id)
             .bind(&path_string).bind(size).bind(&quality_json).bind(&job.release_title)
             .bind(&parsed.resolution).bind(&parsed.source).bind(&parsed.codec).bind(&parsed.hdr)
-            .bind(&parsed.audio).bind(&parsed.language).bind(parsed.score)
+            .bind(&parsed.audio).bind(&parsed.language).bind(quality_score)
             .fetch_one(&state.db).await.map_err(internal)?;
 
         if job.media_type == "series" {
@@ -506,6 +557,7 @@ async fn import_job(
     }
 
     if job.media_type == "series"
+        && job.is_season_pack
         && job.episode_number.is_none()
         && let Some(season) = job.season_number
     {
@@ -593,18 +645,73 @@ async fn copy_payload(
     let parsed = releases::parse(&job.release_title);
     let mut mappings = Vec::new();
 
+    // Recovers from a crash in a *previous* attempt at this same job, before
+    // doing anything else: a leftover intent here means some earlier run
+    // got as far as starting a transfer but never confirmed or recorded its
+    // outcome. If the destination it describes exists now, that transfer
+    // actually succeeded — recover the mapping instead of leaving it
+    // permanently untracked (the move method already deleted the source, so
+    // nothing will ever rediscover this file on its own). If it doesn't
+    // exist, the transfer never completed; drop the stale intent and let
+    // the normal pass below pick the source file up again if it's still
+    // there.
+    let leftover_intents: Vec<(i64, String, String)> = sqlx::query_as(
+        "SELECT id,original_rel,library_rel FROM file_transfer_intents WHERE job_id=?",
+    )
+    .bind(job.id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(internal)?;
+    if !leftover_intents.is_empty() {
+        for (intent_id, original_rel, library_rel) in leftover_intents {
+            if library_root.join(&library_rel).exists() {
+                mappings.push(FileMapping {
+                    original_rel,
+                    library_rel,
+                });
+            }
+            sqlx::query("DELETE FROM file_transfer_intents WHERE id=?")
+                .bind(intent_id)
+                .execute(&state.db)
+                .await
+                .map_err(internal)?;
+        }
+        let mappings_json = serde_json::to_string(&mappings).unwrap_or_else(|_| "[]".into());
+        sqlx::query(
+            "UPDATE download_jobs SET file_mappings_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+        )
+        .bind(&mappings_json)
+        .bind(job.id)
+        .execute(&state.db)
+        .await
+        .map_err(internal)?;
+    }
+
+    // Flagged once, not discovered the day reseed is actually attempted:
+    // when a source file doesn't fall under the torrent's reported
+    // save_path, original_rel below falls back to the file's full absolute
+    // path — which resolve_within (see its own doc comment) will always
+    // reject later, since joining an absolute path onto any base simply
+    // discards that base. Reseed for this job quietly stops being possible
+    // right here at import time; the user deserves to know that now, not
+    // months later as a cryptic "outside the expected folder" error.
+    let mut reseed_unavailable = false;
+
     for (index, src) in files.iter().enumerate() {
-        let original_rel = src
-            .strip_prefix(&save_path)
-            .unwrap_or(src)
-            .to_string_lossy()
-            .to_string();
+        let original_rel = match src.strip_prefix(&save_path) {
+            Ok(relative) => relative.to_string_lossy().to_string(),
+            Err(_) => {
+                reseed_unavailable = true;
+                src.to_string_lossy().to_string()
+            }
+        };
         let ext = src.extension().and_then(|x| x.to_str()).unwrap_or("");
         let library_rel = if job.media_type == "series" {
             let detected =
                 parse_episode_numbers(src.file_name().and_then(|x| x.to_str()).unwrap_or(""));
             let season = detected.map(|x| x.0).or(job.season_number);
             let episode = detected.map(|x| x.1).or(job.episode_number);
+            let last_episode = detected.and_then(|x| x.2);
             let fallback_rel = if source.is_file() {
                 src.file_name()
                     .and_then(|x| x.to_str())
@@ -635,6 +742,7 @@ async fn copy_payload(
                         &parsed,
                         season,
                         episode,
+                        last_episode,
                         &episode_title,
                     );
                     let file = if ext.is_empty() {
@@ -679,27 +787,91 @@ async fn copy_payload(
             fs::create_dir_all(parent).map_err(fs_error)?;
         }
         if dst.exists() {
-            let src_len = fs::metadata(src).map_err(fs_error)?.len();
-            let dst_len = fs::metadata(&dst).map_err(fs_error)?.len();
-            if src_len == dst_len {
+            if files_have_identical_content(src, &dst).map_err(fs_error)? {
                 mappings.push(FileMapping {
                     original_rel,
                     library_rel,
                 });
                 continue;
             }
-            return Err((
-                StatusCode::CONFLICT,
-                format!("Ya existe un archivo distinto: {}", dst.display()),
-            ));
+            // Different content landed on the same destination name — most
+            // commonly a quality upgrade whose rendered filename collides
+            // with the version it replaces. `transfer_file`'s copy/move
+            // paths already overwrite atomically via rename, but a plain
+            // hard_link refuses outright when the target exists, so clear
+            // it first for that one method.
+            if method == "hardlink" {
+                fs::remove_file(&dst).map_err(fs_error)?;
+            }
+            history::record(
+                &state.db,
+                "import.replaced_existing_file",
+                &job.release_title,
+                Some(&format!(
+                    "{} tenía contenido distinto y fue reemplazado",
+                    dst.display()
+                )),
+                "info",
+            )
+            .await;
         }
+
+        // Written before the transfer runs, not after: this is the durable
+        // "intent" the recovery pass above looks for. Without it, a crash
+        // between transfer_file succeeding and the mappings_json UPDATE
+        // below committing left no record anywhere that the move had
+        // actually happened.
+        sqlx::query(
+            "INSERT OR REPLACE INTO file_transfer_intents(job_id,original_rel,library_rel) VALUES(?,?,?)",
+        )
+        .bind(job.id)
+        .bind(&original_rel)
+        .bind(&library_rel)
+        .execute(&state.db)
+        .await
+        .map_err(internal)?;
 
         transfer_file(src, &dst, method).map_err(fs_error)?;
         mappings.push(FileMapping {
             original_rel,
-            library_rel,
+            library_rel: library_rel.clone(),
         });
+        // Persisted after every file, not only once the whole payload is
+        // done: a "move" deletes each source as it goes, so a crash or
+        // cancellation partway through used to leave the already-moved files
+        // completely untracked — an interrupted single-file source even came
+        // back as a permanent "La ruta descargada no existe" next run, since
+        // nothing recorded that the source was gone because it had already
+        // been moved. This doesn't make the whole import resumable, but it
+        // keeps a durable record of exactly which files already moved.
+        let mappings_json = serde_json::to_string(&mappings).unwrap_or_else(|_| "[]".into());
+        let _ = sqlx::query(
+            "UPDATE download_jobs SET file_mappings_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+        )
+        .bind(&mappings_json)
+        .bind(job.id)
+        .execute(&state.db)
+        .await;
+        // The transfer and its mapping are both durably recorded now, so the
+        // intent has served its purpose — if a crash happens after this
+        // point, the mapping above (not the intent) is what recovery on the
+        // next attempt would find anyway.
+        let _ = sqlx::query("DELETE FROM file_transfer_intents WHERE job_id=? AND library_rel=?")
+            .bind(job.id)
+            .bind(&library_rel)
+            .execute(&state.db)
+            .await;
         let _ = index;
+    }
+    if reseed_unavailable {
+        history::record(
+            &state.db,
+            "import.reseed_unavailable",
+            &job.release_title,
+            Some("Al menos un archivo importado no estaba bajo el save_path reportado por qBittorrent; este job no podrá reseedearse más adelante."),
+            "warning",
+        )
+        .await;
     }
     Ok(mappings)
 }
@@ -822,6 +994,88 @@ async fn media_identity(
             .map_err(internal)?
             .ok_or_else(|| (StatusCode::NOT_FOUND, "Serie asociada no encontrada".into()))
     }
+}
+
+/// The score persisted as a file's `quality_score` must be on the same scale
+/// as a future search candidate's score, or every upgrade/cutoff comparison
+/// that follows is comparing two unrelated numbers. `releases::parse(...).score`
+/// (a standalone quality heuristic) and `evaluate_release(...).total_score`
+/// (title match + profile rules + seeders) are not that — so this recomputes
+/// the release the same way a candidate would be scored against the title's
+/// own profile, using only the match/profile-rule component (seeders aren't a
+/// property of the file once it's imported, so they're excluded rather than
+/// just defaulted to 0, which would itself bias every future comparison).
+async fn stable_quality_score(
+    state: &AppState,
+    job: &DownloadJob,
+    title: &str,
+    year: Option<i32>,
+    parsed: &releases::ParsedRelease,
+) -> i32 {
+    let profile_id = if job.media_type == "series" {
+        series::effective_profile_for_episode(
+            state,
+            job.media_id,
+            job.season_number.unwrap_or(0),
+            job.episode_number,
+        )
+        .await
+        .unwrap_or(None)
+    } else {
+        sqlx::query_scalar::<_, Option<i64>>("SELECT quality_profile_id FROM movies WHERE id=?")
+            .bind(job.media_id)
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten()
+            .flatten()
+    };
+    let Some(profile_id) = profile_id else {
+        return parsed.score;
+    };
+    let Ok(profile) = profiles::get_quality_profile_by_id(&state.db, profile_id).await else {
+        return parsed.score;
+    };
+    let language = profiles::language_for_profile(&state.db, &profile)
+        .await
+        .ok()
+        .flatten();
+    let candidate = ReleaseResult {
+        indexer_id: job.indexer_id.clone(),
+        indexer_name: job.indexer_name.clone().unwrap_or_default(),
+        title: job.release_title.clone(),
+        details_url: None,
+        download_url: None,
+        size_bytes: None,
+        seeders: None,
+        leechers: None,
+        category: None,
+        published: None,
+        score: parsed.score,
+        resolution: parsed.resolution.clone(),
+        source: parsed.source.clone(),
+        codec: parsed.codec.clone(),
+        hdr: parsed.hdr.clone(),
+        audio: parsed.audio.clone(),
+        language: parsed.language.clone(),
+        base_score: parsed.score,
+        profile_score: 0,
+        match_score: 0,
+        accepted: false,
+        reasons: vec![],
+        rejection_reasons: vec![],
+    };
+    let evaluation = profiles::evaluate_release(
+        &candidate,
+        &profile,
+        language.as_ref(),
+        title,
+        None,
+        year,
+        &job.media_type,
+        job.season_number,
+    );
+    evaluation.match_score + evaluation.profile_score
 }
 
 async fn get_job(state: &AppState, id: i64) -> Result<Option<DownloadJob>, (StatusCode, String)> {
@@ -973,26 +1227,67 @@ fn resolve_within(base: &Path, relative: &str) -> Result<PathBuf, (StatusCode, S
             other => normalized.push(other),
         }
     }
-    if normalized.starts_with(base) {
-        Ok(normalized)
-    } else {
-        Err((
+    if !normalized.starts_with(base) {
+        return Err((
             StatusCode::BAD_REQUEST,
             format!("Ruta fuera de la carpeta esperada: {relative}"),
-        ))
+        ));
     }
+    // The lexical check above isn't enough on its own: it only looks at path
+    // text, so a symlink planted anywhere under `base` (by a manipulated
+    // backup, or a reseed root an admin pointed somewhere with existing
+    // content) can make the real, post-symlink location land completely
+    // outside `base` even though the string itself starts with it. Walk up
+    // from the result to whatever already exists — the result's own file
+    // usually doesn't, since resolving where to put it is the whole point —
+    // canonicalize that, and re-check containment against the resolved
+    // reality instead of the raw text.
+    let canonical_base = std::fs::canonicalize(base).map_err(fs_error)?;
+    let mut existing = normalized.as_path();
+    while !existing.exists() {
+        match existing.parent() {
+            Some(parent) => existing = parent,
+            None => break,
+        }
+    }
+    let canonical_existing = std::fs::canonicalize(existing).map_err(fs_error)?;
+    if !canonical_existing.starts_with(&canonical_base) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("Ruta fuera de la carpeta esperada tras resolver symlinks: {relative}"),
+        ));
+    }
+    Ok(normalized)
 }
 
 #[cfg(test)]
 mod resolve_within_tests {
     use super::resolve_within;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
+
+    /// `resolve_within` canonicalizes `base` to defeat a symlink planted
+    /// under it, which means `base` must actually exist — exactly like real
+    /// callers (e.g. reseed) that always create it before resolving
+    /// anything inside it.
+    fn existing_base(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "oberiz-resolve-within-test-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
 
     #[test]
     fn keeps_a_well_behaved_relative_path() {
-        let base = Path::new("/library/Movie (2024)");
-        let resolved = resolve_within(base, "Movie.2024.1080p.mkv").unwrap();
+        let base = existing_base("ok");
+        let resolved = resolve_within(&base, "Movie.2024.1080p.mkv").unwrap();
         assert_eq!(resolved, base.join("Movie.2024.1080p.mkv"));
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -1005,6 +1300,19 @@ mod resolve_within_tests {
     fn rejects_traversal_hidden_inside_a_deeper_relative_path() {
         let base = Path::new("/library/Movie (2024)");
         assert!(resolve_within(base, "extras/../../../../etc/passwd").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_a_result_that_lands_on_a_symlink_escaping_base() {
+        let base = existing_base("symlink-escape");
+        let outside = existing_base("symlink-target");
+        std::os::unix::fs::symlink(&outside, base.join("escape")).unwrap();
+
+        assert!(resolve_within(&base, "escape/evil.mkv").is_err());
+
+        let _ = std::fs::remove_dir_all(&base);
+        let _ = std::fs::remove_dir_all(&outside);
     }
 }
 

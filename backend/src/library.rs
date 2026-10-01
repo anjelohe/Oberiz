@@ -5,6 +5,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
 };
@@ -170,40 +171,83 @@ async fn scan_movies(state: &AppState) -> Result<RescanResult, (StatusCode, Stri
             })
             .collect::<Vec<_>>();
 
+    // The reset and every rebuilt row commit as one transaction: other
+    // connections (automation, RSS, importer) see either the complete
+    // pre-scan state or the complete post-scan state, never the empty window
+    // in between that `file_exists=0` alone would otherwise expose while the
+    // loop below is still running — and a crash or cancellation mid-scan
+    // rolls back to the pre-scan state instead of leaving it half-reset.
+    // A path already linked to a movie stays linked to that movie: fresh
+    // substring matching below is a weak heuristic (two unrelated titles,
+    // remakes, a title that's a substring of another) and re-running it on
+    // every rescan could otherwise flip an already-correct association —
+    // silently reassigning an imported file to the wrong movie and leaving
+    // the real one to be re-downloaded. Only a path with no prior
+    // association is a candidate for (re-)matching.
+    let known_paths: HashMap<String, i64> = sqlx::query_as::<_, (String, i64)>(
+        "SELECT path,media_id FROM media_files WHERE media_type='movie'",
+    )
+    .fetch_all(&state.db)
+    .await
+    .map_err(internal)?
+    .into_iter()
+    .collect();
+
+    let mut tx = state.db.begin().await.map_err(internal)?;
     sqlx::query("UPDATE media_files SET file_exists=0 WHERE media_type='movie'")
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await
         .map_err(internal)?;
 
     let mut matched = 0usize;
     for file in &files {
+        let path_key = file.to_string_lossy().to_string();
+        if let Some(&known_id) = known_paths.get(&path_key)
+            && movies.iter().any(|m| m.id == known_id)
+        {
+            upsert_media_file(&mut tx, "movie", known_id, file, "scan").await?;
+            matched += 1;
+            continue;
+        }
+
         let haystack = normalized(&file.to_string_lossy());
-        let mut best: Option<&MovieCandidate> = None;
+        let haystack_has_year = haystack
+            .as_bytes()
+            .windows(4)
+            .any(|w| w.iter().all(u8::is_ascii_digit));
+        let mut best: Option<(&MovieCandidate, bool)> = None;
         for movie in &movies {
             let title = normalized(&movie.title);
             if title.len() < 2 || !haystack.contains(&title) {
                 continue;
             }
-            if let Some(year) = movie.year {
-                let year_text = year.to_string();
-                if haystack.chars().any(|c| c.is_ascii_digit()) && !haystack.contains(&year_text) {
-                    // Year mismatch is a weak signal, not a hard rejection when the path has no obvious year.
+            let year_matches = movie
+                .year
+                .is_some_and(|year| haystack.contains(&year.to_string()));
+            // An explicit year in the path is a strong, deliberate signal
+            // (the user or scene group named it that way) that should win
+            // over a same/shorter-titled candidate from a different year —
+            // exactly the remake case (a 1982 and a 2011 "The Thing").
+            let better = match best {
+                None => true,
+                Some((current, current_year_matches)) => {
+                    if haystack_has_year && year_matches != current_year_matches {
+                        year_matches
+                    } else {
+                        normalized(&current.title).len() < title.len()
+                    }
                 }
-            }
-            if best
-                .as_ref()
-                .map(|b| normalized(&b.title).len())
-                .unwrap_or(0)
-                < title.len()
-            {
-                best = Some(movie);
+            };
+            if better {
+                best = Some((movie, year_matches));
             }
         }
-        if let Some(movie) = best {
-            upsert_media_file(state, "movie", movie.id, file, "scan").await?;
+        if let Some((movie, _)) = best {
+            upsert_media_file(&mut tx, "movie", movie.id, file, "scan").await?;
             matched += 1;
         }
     }
+    tx.commit().await.map_err(internal)?;
     finish_scan(state, scan_id, files.len(), matched, None).await?;
     history::record(
         &state.db,
@@ -259,12 +303,17 @@ async fn scan_series(state: &AppState) -> Result<RescanResult, (StatusCode, Stri
         .map(|x| SeriesCandidate { id: x.0, name: x.1 })
         .collect::<Vec<_>>();
 
+    // See scan_movies for why this is one transaction: without it, other
+    // connections could observe the library mid-reset (everything marked
+    // missing) while this loop is still rebuilding it, and a crash midway
+    // would leave that half-reset state persisted instead of rolling back.
+    let mut tx = state.db.begin().await.map_err(internal)?;
     sqlx::query("UPDATE media_files SET file_exists=0 WHERE media_type='series'")
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await
         .map_err(internal)?;
     sqlx::query("UPDATE series_episodes SET has_file=0")
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await
         .map_err(internal)?;
 
@@ -294,18 +343,18 @@ async fn scan_series(state: &AppState) -> Result<RescanResult, (StatusCode, Stri
         let Some(item) = best else {
             continue;
         };
-        let media_file_id = upsert_media_file(state, "series", item.id, file, "scan").await?;
+        let media_file_id = upsert_media_file(&mut tx, "series", item.id, file, "scan").await?;
         let last = last.unwrap_or(first).max(first);
         let mut linked = false;
         for episode in first..=last {
             if let Some(ep_id)=sqlx::query_scalar::<_,i64>(
                 "SELECT id FROM series_episodes WHERE series_id=? AND season_number=? AND episode_number=?"
-            ).bind(item.id).bind(season).bind(episode).fetch_optional(&state.db).await.map_err(internal)? {
+            ).bind(item.id).bind(season).bind(episode).fetch_optional(&mut *tx).await.map_err(internal)? {
                 sqlx::query("UPDATE series_episodes SET has_file=1,updated_at=CURRENT_TIMESTAMP WHERE id=?")
-                    .bind(ep_id).execute(&state.db).await.map_err(internal)?;
+                    .bind(ep_id).execute(&mut *tx).await.map_err(internal)?;
                 sqlx::query(r#"INSERT INTO episode_files(episode_id,media_file_id) VALUES(?,?)
                     ON CONFLICT(episode_id,media_file_id) DO NOTHING"#)
-                    .bind(ep_id).bind(media_file_id).execute(&state.db).await.map_err(internal)?;
+                    .bind(ep_id).bind(media_file_id).execute(&mut *tx).await.map_err(internal)?;
                 linked=true;
             }
         }
@@ -313,6 +362,7 @@ async fn scan_series(state: &AppState) -> Result<RescanResult, (StatusCode, Stri
             matched += 1;
         }
     }
+    tx.commit().await.map_err(internal)?;
     finish_scan(state, scan_id, files.len(), matched, None).await?;
     history::record(
         &state.db,
@@ -332,7 +382,7 @@ async fn scan_series(state: &AppState) -> Result<RescanResult, (StatusCode, Stri
 }
 
 async fn upsert_media_file(
-    state: &AppState,
+    tx: &mut sqlx::SqliteConnection,
     media_type: &str,
     media_id: i64,
     path: &Path,
@@ -342,6 +392,15 @@ async fn upsert_media_file(
     let parsed = releases::parse(name);
     let size = fs::metadata(path).ok().map(|m| m.len() as i64);
     let quality_json = serde_json::to_string(&parsed).unwrap_or_else(|_| "{}".into());
+    // A rescan only has the bare filename to go on, which is strictly weaker
+    // than the metadata an actual import already verified from the release
+    // title (resolution/source/codec/HDR/audio/language, and the stable
+    // quality_score computed from it). Clobbering that on every rescan was
+    // losing real information — a 2160p/HDR/Spanish file would come back as
+    // NULLs and score=0 just because its filename alone doesn't spell that
+    // out, which then fed wrong upgrade/cutoff decisions. Only a row that
+    // was itself never import-verified (discovered_by != 'import') gets its
+    // quality fields refreshed from this scan's reparse.
     sqlx::query_scalar::<_,i64>(r#"
         INSERT INTO media_files(
           media_type,media_id,download_job_id,path,size_bytes,quality_json,source_release,
@@ -349,16 +408,23 @@ async fn upsert_media_file(
         ) VALUES(?,?,NULL,?,?,?,?,?,?,?,?,?,?,?,1,?,CURRENT_TIMESTAMP)
         ON CONFLICT(path) DO UPDATE SET
           media_type=excluded.media_type,media_id=excluded.media_id,size_bytes=excluded.size_bytes,
-          quality_json=excluded.quality_json,resolution=excluded.resolution,source=excluded.source,
-          codec=excluded.codec,hdr=excluded.hdr,audio=excluded.audio,language=excluded.language,
-          quality_score=excluded.quality_score,file_exists=1,verified_at=CURRENT_TIMESTAMP
+          file_exists=1,verified_at=CURRENT_TIMESTAMP,
+          quality_json=CASE WHEN media_files.discovered_by='import' THEN media_files.quality_json ELSE excluded.quality_json END,
+          source_release=CASE WHEN media_files.discovered_by='import' THEN media_files.source_release ELSE excluded.source_release END,
+          resolution=CASE WHEN media_files.discovered_by='import' THEN media_files.resolution ELSE excluded.resolution END,
+          source=CASE WHEN media_files.discovered_by='import' THEN media_files.source ELSE excluded.source END,
+          codec=CASE WHEN media_files.discovered_by='import' THEN media_files.codec ELSE excluded.codec END,
+          hdr=CASE WHEN media_files.discovered_by='import' THEN media_files.hdr ELSE excluded.hdr END,
+          audio=CASE WHEN media_files.discovered_by='import' THEN media_files.audio ELSE excluded.audio END,
+          language=CASE WHEN media_files.discovered_by='import' THEN media_files.language ELSE excluded.language END,
+          quality_score=CASE WHEN media_files.discovered_by='import' THEN media_files.quality_score ELSE excluded.quality_score END
         RETURNING id
     "#)
         .bind(media_type).bind(media_id).bind(path.to_string_lossy().to_string()).bind(size)
         .bind(&quality_json).bind(name)
         .bind(parsed.resolution).bind(parsed.source).bind(parsed.codec).bind(parsed.hdr)
         .bind(parsed.audio).bind(parsed.language).bind(parsed.score).bind(discovered_by)
-        .fetch_one(&state.db).await.map_err(internal)
+        .fetch_one(&mut *tx).await.map_err(internal)
 }
 
 async fn start_scan(
@@ -402,8 +468,19 @@ fn collect_recursive(path: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()>
     }
     for entry in fs::read_dir(path)? {
         let entry = entry?;
+        // file_type() reflects the directory entry itself, not what it
+        // points to, so a symlink is never silently treated as a plain
+        // directory here — Path::is_dir() would follow it. Not recursing
+        // into one at all is what keeps a link back to an ancestor (or a
+        // cycle between two directories, both easy to create on a NAS) from
+        // recursing until the stack or the process's open-file limit gives
+        // out and takes the scan down with it.
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            continue;
+        }
         let p = entry.path();
-        if p.is_dir() {
+        if file_type.is_dir() {
             collect_recursive(&p, out)?;
         } else if is_video(&p) {
             out.push(p);

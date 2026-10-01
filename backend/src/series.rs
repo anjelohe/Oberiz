@@ -219,7 +219,7 @@ async fn find_series(db: &sqlx::SqlitePool, id: i64) -> Result<Option<Series>, s
     "#).bind(id).fetch_optional(db).await
 }
 
-fn validate_monitor_mode(value: &str) -> Result<&str, (StatusCode, String)> {
+pub(crate) fn validate_monitor_mode(value: &str) -> Result<&str, (StatusCode, String)> {
     match value {
         "all" | "future" | "missing" | "existing" | "first" | "latest" | "none" => Ok(value),
         _ => Err((
@@ -526,6 +526,7 @@ pub async fn update_series(
             .execute(&state.db)
             .await
             .map_err(internal)?;
+        crate::rss::mark_config_changed(&state.db).await;
     }
     if let Some(path) = payload.library_path {
         sqlx::query("UPDATE series SET library_path=?,updated_at=CURRENT_TIMESTAMP WHERE id=?")
@@ -548,6 +549,7 @@ pub async fn update_series(
         .execute(&state.db)
         .await
         .map_err(internal)?;
+        crate::rss::mark_config_changed(&state.db).await;
     }
     if let Some(mode) = payload.monitor_mode {
         let mode = validate_monitor_mode(&mode)?.to_string();
@@ -865,7 +867,17 @@ pub(crate) async fn apply_monitor_mode_internal(
     series_id: i64,
     mode: &str,
 ) -> Result<(), (StatusCode, String)> {
-    let today = chrono_like_today();
+    // Derived from SQLite's own 'now','localtime', the same day boundary
+    // calendar.rs/public_api.rs use — not a separately computed UTC date.
+    // Those disagreeing (as this used to, computing UTC from epoch seconds
+    // directly) meant "future"/"missing" monitor modes could file an episode
+    // as already-aired or not-yet-aired on the wrong side of local midnight
+    // from what the calendar and missing-episode views showed for the same
+    // air_date.
+    let today: String = sqlx::query_scalar("SELECT date('now','localtime')")
+        .fetch_one(&state.db)
+        .await
+        .map_err(internal)?;
     sqlx::query("UPDATE series_seasons SET monitored=0,updated_at=CURRENT_TIMESTAMP WHERE series_id=? AND monitor_override IS NULL")
         .bind(series_id).execute(&state.db).await.map_err(internal)?;
     sqlx::query("UPDATE series_episodes SET monitored=0,updated_at=CURRENT_TIMESTAMP WHERE series_id=? AND monitor_override IS NULL")
@@ -908,12 +920,20 @@ pub(crate) async fn apply_monitor_mode_internal(
             sqlx::query("UPDATE series_seasons SET monitored=1 WHERE monitor_override IS NULL AND id IN (SELECT DISTINCT season_id FROM series_episodes WHERE series_id=? AND monitored=1)")
                 .bind(series_id).execute(&state.db).await.map_err(internal)?;
         }
-        _ => {
+        "all" => {
             sqlx::query("UPDATE series_seasons SET monitored=1 WHERE series_id=? AND season_number>0 AND monitor_override IS NULL")
                 .bind(series_id).execute(&state.db).await.map_err(internal)?;
             sqlx::query("UPDATE series_episodes SET monitored=1 WHERE series_id=? AND season_number>0 AND monitor_override IS NULL")
                 .bind(series_id).execute(&state.db).await.map_err(internal)?;
         }
+        // Every caller validates `mode` against validate_monitor_mode's enum
+        // before it gets here (see create_request_internal and the series
+        // update handler), so this should be unreachable — but this used to
+        // be the same arm "all" is now, silently treating any unrecognized
+        // string as "monitor everything". Failing closed (nothing monitored,
+        // same as "none") instead is the safe default for a value that
+        // shouldn't exist rather than the most expansive one.
+        _ => {}
     }
     Ok(())
 }
@@ -974,31 +994,6 @@ async fn load_episode_rows(
         WHERE e.series_id=?
         ORDER BY e.season_number,e.episode_number
     "#).bind(series_id).fetch_all(&state.db).await.map_err(internal)
-}
-
-fn chrono_like_today() -> String {
-    // UTC calendar date without adding another dependency.
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let days = now / 86400;
-    civil_from_days(days as i64)
-}
-
-fn civil_from_days(days: i64) -> String {
-    // Howard Hinnant civil_from_days, epoch 1970-01-01.
-    let z = days + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = z - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let mut y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = mp + if mp < 10 { 3 } else { -9 };
-    y += if m <= 2 { 1 } else { 0 };
-    format!("{y:04}-{m:02}-{d:02}")
 }
 
 fn internal<E: std::fmt::Display>(e: E) -> (StatusCode, String) {

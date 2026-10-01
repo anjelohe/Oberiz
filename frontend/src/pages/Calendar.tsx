@@ -3,7 +3,23 @@ import { CalendarEpisode, getCalendar } from '../lib/api'
 import { Icon } from '../components/Icon'
 
 function code(row:CalendarEpisode){return `S${String(row.season_number).padStart(2,'0')}E${String(row.episode_number).padStart(2,'0')}`}
-function today(){return new Date().toISOString().slice(0,10)}
+// Local calendar date, not UTC: toISOString() reports the UTC date, which
+// disagrees with "today" as the viewer's own clock sees it for roughly a
+// third of the day (more, the further their timezone sits from UTC) — right
+// around midnight local time this used to show yesterday's or tomorrow's
+// date as "Today" depending on which side of UTC midnight the browser's
+// timezone put it. The backend separately computes its own day boundary
+// from the server's localtime (see calendar.rs/series.rs), so the two still
+// won't always agree when server and browser sit in different timezones —
+// there's no single shared "today" across a network boundary — but the
+// frontend's own date should at least match what's on the viewer's screen.
+function today(){
+  const d=new Date()
+  const year=d.getFullYear()
+  const month=String(d.getMonth()+1).padStart(2,'0')
+  const day=String(d.getDate()).padStart(2,'0')
+  return `${year}-${month}-${day}`
+}
 function labelDate(value:string){
   const d=new Date(`${value}T12:00:00`)
   const now=today()

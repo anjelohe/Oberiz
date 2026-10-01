@@ -1,6 +1,6 @@
 [package]
 name = "oberiz"
-version = "1.0.9"
+version = "1.0.10"
 edition = "2024"
 license = "AGPL-3.0-or-later"
 
@@ -15,7 +15,16 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "macros", "migrate"] }
 anyhow = "1"
-reqwest = { version = "0.12", features = ["json", "rustls-tls", "cookies", "multipart"] }
+# default-features disabled deliberately: reqwest's own defaults include
+# "default-tls", which pulls in native-tls -> openssl-sys regardless of
+# rustls-tls being listed alongside it. That went unnoticed on Windows
+# (default-tls there is schannel, no extra C dependency), but every Linux
+# build — including the one already shipped — was silently linking against
+# system OpenSSL on top of rustls, and a musl cross-compile has no OpenSSL
+# sysroot to find at all. The other three entries restore reqwest's other
+# defaults (charset detection, HTTP/2, system proxy env vars) that would
+# otherwise also be lost by turning default-features off.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "cookies", "multipart", "charset", "http2", "system-proxy"] }
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
 scraper = "0.22"
 regex = "1"

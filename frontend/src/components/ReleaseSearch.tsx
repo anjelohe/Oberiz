@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Icon } from './Icon'
+import { useModalA11y } from '../lib/useModalA11y'
 import './ReleaseSearch.css'
 
 type Release = {
@@ -32,26 +33,37 @@ export function ReleaseSearch({
   const [showRejected,setShowRejected]=useState(false)
   const [profileName,setProfileName]=useState<string|null>(null)
   const [cutoff,setCutoff]=useState<number|null>(null)
+  const requestIdRef=useRef(0)
 
   useEffect(()=>{
     if(!open)return
+    const requestId=++requestIdRef.current
+    const controller=new AbortController()
     setLoading(true);setError('');setRows([]);setFailures([]);setShowRejected(false)
     const q=queryOverride?.trim()||`${title}${year?` ${year}`:''}`
     const params=new URLSearchParams({query:q,media_type:mediaType,tmdb_id:String(tmdbId),media_id:String(mediaId)})
     if(profileId)params.set('profile_id',String(profileId))
     if(seasonNumber!==null&&seasonNumber!==undefined)params.set('season_number',String(seasonNumber))
     if(episodeNumber!==null&&episodeNumber!==undefined)params.set('episode_number',String(episodeNumber))
-    fetch(`/api/releases/search?${params.toString()}`)
+    fetch(`/api/releases/search?${params.toString()}`,{signal:controller.signal})
       .then(async r=>{if(!r.ok)throw new Error(await r.text());return r.json() as Promise<Response>})
-      .then(r=>{setRows(r.results);setFailures(r.failures);setProfileName(r.profile_name);setCutoff(r.cutoff_score)})
-      .catch(e=>setError(e instanceof Error?e.message:String(e)))
-      .finally(()=>setLoading(false))
+      .then(r=>{
+        if(requestIdRef.current!==requestId)return
+        setRows(r.results);setFailures(r.failures);setProfileName(r.profile_name);setCutoff(r.cutoff_score)
+      })
+      .catch(e=>{
+        if(controller.signal.aborted||requestIdRef.current!==requestId)return
+        setError(e instanceof Error?e.message:String(e))
+      })
+      .finally(()=>{if(requestIdRef.current===requestId)setLoading(false)})
+    return ()=>{controller.abort()}
   },[open,title,year,tmdbId,mediaId,mediaType,profileId,queryOverride,seasonNumber,episodeNumber])
 
   const accepted=useMemo(()=>rows.filter(x=>x.accepted),[rows])
   const rejected=useMemo(()=>rows.filter(x=>!x.accepted),[rows])
   const visible=showRejected?rows:accepted
   const best=useMemo(()=>accepted[0]?.score??null,[accepted])
+  const dialogRef=useModalA11y<HTMLDivElement>(open,onClose)
   if(!open)return null
 
   async function grab(row:Release){
@@ -75,10 +87,10 @@ export function ReleaseSearch({
   }
 
   return <div className="rs-backdrop" onMouseDown={onClose}>
-    <div className="rs-modal" onMouseDown={e=>e.stopPropagation()}>
+    <div ref={dialogRef} className="rs-modal" role="dialog" aria-modal="true" aria-labelledby="release-search-title" tabIndex={-1} onMouseDown={e=>e.stopPropagation()}>
       <div className="rs-head">
-        <div><p>MANUAL SEARCH</p><h2>{queryOverride||title}</h2><span>{accepted.length} accepted · {rejected.length} rejected · {failures.length} indexer errors</span>{profileName&&<em className="rs-profile">Profile: {profileName}{cutoff!==null?` · cutoff ${cutoff}`:''}</em>}</div>
-        <button onClick={onClose}>×</button>
+        <div><p>MANUAL SEARCH</p><h2 id="release-search-title">{queryOverride||title}</h2><span>{accepted.length} accepted · {rejected.length} rejected · {failures.length} indexer errors</span>{profileName&&<em className="rs-profile">Profile: {profileName}{cutoff!==null?` · cutoff ${cutoff}`:''}</em>}</div>
+        <button onClick={onClose} aria-label="Close">×</button>
       </div>
       <div className="rs-toolbar"><label><input type="checkbox" checked={showRejected} onChange={e=>setShowRejected(e.target.checked)}/> Show rejected releases</label></div>
       {error&&<div className="error-box">{error}</div>}

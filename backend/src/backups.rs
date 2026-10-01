@@ -336,7 +336,21 @@ pub async fn restore_backup(
         if current_tables != table_names(&mut connection, "restore").await? { return Err((StatusCode::CONFLICT, "This backup belongs to a different Oberiz database schema. Update Oberiz or choose a compatible backup.".to_owned())); }
         sqlx::query("BEGIN IMMEDIATE").execute(&mut *connection).await.map_err(internal)?;
         for table in &current_tables { sqlx::query(&format!("DELETE FROM {}", quoted(table))).execute(&mut *connection).await.map_err(internal)?; }
-        for table in &current_tables { sqlx::query(&format!("INSERT INTO {} SELECT * FROM restore.{}", quoted(table), quoted(table))).execute(&mut *connection).await.map_err(internal)?; }
+        for table in &current_tables {
+            if table == "auth_sessions" {
+                // Session state is security state, not restorable data: a
+                // backup can hold a session that was later revoked by logout
+                // or a password change, and bringing it back would silently
+                // undo that revocation, handing out admin access again
+                // through a token the user believed was dead. The DELETE
+                // above already cleared every current session (including
+                // the one making this request), so skipping the restore
+                // here just means everyone — this admin included — logs in
+                // fresh afterward instead of a stale token staying valid.
+                continue;
+            }
+            sqlx::query(&format!("INSERT INTO {} SELECT * FROM restore.{}", quoted(table), quoted(table))).execute(&mut *connection).await.map_err(internal)?;
+        }
         let violation: Option<String> = sqlx::query_scalar("PRAGMA foreign_key_check").fetch_optional(&mut *connection).await.map_err(internal)?;
         if violation.is_some() { return Err((StatusCode::CONFLICT, "Backup failed the database integrity check; nothing was restored.".to_owned())); }
         sqlx::query("COMMIT").execute(&mut *connection).await.map_err(internal)?;

@@ -27,22 +27,41 @@ export function Movies(){
   const [sort,setSort]=useState('added')
   const [view,setView]=useState<ViewMode>('grid')
   const [error,setError]=useState('')
+  const [downloadsError,setDownloadsError]=useState('')
   const [releaseMovie,setReleaseMovie]=useState<Movie|null>(null)
 
   async function reload(){
-    const [m,j,d]=await Promise.all([getMovies(),getImports(),getDownloadsLive()])
-    setMovies(m);setJobs(j);setTorrents(d.torrents)
+    const [m,j,d]=await Promise.allSettled([getMovies(),getImports(),getDownloadsLive()])
+    if(m.status==='fulfilled'){setMovies(m.value);setError('')}
+    else setError(m.reason instanceof Error?m.reason.message:String(m.reason))
+    if(j.status==='fulfilled')setJobs(j.value)
+    if(d.status==='fulfilled'){setTorrents(d.value.torrents);setDownloadsError('')}
+    else setDownloadsError(d.reason instanceof Error?d.reason.message:String(d.reason))
   }
   useEffect(()=>{
-    void reload().catch(e=>setError(String(e)))
+    void reload()
     void getQualityProfiles('movie').then(setProfiles).catch(()=>{})
     const changed=(ev:Event)=>{if((ev as CustomEvent<string>).detail==='movie')void reload()}
     window.addEventListener('oberiz-library-changed',changed)
-    const timer=setInterval(()=>void getDownloadsLive().then(d=>setTorrents(d.torrents)).catch(()=>{}),5000)
+    // Polls the full reload, not just downloads: a job finishing import flips
+    // status/available on the movie and job rows themselves, not just
+    // torrent progress, and those used to only refresh on next page load.
+    const timer=setInterval(()=>void reload(),5000)
     return()=>{clearInterval(timer);window.removeEventListener('oberiz-library-changed',changed)}
   },[])
 
 
+  async function toggleMonitored(movie:Movie){
+    setError('')
+    try{await updateMovie(movie.id,!movie.monitored);await reload()}
+    catch(e){setError(e instanceof Error?e.message:String(e))}
+  }
+  async function removeMovie(movie:Movie){
+    if(!confirm(`Delete ${movie.title}?`))return
+    setError('')
+    try{await deleteMovie(movie.id);await reload()}
+    catch(e){setError(e instanceof Error?e.message:String(e))}
+  }
   async function changeMovieProfile(movie:Movie,profileId:number){
     setError('')
     try{
@@ -80,6 +99,9 @@ export function Movies(){
     <section className="lib-hero">
       <div className="lib-title"><div className="lib-title-icon"><Icon name="movies" size={31}/></div><div><h1>Movies Library</h1><p>Manage your movie collection, downloads and monitoring</p></div></div>
     </section>
+
+    {error&&<div className="error-box">{error}</div>}
+    {downloadsError&&<div className="error-box">qBittorrent unavailable: {downloadsError}. Library metadata stays usable; download progress is paused.</div>}
 
     <section className="lib-stats">
       <div className="lib-stat"><span className="lib-stat-icon cyan"><Icon name="movies"/></span><div><small>Total Movies</small><strong>{movies.length}</strong><em>Library entries</em></div></div>
@@ -130,9 +152,9 @@ export function Movies(){
               {torrent&&state==='downloading'&&<><div className="media-live-progress"><i style={{width:`${liveProgress}%`}}/></div><div className="media-live-meta"><span>{fmtSpeed(torrent.dlspeed)}</span><span>{torrent.num_seeds} seeds</span></div></>}
               <div className="poster-actions">
                 <button title="Search releases" onClick={()=>setReleaseMovie(movie)}>▶</button>
-                <button title={movie.monitored?'Unmonitor':'Monitor'} onClick={async()=>{await updateMovie(movie.id,!movie.monitored);await reload()}}>{movie.monitored?'♡':'○'}</button>
+                <button title={movie.monitored?'Unmonitor':'Monitor'} onClick={()=>void toggleMonitored(movie)}>{movie.monitored?'♡':'○'}</button>
                 <button title="Details/profile" onClick={()=>setReleaseMovie(movie)}>ⓘ</button>
-                <button title="Delete" onClick={async()=>{if(confirm(`Delete ${movie.title}?`)){await deleteMovie(movie.id);await reload()}}}>⌫</button>
+                <button title="Delete" onClick={()=>void removeMovie(movie)}>⌫</button>
               </div>
             </div>
           </article>

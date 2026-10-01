@@ -11,6 +11,18 @@ use axum::{
 };
 use serde_json::{Value, json};
 
+/// Decodes a query parameter properly instead of splitting the raw query
+/// string and matching a literal prefix against it: a standard URL encoder
+/// turns `:` into `%3A` (Overseerr's own HTTP client does this), so
+/// `term=tmdb%3A603` never matched a hand-rolled `strip_prefix("term=tmdb:")`
+/// even though it's the same value tmdb:603 means once decoded.
+fn query_param(uri: &Uri, key: &str) -> Option<String> {
+    let query = uri.query()?;
+    url::form_urlencoded::parse(query.as_bytes())
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.into_owned())
+}
+
 async fn authorize(
     state: &AppState,
     headers: &HeaderMap,
@@ -28,14 +40,9 @@ async fn authorize(
     let actual = headers
         .get("X-Api-Key")
         .and_then(|v| v.to_str().ok())
-        .or_else(|| {
-            uri.query().and_then(|query| {
-                query
-                    .split('&')
-                    .find_map(|item| item.strip_prefix("apikey="))
-            })
-        })
-        .unwrap_or("");
+        .map(str::to_string)
+        .or_else(|| query_param(uri, "apikey"))
+        .unwrap_or_default();
     if !enabled {
         return Err((
             StatusCode::NOT_FOUND,
@@ -44,7 +51,7 @@ async fn authorize(
     }
     if expected_hash.is_empty()
         || actual.is_empty()
-        || settings::hash_api_key(actual) != expected_hash
+        || settings::hash_api_key(&actual) != expected_hash
     {
         return Err((StatusCode::UNAUTHORIZED, "Invalid API key".into()));
     }
@@ -166,11 +173,7 @@ async fn existing(
     kind: &str,
 ) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
     authorize(state, &headers, &uri).await?;
-    let tmdb_id = uri.query().and_then(|query| {
-        query
-            .split('&')
-            .find_map(|item| item.strip_prefix("tmdbId=")?.parse::<i64>().ok())
-    });
+    let tmdb_id = query_param(&uri, "tmdbId").and_then(|value| value.parse::<i64>().ok());
     let rows: Vec<(i64, i64, String, bool)> = if kind == "movie" {
         if let Some(tmdb_id) = tmdb_id {
             sqlx::query_as("SELECT id,tmdb_id,title,monitored FROM movies WHERE tmdb_id=?")
@@ -215,13 +218,9 @@ pub async fn radarr_lookup(
     authorize(&s, &h, &uri).await?;
     // Overseerr asks Radarr to resolve `term=tmdb:<id>` before submitting a movie.
     // It already holds the authoritative title/year and sends them in the following POST.
-    let tmdb_id = uri
-        .query()
-        .and_then(|query| {
-            query
-                .split('&')
-                .find_map(|item| item.strip_prefix("term=tmdb:")?.parse::<i64>().ok())
-        })
+    let tmdb_id = query_param(&uri, "term")
+        .as_deref()
+        .and_then(|term| term.strip_prefix("tmdb:")?.parse::<i64>().ok())
         .ok_or_else(|| {
             (
                 StatusCode::BAD_REQUEST,
@@ -243,12 +242,7 @@ pub async fn sonarr_lookup(
     uri: Uri,
 ) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
     authorize(&s, &h, &uri).await?;
-    let term = uri
-        .query()
-        .and_then(|query| query.split('&').find_map(|item| item.strip_prefix("term=")))
-        .unwrap_or("")
-        .replace("%3A", ":")
-        .replace("%3a", ":");
+    let term = query_param(&uri, "term").unwrap_or_default();
     let tvdb_id = term
         .strip_prefix("tvdb:")
         .and_then(|value| value.parse::<i64>().ok())
@@ -421,4 +415,31 @@ pub async fn sonarr_add_series(
 }
 fn internal<E: std::fmt::Display>(e: E) -> (StatusCode, String) {
     (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+}
+
+#[cfg(test)]
+mod query_param_tests {
+    use super::query_param;
+    use axum::http::Uri;
+
+    #[test]
+    fn reads_a_plain_value() {
+        let uri: Uri = "/api/v3/movie/lookup?term=tmdb:603".parse().unwrap();
+        assert_eq!(query_param(&uri, "term").as_deref(), Some("tmdb:603"));
+    }
+
+    #[test]
+    fn decodes_a_percent_encoded_colon() {
+        // A standard URL encoder (Overseerr's own HTTP client included)
+        // percent-encodes ':' as the query value is built; this must decode
+        // back to the same thing a literal ':' would.
+        let uri: Uri = "/api/v3/movie/lookup?term=tmdb%3A603".parse().unwrap();
+        assert_eq!(query_param(&uri, "term").as_deref(), Some("tmdb:603"));
+    }
+
+    #[test]
+    fn returns_none_for_a_missing_key() {
+        let uri: Uri = "/api/v3/movie/lookup?other=1".parse().unwrap();
+        assert_eq!(query_param(&uri, "term"), None);
+    }
 }

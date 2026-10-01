@@ -118,7 +118,20 @@ export function Settings(){
       })
       const r=await testQBittorrent()
       setQbMessage(`Connected · qBittorrent ${r.version} · ${r.latency_ms} ms · ${r.auth_method}`)
-      setPassword('');setData(await getSettings())
+      setPassword('')
+      // Only the qBittorrent fields were actually persisted above — replacing
+      // the whole draft with a fresh getSettings() here used to silently
+      // discard any other unsaved edit (movies_path, import_method, etc.)
+      // the user had made in this same form but not saved yet.
+      const fresh=await getSettings()
+      setData(current=>current?{
+        ...current,
+        qbittorrent_host:fresh.qbittorrent_host,
+        qbittorrent_port:fresh.qbittorrent_port,
+        qbittorrent_username:fresh.qbittorrent_username,
+        qbittorrent_password_set:fresh.qbittorrent_password_set,
+        qbittorrent_https:fresh.qbittorrent_https,
+      }:fresh)
     }catch(e){setQbMessage(e instanceof Error?e.message:String(e))}
   }
 

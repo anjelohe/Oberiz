@@ -29,6 +29,7 @@ pub(super) fn parse_absolute_episode(name: &str) -> Option<i32> {
     re.captures(name)?.get(1)?.as_str().parse().ok()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn render_series_template(
     template: &str,
     title: &str,
@@ -36,13 +37,29 @@ pub(super) fn render_series_template(
     parsed: &releases::ParsedRelease,
     season: i32,
     episode: i32,
+    last_episode: Option<i32>,
     episode_title: &str,
 ) -> String {
+    // A file can cover more than one episode (a "S01E01-E02" multi-episode
+    // release). Dropping the range here would be unrecoverable: whatever name
+    // we write is the only thing link_series_file can later re-parse to
+    // decide which episodes this file satisfies.
+    let is_range = last_episode.is_some_and(|last| last > episode);
+    let episode_token = if is_range {
+        format!("{episode}-E{}", last_episode.unwrap())
+    } else {
+        episode.to_string()
+    };
+    let episode_token_padded = if is_range {
+        format!("{episode:02}-E{:02}", last_episode.unwrap())
+    } else {
+        format!("{episode:02}")
+    };
     let mut value = render_template(template, title, year, parsed)
         .replace("{Season}", &season.to_string())
-        .replace("{Episode}", &episode.to_string())
+        .replace("{Episode}", &episode_token)
         .replace("{Season:00}", &format!("{season:02}"))
-        .replace("{Episode:00}", &format!("{episode:02}"))
+        .replace("{Episode:00}", &episode_token_padded)
         .replace("{EpisodeTitle}", episode_title);
     while value.contains("  ") {
         value = value.replace("  ", " ");
@@ -135,8 +152,26 @@ mod tests {
             &parsed,
             1,
             2,
+            None,
             "Pilot",
         );
         assert_eq!(name, "Show Name - S01E02 - Pilot");
+    }
+
+    #[test]
+    fn render_series_template_keeps_the_full_range_for_a_multi_episode_file() {
+        let parsed = releases::parse("Show.Name.S02E05-E06.WEB.mkv");
+        let name = render_series_template(
+            "{Title} - S{Season:00}E{Episode:00} - {EpisodeTitle}",
+            "Show Name",
+            None,
+            &parsed,
+            2,
+            5,
+            Some(6),
+            "",
+        );
+        assert_eq!(name, "Show Name - S02E05-E06");
+        assert_eq!(parse_episode_numbers(&name), Some((2, 5, Some(6))));
     }
 }
