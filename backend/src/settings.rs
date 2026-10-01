@@ -23,6 +23,8 @@ pub struct SettingsResponse {
     pub qbittorrent_username: String,
     pub qbittorrent_password_set: bool,
     pub qbittorrent_https: bool,
+    pub qbittorrent_remote_path: String,
+    pub qbittorrent_local_path: String,
     pub movies_path: String,
     pub series_path: String,
     pub downloads_path: String,
@@ -61,6 +63,8 @@ pub struct UpdateSettingsRequest {
     pub qbittorrent_username: Option<String>,
     pub qbittorrent_password: Option<String>,
     pub qbittorrent_https: Option<bool>,
+    pub qbittorrent_remote_path: Option<String>,
+    pub qbittorrent_local_path: Option<String>,
     pub movies_path: Option<String>,
     pub series_path: Option<String>,
     pub downloads_path: Option<String>,
@@ -233,6 +237,8 @@ pub async fn get_settings(
     let qbittorrent_username = text(&state.db, "qbittorrent.username", "").await?;
     let qbittorrent_password = text(&state.db, "qbittorrent.password", "").await?;
     let qbittorrent_https = boolean(&state.db, "qbittorrent.https", false).await?;
+    let qbittorrent_remote_path = text(&state.db, "qbittorrent.remote_path", "").await?;
+    let qbittorrent_local_path = text(&state.db, "qbittorrent.local_path", "").await?;
 
     let movies_path = text(&state.db, "paths.movies", "").await?;
     let series_path = text(&state.db, "paths.series", "").await?;
@@ -322,6 +328,8 @@ pub async fn get_settings(
         qbittorrent_username,
         qbittorrent_password_set: !qbittorrent_password.is_empty(),
         qbittorrent_https,
+        qbittorrent_remote_path,
+        qbittorrent_local_path,
         movies_path,
         series_path,
         downloads_path,
@@ -384,6 +392,8 @@ pub async fn update_settings(
     set_text!(payload.qbittorrent_username, "qbittorrent.username");
     set_text!(payload.qbittorrent_password, "qbittorrent.password");
     set_bool!(payload.qbittorrent_https, "qbittorrent.https");
+    set_text!(payload.qbittorrent_remote_path, "qbittorrent.remote_path");
+    set_text!(payload.qbittorrent_local_path, "qbittorrent.local_path");
 
     set_text!(payload.movies_path, "paths.movies");
     set_text!(payload.series_path, "paths.series");

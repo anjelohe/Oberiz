@@ -2,8 +2,8 @@
 
 > Estado del proyecto, decisiones tomadas, trabajo realizado y roadmap previsto.
 
-**Fecha de esta memoria:** 1 de octubre de 2026  
-**Estado actual:** Oberiz v1.0.10 es la versión pública vigente. Incluye biblioteca real, automatización de películas y series, RSS incremental con prioridad de indexador, importación, Calendar, API pública v1, diagnóstico, backup/restore SQLite, perfiles refinados y acceso de administrador protegido.
+**Fecha de esta memoria:** 2 de octubre de 2026  
+**Estado actual:** Oberiz v1.0.11 es la versión pública vigente. Incluye biblioteca real, automatización de películas y series, RSS incremental con prioridad de indexador, importación, Calendar, API pública v1, diagnóstico, backup/restore SQLite, perfiles refinados y acceso de administrador protegido.
 
 ---
 
@@ -12,6 +12,11 @@
 - **Filtros de Downloads:** incorporar selectores combinables por tracker, categoría de qBittorrent y etiquetas, además de los filtros actuales por estado y búsqueda de texto.
 
 ---
+
+## v1.0.11 — Remote path mapping y corrección de OpenSSL en Linux (2026-10-02)
+
+- **Nueva función: mapeo de rutas remotas.** Cuando qBittorrent corre en una máquina distinta a Oberiz (por ejemplo, un NAS Linux mientras Oberiz corre en Windows), las rutas que qBittorrent reporta (`/media/...`) no significan nada en el sistema de archivos local de Oberiz, y la importación fallaba con "La ruta descargada no existe". Ahora, en Settings → qBittorrent, se puede configurar un par Remote path / Local path para que Oberiz traduzca automáticamente esas rutas antes de usarlas. Si se dejan en blanco, el comportamiento no cambia.
+- **Corrección de seguridad/empaquetado:** el cliente HTTP llevaba, sin que nadie lo hubiera pedido, una segunda librería TLS (OpenSSL nativo) activa junto a la ya elegida deliberadamente (rustls) en cualquier build de Linux — incluidos los ya publicados anteriormente. En Windows pasaba desapercibido porque esa ruta usa el TLS del propio sistema en vez de OpenSSL. Eliminada esa dependencia duplicada e innecesaria.
 
 ## v1.0.10 — Revisión exhaustiva de datos, API, interfaz y seguridad (2026-10-01)
 

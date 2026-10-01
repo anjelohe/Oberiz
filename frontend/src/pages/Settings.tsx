@@ -71,6 +71,8 @@ export function Settings(){
         qbittorrent_username:data!.qbittorrent_username,
         qbittorrent_password:password===''?null:password,
         qbittorrent_https:data!.qbittorrent_https,
+        qbittorrent_remote_path:data!.qbittorrent_remote_path,
+        qbittorrent_local_path:data!.qbittorrent_local_path,
         movies_path:data!.movies_path,
         series_path:data!.series_path,
         downloads_path:data!.downloads_path,
@@ -292,6 +294,11 @@ export function Settings(){
             <label>Password<input type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder={data.qbittorrent_password_set?'Keep current if blank':'Password'}/></label>
           </div>
           <label className="toggle-row"><input type="checkbox" checked={data.qbittorrent_https} onChange={e=>setData({...data,qbittorrent_https:e.target.checked})}/> Use HTTPS</label>
+          <div className="form-grid">
+            <label>Remote path (as qBittorrent sees it)<input value={data.qbittorrent_remote_path} onChange={e=>setData({...data,qbittorrent_remote_path:e.target.value})} placeholder="/media/WD19TB"/></label>
+            <label>Local path (as Oberiz sees it)<input value={data.qbittorrent_local_path} onChange={e=>setData({...data,qbittorrent_local_path:e.target.value})} placeholder="Z:\WD19TB or \\nas\WD19TB"/></label>
+          </div>
+          <small className="settings-help">Only needed when qBittorrent runs on a different machine than Oberiz. Leave both blank if they share the same filesystem.</small>
           <div className="settings-actions"><span>{qbMessage}</span><button type="button" className="ghost-button" onClick={()=>void testQb()}>Test Connection</button></div>
         </section>
 

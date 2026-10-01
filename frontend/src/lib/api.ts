@@ -181,6 +181,8 @@ export type Settings = {
   qbittorrent_username: string;
   qbittorrent_password_set: boolean;
   qbittorrent_https: boolean;
+  qbittorrent_remote_path: string;
+  qbittorrent_local_path: string;
   movies_path: string;
   series_path: string;
   downloads_path: string;

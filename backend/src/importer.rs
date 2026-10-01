@@ -461,12 +461,52 @@ async fn run_cycle(state: &AppState) -> Result<(), (StatusCode, String)> {
     Ok(())
 }
 
+/// Translates a path qBittorrent reported into one this process can actually
+/// open. qBittorrent's `content_path`/`save_path` are always paths on
+/// *its own* host, not necessarily this one — a common setup runs
+/// qBittorrent on a separate NAS/server while Oberiz runs elsewhere (e.g.
+/// Windows), reachable only through its WebUI. Without a configured
+/// mapping this is a no-op, so a setup where both already share the same
+/// filesystem view is unaffected.
+async fn translate_remote_path(state: &AppState, path: &str) -> String {
+    let remote = settings::get_value(&state.db, "qbittorrent.remote_path")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let local = settings::get_value(&state.db, "qbittorrent.local_path")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    apply_remote_path_mapping(path, &remote, &local)
+}
+
+/// The actual prefix-swap, split out from `translate_remote_path` so it can
+/// be unit-tested without a database: trims a trailing separator off both
+/// configured sides (so "/media/WD19TB" and "/media/WD19TB/" behave the
+/// same), leaves `path` untouched whenever either side is blank or doesn't
+/// match, and normalizes the result to this OS's separator since `local`
+/// and the remainder of `path` after the swapped prefix can otherwise mix
+/// '/' and '\\'.
+fn apply_remote_path_mapping(path: &str, remote: &str, local: &str) -> String {
+    let remote = remote.trim().trim_end_matches(['/', '\\']);
+    let local = local.trim().trim_end_matches(['/', '\\']);
+    if remote.is_empty() || local.is_empty() {
+        return path.to_string();
+    }
+    let Some(rest) = path.strip_prefix(remote) else {
+        return path.to_string();
+    };
+    format!("{local}{rest}").replace(['/', '\\'], std::path::MAIN_SEPARATOR_STR)
+}
+
 async fn import_job(
     state: &AppState,
     job: &DownloadJob,
     torrent: &qbittorrent::QBittorrentTorrent,
 ) -> Result<(), (StatusCode, String)> {
-    let source = PathBuf::from(&torrent.content_path);
+    let source = PathBuf::from(translate_remote_path(state, &torrent.content_path).await);
     if !source.exists() {
         return Err((
             StatusCode::NOT_FOUND,
@@ -641,7 +681,7 @@ async fn copy_payload(
         ));
     }
 
-    let save_path = PathBuf::from(&torrent.save_path);
+    let save_path = PathBuf::from(translate_remote_path(state, &torrent.save_path).await);
     let parsed = releases::parse(&job.release_title);
     let mut mappings = Vec::new();
 
@@ -1258,6 +1298,56 @@ fn resolve_within(base: &Path, relative: &str) -> Result<PathBuf, (StatusCode, S
         ));
     }
     Ok(normalized)
+}
+
+#[cfg(test)]
+mod apply_remote_path_mapping_tests {
+    use super::apply_remote_path_mapping;
+
+    /// CI runs this test suite on both Linux and Windows: the function under
+    /// test normalizes its output to *whichever* OS it runs on, so the
+    /// expected value here is built the same way rather than a literal
+    /// hardcoded for one platform.
+    fn native(segments: &[&str]) -> String {
+        segments.join(std::path::MAIN_SEPARATOR_STR)
+    }
+
+    #[test]
+    fn maps_a_remote_nas_path_to_a_windows_drive() {
+        // The exact setup this was written for: qBittorrent on a NAS
+        // reporting POSIX paths, Oberiz on Windows.
+        let result = apply_remote_path_mapping(
+            "/media/WD19TB/descargas/tulsa.king.2022.s02e01.mkv",
+            "/media/WD19TB",
+            r"Z:\WD19TB",
+        );
+        assert_eq!(
+            result,
+            native(&["Z:", "WD19TB", "descargas", "tulsa.king.2022.s02e01.mkv"])
+        );
+    }
+
+    #[test]
+    fn trailing_separators_on_either_configured_side_do_not_matter() {
+        let result =
+            apply_remote_path_mapping("/media/WD19TB/foo.mkv", "/media/WD19TB/", r"Z:\WD19TB\");
+        assert_eq!(result, native(&["Z:", "WD19TB", "foo.mkv"]));
+    }
+
+    #[test]
+    fn leaves_the_path_unchanged_when_no_mapping_is_configured() {
+        assert_eq!(
+            apply_remote_path_mapping("/media/WD19TB/foo.mkv", "", ""),
+            "/media/WD19TB/foo.mkv"
+        );
+    }
+
+    #[test]
+    fn leaves_the_path_unchanged_when_it_does_not_match_the_remote_prefix() {
+        let result =
+            apply_remote_path_mapping("/downloads/other/foo.mkv", "/media/WD19TB", r"Z:\WD19TB");
+        assert_eq!(result, "/downloads/other/foo.mkv");
+    }
 }
 
 #[cfg(test)]
