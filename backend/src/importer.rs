@@ -31,19 +31,19 @@ pub(crate) async fn reconcile_missing_torrents(
     state: &AppState,
 ) -> Result<usize, (StatusCode, String)> {
     let torrents = state.download_client.list_torrents(state).await?;
-    let present: HashSet<String> = torrents
-        .iter()
-        .map(|torrent| torrent.hash.clone())
-        .collect();
+    let present: HashSet<String> = torrents.into_iter().map(|torrent| torrent.hash).collect();
+    // A 'queued' job gets the two-minute grace whether or not it already has
+    // a hash: grab_internal now records the infohash on the job *before*
+    // handing the torrent to qBittorrent, so a queued job with a hash can
+    // simply be one qBittorrent hasn't finished adding yet.
     let jobs = sqlx::query_as::<_, (i64, String, Option<String>)>(
         r#"
         SELECT id,release_title,qb_hash FROM download_jobs
         WHERE status IN ('queued','downloading','completed','seeding')
           AND (
-            (qb_hash IS NOT NULL AND qb_hash<>'')
+            (status<>'queued' AND qb_hash IS NOT NULL AND qb_hash<>'')
             OR (
               status='queued'
-              AND (qb_hash IS NULL OR qb_hash='')
               AND updated_at < datetime('now', '-2 minutes')
             )
           )
@@ -55,27 +55,6 @@ pub(crate) async fn reconcile_missing_torrents(
     let mut missing = 0;
     for (id, title, hash) in jobs {
         if hash.as_ref().is_some_and(|value| present.contains(value)) {
-            continue;
-        }
-        // The hand-off UPDATE that records qb_hash on the job can be lost to
-        // a cancelled request or a crash even though qBittorrent genuinely
-        // added the torrent (C17): before writing this job off as missing,
-        // check whether a present torrent carries this job's id tag and
-        // reattach it instead of abandoning a real, already-downloading
-        // torrent that automation would otherwise grab all over again.
-        if hash.is_none()
-            && let Some(found) = torrents
-                .iter()
-                .find(|torrent| tag_job_id(&torrent.tags) == Some(id))
-        {
-            sqlx::query(
-                "UPDATE download_jobs SET qb_hash=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
-            )
-            .bind(&found.hash)
-            .bind(id)
-            .execute(&state.db)
-            .await
-            .map_err(internal)?;
             continue;
         }
         let reason = if hash.is_some() {

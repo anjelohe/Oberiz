@@ -558,6 +558,30 @@ pub(crate) async fn grab_internal(
     .await
     .map_err(internal)?;
 
+    // Journals the infohash on the job *before* handing the torrent to
+    // qBittorrent, whenever it can be known up front (always for a .torrent
+    // file, and for a magnet with a btih). If the request is cancelled or the
+    // process dies after qBittorrent accepts the add but before the UPDATE
+    // below runs, the job already carries the hash, so the importer's normal
+    // lookup by hash finds the torrent — no marker tag has to be written into
+    // the user's qBittorrent for that. Best effort on purpose: if another job
+    // already holds this hash the unique index rejects this write, and the
+    // post-add UPDATE below reaches the same conflict and handles it as the
+    // duplicate it is.
+    let expected_hash = match &payload {
+        cardigann::GrabPayload::Torrent(bytes) => cardigann::torrent_v1_info_hash(bytes),
+        cardigann::GrabPayload::Url(url) => crate::qbittorrent::magnet_hex_hash(url),
+    };
+    if let Some(hash) = expected_hash {
+        let _ = sqlx::query(
+            "UPDATE download_jobs SET qb_hash=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+        )
+        .bind(hash)
+        .bind(job_id)
+        .execute(&state.db)
+        .await;
+    }
+
     let result = match payload {
         cardigann::GrabPayload::Url(url) => {
             state

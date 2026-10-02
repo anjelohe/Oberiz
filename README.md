@@ -2,7 +2,7 @@
 
 Self-hosted media automation for movies and series. Oberiz brings metadata, indexers, quality profiles, searches, qBittorrent, importing and the real library together in one application.
 
-**Current version: 1.0.11 — remote path mapping for a qBittorrent instance running on a different machine than Oberiz, and a fix for every Linux build (including past releases) silently linking against system OpenSSL alongside rustls.**
+**Current version: 1.0.12 — Oberiz no longer adds internal job tags to torrents in qBittorrent (only your profile's tags are applied), on top of 1.0.11's remote path mapping for a qBittorrent running on a different machine and the Linux build no longer linking against system OpenSSL.**
 
 ## What it does
 
@@ -50,12 +50,12 @@ Every release provides ready-to-run packages. No Rust, Node.js or frontend build
 
 | Platform | Download | Starts with |
 | --- | --- | --- |
-| Docker | `ghcr.io/anjelohe/oberiz:v1.0.11` | `docker compose up -d` |
-| Linux x86_64 | `oberiz-1.0.11-linux-x86_64.tar.gz` | `sudo ./install.sh` |
-| Windows x86_64 (portable) | `oberiz-1.0.11-windows-x86_64.zip` | `Start-Oberiz.bat` |
-| Windows x86_64 (installer) | `oberiz-1.0.11-windows-x86_64-setup.exe` | Setup assistant |
+| Docker | `ghcr.io/anjelohe/oberiz:v1.0.12` | `docker compose up -d` |
+| Linux x86_64 | `oberiz-1.0.12-linux-x86_64.tar.gz` | `sudo ./install.sh` |
+| Windows x86_64 (portable) | `oberiz-1.0.12-windows-x86_64.zip` | `Start-Oberiz.bat` |
+| Windows x86_64 (installer) | `oberiz-1.0.12-windows-x86_64-setup.exe` | Setup assistant |
 
-The packages are available from the [v1.0.11 release](https://github.com/anjelohe/Oberiz/releases/tag/v1.0.11). The release workflow also builds and attaches the Windows package whenever a version is published.
+The packages are available from the [v1.0.12 release](https://github.com/anjelohe/Oberiz/releases/tag/v1.0.12). The release workflow also builds and attaches the Windows package whenever a version is published.
 
 ## Support Oberiz
 
@@ -91,11 +91,11 @@ For an LXC without Docker, use the Linux package instead. It requires a distribu
 
 ## Linux installation
 
-The Linux package targets 64-bit Linux distributions using systemd. The binary is statically linked against musl rather than the build runner's glibc, so it carries no glibc version dependency to track; this removes the compatibility risk, though the resulting tarball itself hasn't been smoke-tested across a distribution matrix after the change. If you do hit a startup problem that looks library-related, the Docker image remains the alternative. Download `oberiz-1.0.11-linux-x86_64.tar.gz` from the release, extract it and run:
+The Linux package targets 64-bit Linux distributions using systemd. The binary is statically linked against musl rather than the build runner's glibc, so it carries no glibc version dependency to track; this removes the compatibility risk, though the resulting tarball itself hasn't been smoke-tested across a distribution matrix after the change. If you do hit a startup problem that looks library-related, the Docker image remains the alternative. Download `oberiz-1.0.12-linux-x86_64.tar.gz` from the release, extract it and run:
 
 ```bash
-tar -xzf oberiz-1.0.11-linux-x86_64.tar.gz
-cd oberiz-1.0.11-linux-x86_64
+tar -xzf oberiz-1.0.12-linux-x86_64.tar.gz
+cd oberiz-1.0.12-linux-x86_64
 sudo ./install.sh
 ```
 
@@ -105,13 +105,13 @@ The service uses the `oberiz` system account. Grant that account the required re
 
 ## Windows portable installation
 
-Download `oberiz-1.0.11-windows-x86_64.zip` from the release, extract it anywhere you want to keep Oberiz, then double-click `Start-Oberiz.bat`. It starts the included `Oberiz.exe` invisibly in the background and opens `http://127.0.0.1:2032`; no command window remains open.
+Download `oberiz-1.0.12-windows-x86_64.zip` from the release, extract it anywhere you want to keep Oberiz, then double-click `Start-Oberiz.bat`. It starts the included `Oberiz.exe` invisibly in the background and opens `http://127.0.0.1:2032`; no command window remains open.
 
 The `data` and `config` folders are created beside the executable, so the installation is portable and can be moved or backed up as one directory.
 
 ## Windows installer
 
-Download `oberiz-1.0.11-windows-x86_64-setup.exe` from the release and run it. The setup assistant installs Oberiz, creates Start Menu and optional desktop shortcuts, and offers to start it at the end. Oberiz then runs invisibly in the background, without a command window.
+Download `oberiz-1.0.12-windows-x86_64-setup.exe` from the release and run it. The setup assistant installs Oberiz, creates Start Menu and optional desktop shortcuts, and offers to start it at the end. Oberiz then runs invisibly in the background, without a command window.
 
 Application files are installed under `Program Files\Oberiz`. Your database, configuration and backups are stored separately in `%ProgramData%\Oberiz` (`%ProgramData%\Oberiz\data` for the database and backups, `%ProgramData%\Oberiz\config` for indexer definitions), so they survive application updates and uninstallation.
 

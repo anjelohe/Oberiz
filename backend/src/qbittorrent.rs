@@ -895,25 +895,17 @@ fn database_error(error: sqlx::Error) -> (StatusCode, String) {
     )
 }
 
-fn oberiz_tags(user_tags: &str, job_id: Option<i64>, _reseed: bool) -> String {
+// Only the tags the user's profile asks for are ever written to qBittorrent:
+// no internal marker (e.g. a job id) is added, since those show up in the
+// user's own client as clutter next to their real tags. Job recovery after an
+// interrupted grab is done by journaling the infohash on the job row *before*
+// the hand-off instead (see search_api::grab_internal).
+fn oberiz_tags(user_tags: &str, _job_id: Option<i64>, _reseed: bool) -> String {
     let mut tags = Vec::<String>::new();
     for raw in user_tags.split(',') {
         let clean = raw.trim().replace(['\r', '\n'], " ");
         if !clean.is_empty() && !tags.iter().any(|x| x.eq_ignore_ascii_case(&clean)) {
             tags.push(clean);
-        }
-    }
-    // Carries the job id into qBittorrent itself so a job whose `qb_hash`
-    // never got persisted — the request was cancelled, the handler crashed,
-    // or the connection dropped between a successful add and the follow-up
-    // UPDATE — can still be found again: run_cycle's reconciliation already
-    // falls back to parsing this tag (see importer::tag_job_id) when a
-    // lookup by hash finds nothing, but that fallback was dead as long as
-    // nothing actually wrote the tag.
-    if let Some(job_id) = job_id {
-        let marker = format!("_oberiz_job_{job_id}");
-        if !tags.iter().any(|x| x.eq_ignore_ascii_case(&marker)) {
-            tags.push(marker);
         }
     }
     tags.join(",")
@@ -940,7 +932,7 @@ fn normalize_title(value: &str) -> String {
 /// some indexers emit the base32 form. This used to only recognize hex,
 /// silently falling back to less precise duplicate detection for any magnet
 /// using base32.
-fn magnet_hex_hash(url: &str) -> Option<String> {
+pub(crate) fn magnet_hex_hash(url: &str) -> Option<String> {
     let parsed = url::Url::parse(url).ok()?;
     for (key, value) in parsed.query_pairs() {
         if key != "xt" {

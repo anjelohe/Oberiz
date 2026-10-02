@@ -3,7 +3,7 @@
 > Estado del proyecto, decisiones tomadas, trabajo realizado y roadmap previsto.
 
 **Fecha de esta memoria:** 2 de octubre de 2026  
-**Estado actual:** Oberiz v1.0.11 es la versión pública vigente. Incluye biblioteca real, automatización de películas y series, RSS incremental con prioridad de indexador, importación, Calendar, API pública v1, diagnóstico, backup/restore SQLite, perfiles refinados y acceso de administrador protegido.
+**Estado actual:** Oberiz v1.0.12 es la versión pública vigente. Incluye biblioteca real, automatización de películas y series, RSS incremental con prioridad de indexador, importación, Calendar, API pública v1, diagnóstico, backup/restore SQLite, perfiles refinados y acceso de administrador protegido.
 
 ---
 
@@ -11,7 +11,17 @@
 
 - **Filtros de Downloads:** incorporar selectores combinables por tracker, categoría de qBittorrent y etiquetas, además de los filtros actuales por estado y búsqueda de texto.
 
+## "Bugs" conocidos aceptados (sin arreglar a propósito)
+
+- **"Coincidencia de título laxa" (decidido el 2026-10-02: se deja como está).** `evaluate_release` (`profiles.rs`) solo comprueba el año si el release trae uno, y mide el título como la fracción de palabras del título monitorizado presentes en el release, sin penalizar palabras de más. Un release sin año cuyo título *contiene* el monitorizado (p. ej. *Resident Evil Bienvenidos a Raccoon City* frente a *Resident Evil* (2026)) se acepta como válido. Visto una vez en la práctica. Se considera raro porque casi todos los releases llevan el año, y endurecerlo arriesga rechazar releases buenos con títulos traducidos o con subtítulo. Si aparece más a menudo: penalizar el texto de título no explicado y/o exigir año cuando el título monitorizado sea corto o ambiguo.
+
 ---
+
+## v1.0.12 — Sin etiquetas internas en qBittorrent (2026-10-02)
+
+- **Oberiz ya no añade la etiqueta `_oberiz_job_N` a los torrents en qBittorrent.** Había vuelto en v1.0.10, al reponer un marcador que el código había dejado de escribir deliberadamente, y aparecía en el cliente del usuario junto a sus etiquetas reales (`HDZero`, etc.). Ahora solo se aplican las etiquetas que define el perfil de calidad.
+- **La recuperación de un grab interrumpido se mantiene, sin etiquetas:** el infohash se apunta en el job *antes* de entregar el torrent a qBittorrent (siempre posible con un `.torrent`, y con un magnet que lleve `btih`), de modo que si la petición se corta justo después de que qBittorrent lo acepte, el importador sigue encontrando el torrent por su hash. `reconcile` da ahora 2 minutos de margen a cualquier job en cola, también a los que ya tienen hash, para no darlos por perdidos mientras qBittorrent aún los está añadiendo.
+- Las etiquetas `_oberiz_job_*` que v1.0.10 y v1.0.11 ya escribieron en torrents existentes no se limpian solas: se borran a mano desde qBittorrent.
 
 ## v1.0.11 — Remote path mapping y corrección de OpenSSL en Linux (2026-10-02)
 
