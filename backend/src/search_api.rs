@@ -1,7 +1,7 @@
 use crate::{
     AppState,
     cardigann::{self, ReleaseResult, SearchContext, SearchFailure},
-    history, profiles, releases, series, tvdb,
+    history, profiles, rejections, releases, series, tvdb,
 };
 use axum::{
     Json,
@@ -70,6 +70,9 @@ pub(crate) struct MediaSearchSpec {
     pub imdb_id: Option<String>,
     pub profile_id: Option<i64>,
     pub indexer_id: Option<String>,
+    /// The library item the search is for, when there is one: manual
+    /// rejections are looked up against it.
+    pub media_id: Option<i64>,
 }
 
 pub async fn search(
@@ -167,6 +170,7 @@ pub(crate) async fn resolve_series_target_spec(
         imdb_id: None,
         profile_id,
         indexer_id: None,
+        media_id: Some(series_id),
     })
 }
 
@@ -212,6 +216,7 @@ async fn resolve_spec(
                 imdb_id,
                 profile_id: requested_profile.or(row.4),
                 indexer_id,
+                media_id: Some(id),
             });
         }
         let row = sqlx::query_as::<_, (String, Option<String>, Option<i32>, i64, Option<i64>)>(
@@ -239,6 +244,7 @@ async fn resolve_spec(
             imdb_id,
             profile_id: requested_profile.or(row.4),
             indexer_id,
+            media_id: Some(id),
         });
     }
 
@@ -254,6 +260,7 @@ async fn resolve_spec(
         imdb_id,
         profile_id: requested_profile,
         indexer_id,
+        media_id: None,
     })
 }
 
@@ -409,6 +416,23 @@ pub(crate) async fn search_media_internal(
                 indexer_name: id.clone(),
                 error,
             }),
+        }
+    }
+
+    // Releases the user rejected by hand for this title are never accepted
+    // again, whatever the profile says — this one place covers the manual
+    // search and every automation path that picks from these results.
+    if let Some(media_id) = spec.media_id.filter(|id| *id > 0) {
+        let rejected = rejections::rejected_keys(&state.db, &spec.media_type, media_id).await;
+        if !rejected.is_empty() {
+            for row in &mut results {
+                if let Some(id) = rejected.get(&rejections::release_key(&row.title)) {
+                    row.accepted = false;
+                    row.rejection_id = Some(*id);
+                    row.rejection_reasons
+                        .insert(0, rejections::MANUAL_REJECTION_REASON.into());
+                }
+            }
         }
     }
 

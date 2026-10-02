@@ -1196,3 +1196,20 @@
 :root[data-theme="middle"] .speed-down{color:#61c9ff!important;background:transparent;box-shadow:none}
 :root[data-theme="middle"] .dl-health-main .healthy i{background:#61c9ff}
 :root[data-theme="middle"] .dl-recent-list b{color:#61c9ff!important;background:transparent;box-shadow:none}
+
+.dl-delete-hint {
+  margin: 0 0 12px;
+  color: #8aa39d;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.dl-rejected { padding: 14px 18px; }
+.dl-rejected summary { cursor: pointer; font-size: 13px; font-weight: 600; }
+.dl-rejected p { margin: 10px 0; color: #8aa39d; font-size: 12px; }
+.dl-rejected ul { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.dl-rejected li { display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid rgba(255,255,255,.055); border-radius: 8px; background: #0c1312; padding: 8px 10px; }
+.dl-rejected li div { min-width: 0; }
+.dl-rejected li strong, .dl-rejected li small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dl-rejected li strong { font-size: 11px; color: #c8d3cf; }
+.dl-rejected li small { margin-top: 3px; font-size: 10px; color: #6e8580; }

@@ -70,8 +70,27 @@ fn release_for_rss(item: &RssRelease) -> ReleaseResult {
         profile_score: 0,
         match_score: 0,
         accepted: false,
+        rejection_id: None,
         reasons: vec![],
         rejection_reasons: vec![],
+    }
+}
+
+/// Turns an otherwise acceptable RSS candidate into a rejected one when the
+/// user rejected this exact release for this movie/series by hand.
+async fn apply_manual_rejection(
+    state: &AppState,
+    media_type: &str,
+    media_id: i64,
+    candidate: &mut ReleaseResult,
+) {
+    if candidate.accepted
+        && crate::rejections::is_rejected(&state.db, media_type, media_id, &candidate.title).await
+    {
+        candidate.accepted = false;
+        candidate
+            .rejection_reasons
+            .push(crate::rejections::MANUAL_REJECTION_REASON.into());
     }
 }
 
@@ -137,6 +156,7 @@ pub(crate) async fn process_rss_release(
         candidate.score = evaluation.total_score;
         candidate.accepted = evaluation.accepted;
         candidate.rejection_reasons = evaluation.rejection_reasons.clone();
+        apply_manual_rejection(state, "movie", id, &mut candidate).await;
         if !candidate.accepted {
             last_outcome = format!("rejected: {}", candidate.rejection_reasons.join(", "));
             continue;
@@ -241,6 +261,7 @@ pub(crate) async fn process_rss_release(
             candidate.score = evaluation.total_score;
             candidate.accepted = evaluation.accepted;
             candidate.rejection_reasons = evaluation.rejection_reasons.clone();
+            apply_manual_rejection(state, "series", id, &mut candidate).await;
             if !candidate.accepted {
                 last_outcome = format!("rejected: {}", candidate.rejection_reasons.join(", "));
                 continue;
@@ -336,6 +357,7 @@ pub(crate) async fn process_rss_release(
         candidate.score = evaluation.total_score;
         candidate.accepted = evaluation.accepted;
         candidate.rejection_reasons = evaluation.rejection_reasons.clone();
+        apply_manual_rejection(state, "series", id, &mut candidate).await;
         if !candidate.accepted {
             last_outcome = format!("rejected: {}", candidate.rejection_reasons.join(", "));
             continue;

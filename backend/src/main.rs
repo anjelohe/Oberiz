@@ -16,6 +16,7 @@ mod overseerr;
 mod profiles;
 mod public_api;
 mod qbittorrent;
+mod rejections;
 mod releases;
 mod routes;
 mod rss;

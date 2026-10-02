@@ -660,6 +660,7 @@ pub async fn delete_series(
         .execute(&state.db)
         .await
         .map_err(internal)?;
+    crate::rejections::forget_media(&state.db, "series", id).await;
     history::record(
         &state.db,
         "series.deleted",

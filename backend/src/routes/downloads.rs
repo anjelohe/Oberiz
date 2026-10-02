@@ -3,7 +3,7 @@ use axum::{
     routing::{delete, get, post, put},
 };
 
-use crate::{AppState, qbittorrent, releases, search_api};
+use crate::{AppState, qbittorrent, rejections, releases, search_api};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -39,4 +39,14 @@ pub fn router() -> Router<AppState> {
         .route("/api/releases/search", get(search_api::search))
         .route("/api/releases/grab", post(search_api::grab))
         .route("/api/releases/parse", get(releases::parse_release))
+        .route("/api/releases/reject", post(rejections::reject_release))
+        .route("/api/releases/rejected", get(rejections::list_rejected))
+        .route(
+            "/api/releases/rejected/{id}",
+            delete(rejections::unreject_release),
+        )
+        .route(
+            "/api/downloads/{hash}/reject",
+            post(rejections::reject_torrent),
+        )
 }

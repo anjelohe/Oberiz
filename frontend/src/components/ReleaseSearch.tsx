@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Icon } from './Icon'
 import { useModalA11y } from '../lib/useModalA11y'
+import { rejectRelease, unrejectRelease } from '../lib/api'
 import './ReleaseSearch.css'
 
 type Release = {
   indexer_id:string; indexer_name:string; title:string; details_url:string|null; download_url:string|null;
   size_bytes:number|null; seeders:number|null; leechers:number|null; category:string|null; published:string|null;
   score:number; base_score:number; profile_score:number; match_score:number; accepted:boolean;
+  rejection_id:number|null;
   reasons:string[]; rejection_reasons:string[];
   resolution:string|null; source:string|null; codec:string|null; hdr:string|null; audio:string|null; language:string|null;
 }
@@ -34,6 +36,7 @@ export function ReleaseSearch({
   const [profileName,setProfileName]=useState<string|null>(null)
   const [cutoff,setCutoff]=useState<number|null>(null)
   const requestIdRef=useRef(0)
+  const [reloadKey,setReloadKey]=useState(0)
 
   useEffect(()=>{
     if(!open)return
@@ -57,7 +60,7 @@ export function ReleaseSearch({
       })
       .finally(()=>{if(requestIdRef.current===requestId)setLoading(false)})
     return ()=>{controller.abort()}
-  },[open,title,year,tmdbId,mediaId,mediaType,profileId,queryOverride,seasonNumber,episodeNumber])
+  },[open,title,year,tmdbId,mediaId,mediaType,profileId,queryOverride,seasonNumber,episodeNumber,reloadKey])
 
   const accepted=useMemo(()=>rows.filter(x=>x.accepted),[rows])
   const rejected=useMemo(()=>rows.filter(x=>!x.accepted),[rows])
@@ -86,6 +89,28 @@ export function ReleaseSearch({
     finally{setGrabbing('')}
   }
 
+  // Rejects/un-rejects one result in place instead of re-running the search:
+  // a manual rejection only changes this one row's accepted state.
+  async function setRejection(row:Release,reject:boolean){
+    const key=`${row.indexer_id}-${row.title}`
+    setGrabbing(key);setError('')
+    try{
+      let rejectionId:number|null=null
+      if(reject){
+        rejectionId=(await rejectRelease({media_type:mediaType,media_id:mediaId,title:row.title,indexer_name:row.indexer_name})).id
+      }else if(row.rejection_id!==null){
+        await unrejectRelease(row.rejection_id)
+      }
+      setRows(current=>current.map(x=>x.title!==row.title?x:reject
+        ?{...x,accepted:false,rejection_id:rejectionId,rejection_reasons:['Rechazado manualmente',...x.rejection_reasons]}
+        // Back to "not manually rejected": the real accept/reject state needs the profile's
+        // verdict again, which only a fresh search can recompute.
+        :{...x,rejection_id:null,rejection_reasons:x.rejection_reasons.filter(reason=>reason!=='Rechazado manualmente')}))
+      if(!reject)setReloadKey(n=>n+1)
+    }catch(e){setError(e instanceof Error?e.message:String(e))}
+    finally{setGrabbing('')}
+  }
+
   return <div className="rs-backdrop" onMouseDown={onClose}>
     <div ref={dialogRef} className="rs-modal" role="dialog" aria-modal="true" aria-labelledby="release-search-title" tabIndex={-1} onMouseDown={e=>e.stopPropagation()}>
       <div className="rs-head">
@@ -105,9 +130,14 @@ export function ReleaseSearch({
           <div className="rs-metric"><span>Size</span><strong>{size(r.size_bytes)}</strong></div>
           <div className="rs-metric"><span>Seeds</span><strong>{r.seeders??'—'}</strong></div>
           <div className="rs-score"><span>Score</span><strong>{r.score}</strong><small>M {r.match_score} · P {r.profile_score}</small></div>
-          <button className="primary-button" disabled={grabbing!==''||!r.accepted} onClick={()=>void grab(r)}>
-            <Icon name="downloads" size={16}/>{grabbing===`${r.indexer_id}-${r.title}`?'Sending…':r.accepted?'Grab':'Rejected'}
-          </button>
+          <div className="rs-actions">
+            {r.rejection_id!==null
+              ?<button type="button" className="rs-reject" disabled={grabbing!==''} onClick={()=>void setRejection(r,false)} title="Allow Oberiz to pick this release again">Undo reject</button>
+              :r.accepted&&<button type="button" className="rs-reject" disabled={grabbing!==''} onClick={()=>void setRejection(r,true)} title="Never pick this release again for this title">Reject</button>}
+            <button className="primary-button" disabled={grabbing!==''||!r.accepted} onClick={()=>void grab(r)}>
+              <Icon name="downloads" size={16}/>{grabbing===`${r.indexer_id}-${r.title}`?'Sending…':r.accepted?'Grab':'Rejected'}
+            </button>
+          </div>
         </div>)}
       </div>}
       {failures.length>0&&<details className="rs-errors"><summary>{failures.length} indexer errors</summary>{failures.map(x=><div key={x.indexer_id}><strong>{x.indexer_id}</strong> · {x.error}</div>)}</details>}

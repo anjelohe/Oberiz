@@ -250,6 +250,7 @@ export type TorrentLive = {
   tracker:string;
   save_path:string;
   content_path:string;
+  oberiz_job_id?:number|null;
 }
 
 export type DownloadListResponse = {
@@ -403,6 +404,20 @@ export const saveSeedPolicy = (indexerId:string,payload:Omit<SeedPolicy,'indexer
   })
 
 export const getDownloadsLive = () => json<DownloadListResponse>('/api/downloads')
+
+export type RejectedRelease = {
+  id:number; media_type:'movie'|'series'; media_id:number; media_title:string|null;
+  release_title:string; indexer_name:string|null; created_at:string;
+}
+async function noContent(url:string,init?:RequestInit){
+  const res=await fetch(url,init)
+  if(!res.ok) throw new Error(await parseError(res))
+}
+const jsonBody=(method:string,body:unknown):RequestInit=>({method,headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+export const rejectRelease = (payload:{media_type:'movie'|'series';media_id:number;title:string;indexer_name?:string|null}) => json<{id:number}>('/api/releases/reject',jsonBody('POST',payload))
+export const getRejectedReleases = () => json<RejectedRelease[]>('/api/releases/rejected')
+export const unrejectRelease = (id:number) => noContent(`/api/releases/rejected/${id}`,{method:'DELETE'})
+export const rejectTorrent = (hash:string,deleteFiles:boolean) => noContent(`/api/downloads/${encodeURIComponent(hash)}/reject`,jsonBody('POST',{delete_files:deleteFiles}))
 export const updateTorrentOrganization = (hash:string,payload:{category:string;tags:string;previous_tags:string}) => json<{status:string}>(`/api/downloads/${encodeURIComponent(hash)}/organization`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
 
 export const getQBittorrentCategories = () => json<QBittorrentCategoryListResponse>('/api/qbittorrent/categories')

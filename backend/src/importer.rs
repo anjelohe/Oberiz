@@ -187,7 +187,7 @@ pub async fn delete_imports(
         return Err((StatusCode::BAD_REQUEST, "Select at least one record".into()));
     }
     let mut query = QueryBuilder::new(
-        "DELETE FROM download_jobs WHERE status IN ('duplicate','error','missing','cleaned') AND id IN (",
+        "DELETE FROM download_jobs WHERE status IN ('duplicate','error','missing','cleaned','rejected') AND id IN (",
     );
     let mut separated = query.separated(",");
     for id in ids {
@@ -1081,6 +1081,7 @@ async fn stable_quality_score(
         profile_score: 0,
         match_score: 0,
         accepted: false,
+        rejection_id: None,
         reasons: vec![],
         rejection_reasons: vec![],
     };

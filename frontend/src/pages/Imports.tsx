@@ -20,7 +20,7 @@ export function Imports(){
     catch(e){setMessage(e instanceof Error?e.message:String(e))}
     finally{setBusy(null)}
   }
-  const removable=(row:ImportJob)=>['duplicate','error','missing','cleaned'].includes(row.status)
+  const removable=(row:ImportJob)=>['duplicate','error','missing','cleaned','rejected'].includes(row.status)
   const removableRows=rows.filter(removable)
   function toggle(id:number,range:boolean){
     if(range&&selectionAnchor!=null){

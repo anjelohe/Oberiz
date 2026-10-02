@@ -1,6 +1,6 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './Downloads.css'
-import { QBittorrentCategory, createQBittorrentCategory, createQBittorrentTags, deleteQBittorrentCategory, deleteQBittorrentTags, getQBittorrentCategories, getQBittorrentTags, updateQBittorrentCategory, updateTorrentOrganization } from '../lib/api'
+import { QBittorrentCategory, createQBittorrentCategory, createQBittorrentTags, deleteQBittorrentCategory, deleteQBittorrentTags, getQBittorrentCategories, getQBittorrentTags, getRejectedReleases, RejectedRelease, rejectTorrent, unrejectRelease, updateQBittorrentCategory, updateTorrentOrganization } from '../lib/api'
 import { FolderPicker } from '../components/FolderPicker'
 
 type Torrent = {
@@ -50,6 +50,9 @@ type Torrent = {
   last_activity: number
   time_active: number
   seeding_time: number
+
+  // Set when Oberiz itself picked and downloaded this torrent.
+  oberiz_job_id?: number | null
 }
 
 type DownloadListResponse = {
@@ -238,6 +241,9 @@ export function Downloads() {
   const [busyHash, setBusyHash] = useState<string | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Torrent | null>(null)
   const [deleteFiles, setDeleteFiles] = useState(false)
+  // Same confirmation dialog as delete, but also records the release as rejected.
+  const [rejectMode, setRejectMode] = useState(false)
+  const [rejectedReleases, setRejectedReleases] = useState<RejectedRelease[]>([])
   const [actionError, setActionError] = useState<string | null>(null)
   const [organizationOpen, setOrganizationOpen] = useState(false)
   const [categories, setCategories] = useState<QBittorrentCategory[]>([])
@@ -343,10 +349,30 @@ export function Downloads() {
     }
   }, [])
 
+  const loadRejected = useCallback(async () => {
+    try {
+      const rows = await getRejectedReleases()
+      if (mounted.current) setRejectedReleases(rows)
+    } catch {
+      // The list is secondary to the downloads table; a failed refresh keeps the last one.
+    }
+  }, [])
+
+  async function undoRejection(id: number) {
+    setActionError(null)
+    try {
+      await unrejectRelease(id)
+      await loadRejected()
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Could not undo the rejection')
+    }
+  }
+
   useEffect(() => {
     mounted.current = true
     void loadDownloads()
     void loadOrganization()
+    void loadRejected()
 
     let timer = 0
 
@@ -373,7 +399,7 @@ export function Downloads() {
       document.removeEventListener('visibilitychange', handleVisibility)
       window.clearInterval(timer)
     }
-  }, [loadDownloads, loadOrganization])
+  }, [loadDownloads, loadOrganization, loadRejected])
 
   const visibleTorrents = useMemo(() => {
     const needle = query.trim().toLowerCase()
@@ -498,16 +524,22 @@ export function Downloads() {
     setActionError(null)
 
     try {
-      await action(
-        `/api/downloads/${deleteTarget.hash}?delete_files=${deleteFiles ? 'true' : 'false'}`,
-        { method: 'DELETE' },
-      )
+      if (rejectMode) {
+        await rejectTorrent(deleteTarget.hash, deleteFiles)
+      } else {
+        await action(
+          `/api/downloads/${deleteTarget.hash}?delete_files=${deleteFiles ? 'true' : 'false'}`,
+          { method: 'DELETE' },
+        )
+      }
 
       setDeleteTarget(null)
       setDeleteFiles(false)
+      setRejectMode(false)
       await loadDownloads(true)
+      void loadRejected()
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Could not delete torrent')
+      setActionError(err instanceof Error ? err.message : rejectMode ? 'Could not reject release' : 'Could not delete torrent')
     } finally {
       setBusyHash(null)
     }
@@ -847,12 +879,29 @@ export function Downloads() {
                         >
                           {state.active ? 'Ⅱ' : '▶'}
                         </button>
+                        {torrent.oberiz_job_id != null && (
+                          <button
+                            type="button"
+                            disabled={busy}
+                            className="danger"
+                            onClick={() => {
+                              setDeleteFiles(false)
+                              setRejectMode(true)
+                              setDeleteTarget(torrent)
+                            }}
+                            title="Reject this release: remove it and never pick it again"
+                            aria-label="Reject release"
+                          >
+                            ⊘
+                          </button>
+                        )}
                         <button
                           type="button"
                           disabled={busy}
                           className="danger"
                           onClick={() => {
                             setDeleteFiles(false)
+                            setRejectMode(false)
                             setDeleteTarget(torrent)
                           }}
                           title="Delete"
@@ -868,6 +917,29 @@ export function Downloads() {
           </div>
         )}
       </section>
+
+      {rejectedReleases.length > 0 && (
+        <details className="dl-card dl-rejected">
+          <summary>Rejected releases ({rejectedReleases.length})</summary>
+          <p>Oberiz will not pick these again for the title shown. Undo one to let it be chosen again.</p>
+          <ul>
+            {rejectedReleases.map((item) => (
+              <li key={item.id}>
+                <div>
+                  <strong>{item.release_title}</strong>
+                  <small>
+                    {item.media_title ?? `Removed ${item.media_type}`}
+                    {item.indexer_name ? ` · ${item.indexer_name}` : ''}
+                  </small>
+                </div>
+                <button type="button" className="dl-secondary" onClick={() => void undoRejection(item.id)}>
+                  Undo
+                </button>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
 
       <section className="dl-bottom-grid">
         <article className="dl-card dl-health">
@@ -992,13 +1064,19 @@ export function Downloads() {
           <div className="dl-modal dl-delete-modal" onMouseDown={(event) => event.stopPropagation()}>
             <div className="dl-modal-heading">
               <div>
-                <p className="dl-kicker danger-kicker">DELETE TORRENT</p>
-                <h2>Remove download?</h2>
+                <p className="dl-kicker danger-kicker">{rejectMode ? 'REJECT RELEASE' : 'DELETE TORRENT'}</p>
+                <h2>{rejectMode ? 'Reject this release?' : 'Remove download?'}</h2>
               </div>
               <button type="button" onClick={() => setDeleteTarget(null)}>×</button>
             </div>
 
             <p className="dl-delete-name">{deleteTarget.name}</p>
+            {rejectMode && (
+              <p className="dl-delete-hint">
+                The torrent is removed from qBittorrent and Oberiz will never pick this release again for this
+                title; its next search will look for another one. You can undo it from the manual search.
+              </p>
+            )}
 
             <label className="dl-check">
               <input
@@ -1017,7 +1095,9 @@ export function Downloads() {
                 Cancel
               </button>
               <button type="button" className="dl-danger-button" onClick={() => void confirmDelete()}>
-                {deleteFiles ? 'Delete torrent + files' : 'Delete torrent'}
+                {rejectMode
+                  ? deleteFiles ? 'Reject + delete files' : 'Reject release'
+                  : deleteFiles ? 'Delete torrent + files' : 'Delete torrent'}
               </button>
             </div>
           </div>

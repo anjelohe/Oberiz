@@ -41,6 +41,8 @@ pub struct ReleaseResult {
     pub profile_score: i32,
     pub match_score: i32,
     pub accepted: bool,
+    /// Id of the manual rejection (see `rejections`) this release matched.
+    pub rejection_id: Option<i64>,
     pub reasons: Vec<String>,
     pub rejection_reasons: Vec<String>,
 }
@@ -731,6 +733,7 @@ fn push_release(
         profile_score: 0,
         match_score: 0,
         accepted: true,
+        rejection_id: None,
         reasons: Vec::new(),
         rejection_reasons: Vec::new(),
     });

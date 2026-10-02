@@ -117,10 +117,19 @@ pub struct QBittorrentTorrent {
     pub seeding_time: i64,
 }
 
+/// A qBittorrent torrent plus the Oberiz job that downloaded it, if any. Only
+/// torrents with a job can be rejected: Oberiz picked those releases itself.
+#[derive(Debug, Serialize)]
+pub struct DownloadRow {
+    #[serde(flatten)]
+    pub torrent: QBittorrentTorrent,
+    pub oberiz_job_id: Option<i64>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct DownloadListResponse {
     pub status: &'static str,
-    pub torrents: Vec<QBittorrentTorrent>,
+    pub torrents: Vec<DownloadRow>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -243,6 +252,24 @@ pub async fn list_downloads(
 ) -> Result<Json<DownloadListResponse>, (StatusCode, String)> {
     let mut torrents = list_torrents_internal(&state).await?;
     torrents.sort_by_key(|torrent| std::cmp::Reverse(torrent.added_on));
+
+    let jobs = sqlx::query_as::<_, (String, i64)>(
+        "SELECT lower(qb_hash),id FROM download_jobs \
+         WHERE qb_hash IS NOT NULL AND qb_hash<>'' AND media_id>0 AND status<>'rejected' \
+         ORDER BY id",
+    )
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .into_iter()
+    .collect::<std::collections::HashMap<_, _>>();
+    let torrents = torrents
+        .into_iter()
+        .map(|torrent| DownloadRow {
+            oberiz_job_id: jobs.get(&torrent.hash.to_lowercase()).copied(),
+            torrent,
+        })
+        .collect();
 
     Ok(Json(DownloadListResponse {
         status: "ok",
@@ -1223,7 +1250,7 @@ async fn list_torrents_fresh(
         })
 }
 
-async fn invalidate_torrent_cache(state: &AppState) {
+pub(crate) async fn invalidate_torrent_cache(state: &AppState) {
     *state.torrent_list_cache.lock().await = None;
 }
 

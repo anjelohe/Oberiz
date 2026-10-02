@@ -342,6 +342,7 @@ pub async fn delete_movie(
         .execute(&state.db)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    crate::rejections::forget_media(&state.db, "movie", id).await;
 
     history::record(
         &state.db,

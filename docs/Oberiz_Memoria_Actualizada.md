@@ -3,19 +3,30 @@
 > Estado del proyecto, decisiones tomadas, trabajo realizado y roadmap previsto.
 
 **Fecha de esta memoria:** 2 de octubre de 2026  
-**Estado actual:** Oberiz v1.0.12 es la versión pública vigente. Incluye biblioteca real, automatización de películas y series, RSS incremental con prioridad de indexador, importación, Calendar, API pública v1, diagnóstico, backup/restore SQLite, perfiles refinados y acceso de administrador protegido.
+**Estado actual:** Oberiz v1.1.0 es la versión pública vigente. Incluye biblioteca real, automatización de películas y series, RSS incremental con prioridad de indexador, importación, Calendar, API pública v1, diagnóstico, backup/restore SQLite, perfiles refinados y acceso de administrador protegido.
 
 ---
 
 ## Pendientes de interfaz acordados
 
 - **Filtros de Downloads:** incorporar selectores combinables por tracker, categoría de qBittorrent y etiquetas, además de los filtros actuales por estado y búsqueda de texto.
+- **Selectores `:contains` en definiciones Cardigann (detectado el 2026-10-02, sin arreglar).** `forgiving_selector` (`cardigann.rs`) borra `:contains(...)` cuando el motor de selectores no lo interpreta, así que la condición se pierde y el selector encaja con todas las filas. Efecto visto en la definición privada de DivTeam: todos los títulos reciben ` English` en lugar de distinguir VOSE de MULTi/SPANiSH, lo que falsea la detección de idioma. Pendiente: implementar `:contains` de verdad (filtrando filas por su texto) en lugar de descartarlo. Hallazgo por lectura del código, aún no reproducido con una prueba contra el indexer.
 
 ## "Bugs" conocidos aceptados (sin arreglar a propósito)
 
 - **"Coincidencia de título laxa" (decidido el 2026-10-02: se deja como está).** `evaluate_release` (`profiles.rs`) solo comprueba el año si el release trae uno, y mide el título como la fracción de palabras del título monitorizado presentes en el release, sin penalizar palabras de más. Un release sin año cuyo título *contiene* el monitorizado (p. ej. *Resident Evil Bienvenidos a Raccoon City* frente a *Resident Evil* (2026)) se acepta como válido. Visto una vez en la práctica. Se considera raro porque casi todos los releases llevan el año, y endurecerlo arriesga rechazar releases buenos con títulos traducidos o con subtítulo. Si aparece más a menudo: penalizar el texto de título no explicado y/o exigir año cuando el título monitorizado sea corto o ambiguo.
 
 ---
+
+## v1.1.0 — Rechazo manual de releases (2026-10-02)
+
+- **Nueva función: rechazar un release a mano.** Un release rechazado para una película o serie concreta no vuelve a elegirse para ese título: lo respetan la búsqueda manual, la búsqueda automática y el RSS.
+  - **Búsqueda manual:** cada resultado aceptado tiene un botón *Reject*; los rechazados (visibles con *Show rejected releases*) muestran *Undo reject*.
+  - **Downloads:** los torrents que descargó Oberiz tienen un botón *Reject release* junto a pausar y borrar. Quita el torrent de qBittorrent (con la opción de borrar también los archivos, desactivada por defecto), lo rechaza y la siguiente búsqueda del título busca otro release. Los torrents que Oberiz no descargó no muestran el botón: no hay un título que rechazar.
+  - **Lista:** Downloads muestra los releases rechazados con un botón *Undo* para volver a permitirlos.
+- **Cómo se identifica un release:** por título normalizado (minúsculas, sin puntuación) dentro de una película o serie, no por infohash, porque un resultado de búsqueda no tiene hash hasta descargar el `.torrent`. El mismo release con distinta puntuación o mayúsculas entre indexers cuenta como el mismo. Si alguien lo republica con un título distinto, es otro release.
+- **Implementación:** migración `0020_rejected_releases.sql` y módulo `rejections.rs`. El filtro vive en `search_media_internal`, por lo que cubre todas las rutas de búsqueda, y en las tres evaluaciones del RSS. Un job rechazado queda con estado `rejected`, que la automatización no cuenta como activo. Al borrar una película o serie se borran sus rechazos.
+- **Límites conocidos:** rechazar un torrent ya importado no toca el archivo de la biblioteca; solo evita que ese release se vuelva a elegir. Un release que el RSS descartó por estar rechazado queda marcado como descartado y no se reevalúa si luego se deshace el rechazo; la búsqueda automática o manual sí lo volverá a ver.
 
 ## v1.0.12 — Sin etiquetas internas en qBittorrent (2026-10-02)
 
