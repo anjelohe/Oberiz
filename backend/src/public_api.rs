@@ -415,7 +415,10 @@ async fn to_view(
     }
 }
 
-async fn authorize(state: &AppState, headers: &HeaderMap) -> Result<(), (StatusCode, String)> {
+pub(crate) async fn authorize(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<(), (StatusCode, String)> {
     let enabled = settings::get_value(&state.db, "api.enabled")
         .await
         .map_err(internal)?

@@ -135,7 +135,7 @@ pub fn install() -> anyhow::Result<()> {
         ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE,
     )?;
     let exe_path = std::env::current_exe()?;
-    let service_info = ServiceInfo {
+    let mut service_info = ServiceInfo {
         name: OsString::from(SERVICE_NAME),
         display_name: OsString::from(SERVICE_DISPLAY_NAME),
         service_type: ServiceType::OWN_PROCESS,
@@ -144,15 +144,18 @@ pub fn install() -> anyhow::Result<()> {
         executable_path: exe_path,
         launch_arguments: vec![OsString::from("--service")],
         dependencies: vec![],
-        account_name: None, // runs as LocalSystem
+        account_name: Some(OsString::from("NT AUTHORITY\\LocalService")),
         account_password: None,
     };
-    let access = ServiceAccess::CHANGE_CONFIG | ServiceAccess::START;
+    let access = ServiceAccess::CHANGE_CONFIG | ServiceAccess::QUERY_CONFIG | ServiceAccess::START;
     // An installer upgrade keeps the existing service registration. Reuse it
     // and point it at the freshly installed executable instead of failing
     // with ERROR_SERVICE_EXISTS and silently leaving the old binary active.
     let service = match manager.open_service(SERVICE_NAME, access) {
         Ok(service) => {
+            // An existing account may have deliberate NAS/media permissions.
+            // Never silently replace that identity during an update.
+            service_info.account_name = service.query_config()?.account_name;
             service.change_config(&service_info)?;
             service
         }
@@ -198,6 +201,8 @@ fn configure_service_environment() -> anyhow::Result<()> {
     std::fs::create_dir_all(format!("{config_dir}\\indexers\\custom"))?;
     std::fs::create_dir_all(format!("{config_dir}\\indexers\\upstream"))?;
     migrate_legacy_user_data(Path::new(&data_dir), Path::new(&config_dir))?;
+    crate::storage_security::protect_directory(Path::new(&data_dir))?;
+    crate::storage_security::protect_directory(Path::new(&config_dir))?;
 
     let environment = format!(
         "OBERIZ_DATA_DIR={data_dir}\\0OBERIZ_CONFIG_DIR={config_dir}\\0OBERIZ_STATIC_DIR={static_dir}\\0"

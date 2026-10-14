@@ -564,6 +564,9 @@ pub async fn update_settings(
             "hardlink" => "hardlink",
             "copy" => "copy",
             "move" => "move",
+            // Oberiz never touches files: qBittorrent downloads straight into
+            // the library and an external media server reports what exists.
+            "external" => "external",
             _ => "auto",
         };
         set_value(&state.db, "import.method", normalized)

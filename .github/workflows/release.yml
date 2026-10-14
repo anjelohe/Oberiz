@@ -54,7 +54,11 @@ jobs:
           npm ci --prefix frontend
           npm run test:i18n --prefix frontend
           npm run test:filters --prefix frontend
+          npm run test:storage --prefix frontend
           npm run build --prefix frontend
+      - name: Dependency security audit
+        shell: pwsh
+        run: ./scripts/audit-dependencies.ps1
       - name: Version matches the tag/release being built
         # An arbitrary tag or a typo'd workflow_dispatch release_version
         # otherwise sails through unnoticed and publishes artifacts labeled

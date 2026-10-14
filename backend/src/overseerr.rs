@@ -23,7 +23,7 @@ fn query_param(uri: &Uri, key: &str) -> Option<String> {
         .map(|(_, v)| v.into_owned())
 }
 
-async fn authorize(
+pub(crate) async fn authorize(
     state: &AppState,
     headers: &HeaderMap,
     uri: &Uri,

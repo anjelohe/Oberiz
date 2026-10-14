@@ -1,10 +1,10 @@
+use crate::yaml::{self as serde_yaml, Value};
 use axum::{
     Json,
     extract::{Path, State},
     http::StatusCode,
 };
 use serde::{Deserialize, Serialize};
-use serde_yaml::Value;
 use std::{
     fs::File,
     io::{Cursor, Read, Write},

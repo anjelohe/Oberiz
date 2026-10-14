@@ -7,6 +7,7 @@ mod cardigann_selector;
 mod db;
 mod diagnostics;
 mod download_client;
+mod external_library;
 mod filesystem;
 mod history;
 mod importer;
@@ -28,10 +29,12 @@ mod series;
 mod service;
 mod settings;
 mod smb;
+mod storage_security;
 mod tmdb;
 #[cfg(windows)]
 mod tray;
 mod tvdb;
+mod yaml;
 
 use automation::AutomationRuntime;
 use axum::{
@@ -104,6 +107,10 @@ async fn security_headers(
         axum::http::HeaderValue::from_static("no-referrer"),
     );
     headers.insert(
+        axum::http::header::CONTENT_SECURITY_POLICY,
+        axum::http::HeaderValue::from_static("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"),
+    );
+    headers.insert(
         axum::http::HeaderName::from_static("cross-origin-opener-policy"),
         axum::http::HeaderValue::from_static("same-origin"),
     );
@@ -164,6 +171,7 @@ async fn frontend_shell() -> Response {
 }
 
 async fn build_app_state() -> anyhow::Result<AppState> {
+    storage_security::protect_directory(&settings::config_directory())?;
     let db = db::connect().await?;
     settings::migrate_legacy_api_key(&db).await?;
     let http = reqwest::Client::builder()
@@ -246,7 +254,7 @@ async fn run_server(
         )
         .fallback(get(frontend_shell));
 
-    let public_router = routes::public::router();
+    let public_router = routes::public::router(state.clone());
 
     // The internal API has no CORS headers of its own: the bundled frontend
     // is always same-origin, so browsers need none, and this keeps random
@@ -274,7 +282,9 @@ async fn run_server(
     // opening a listener when Oberiz runs as a service. Bind synchronously
     // first so the operating system either gives us the port immediately or
     // returns a useful error (for example, if another process owns it).
-    let std_listener = std::net::TcpListener::bind("0.0.0.0:2032")?;
+    let listen_address =
+        std::env::var("OBERIZ_BIND_ADDRESS").unwrap_or_else(|_| "0.0.0.0:2032".into());
+    let std_listener = std::net::TcpListener::bind(&listen_address)?;
     std_listener.set_nonblocking(true)?;
     let listener = tokio::net::TcpListener::from_std(std_listener)?;
     tracing::info!(

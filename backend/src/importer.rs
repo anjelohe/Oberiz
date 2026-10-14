@@ -496,6 +496,13 @@ async fn import_job(
     job: &DownloadJob,
     torrent: &qbittorrent::QBittorrentTorrent,
 ) -> Result<(), (StatusCode, String)> {
+    let method = settings::get_value(&state.db, "import.method")
+        .await
+        .map_err(internal)?
+        .unwrap_or_else(|| "auto".into());
+    if method == "external" {
+        return record_external_completion(state, job, torrent).await;
+    }
     let source = PathBuf::from(translate_remote_path(state, &torrent.content_path).await);
     if !source.exists() {
         return Err((
@@ -530,10 +537,6 @@ async fn import_job(
     refuse_system_directory(&library_root)?;
     fs::create_dir_all(&library_root).map_err(fs_error)?;
 
-    let method = settings::get_value(&state.db, "import.method")
-        .await
-        .map_err(internal)?
-        .unwrap_or_else(|| "auto".into());
     let rename = setting_bool(state, "import.rename_enabled", true).await?;
     let mappings = copy_payload(
         state,
@@ -647,6 +650,43 @@ async fn import_job(
         destination = %library_root.display(),
         "import completed"
     );
+    Ok(())
+}
+
+/// "Oberiz does not manage files": qBittorrent already saved the download in
+/// its final place and an external media server (Cinetta) reports it once it
+/// sees it. Nothing is opened, moved or renamed here. The job is still marked
+/// imported and seeding, which keeps it counting as an active grab — so
+/// automation does not search the title again while waiting for that report.
+async fn record_external_completion(
+    state: &AppState,
+    job: &DownloadJob,
+    torrent: &qbittorrent::QBittorrentTorrent,
+) -> Result<(), (StatusCode, String)> {
+    sqlx::query(
+        r#"
+        UPDATE download_jobs SET
+          status='seeding',source_path=?,library_path=NULL,import_method='external',
+          file_mappings_json='[]',imported_at=CURRENT_TIMESTAMP,last_error=NULL,updated_at=CURRENT_TIMESTAMP
+        WHERE id=?
+    "#,
+    )
+    .bind(&torrent.content_path)
+    .bind(job.id)
+    .execute(&state.db)
+    .await
+    .map_err(internal)?;
+    history::record(
+        &state.db,
+        "import.external",
+        &job.release_title,
+        Some(&format!(
+            "Completed in {}. Oberiz does not manage files; it becomes available when your media server reports it.",
+            torrent.content_path
+        )),
+        "info",
+    )
+    .await;
     Ok(())
 }
 
@@ -967,7 +1007,10 @@ async fn maybe_cleanup(
     }
 
     let hash = job.qb_hash.as_deref().unwrap_or(&torrent.hash);
-    let delete_files = policy.cleanup_mode == "remove_torrent_and_original";
+    // When Oberiz does not manage files, the torrent's data IS the library
+    // copy: removing it would delete the movie or episode itself.
+    let delete_files = policy.cleanup_mode == "remove_torrent_and_original"
+        && job.import_method.as_deref() != Some("external");
     state
         .download_client
         .delete_torrent(state, hash, delete_files)

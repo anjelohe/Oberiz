@@ -9,6 +9,7 @@
     "build": "tsc -b && vite build",
     "test:i18n": "node tests/i18n.cjs",
     "test:filters": "node tests/download-filters.cjs",
+    "test:storage": "node tests/storage-settings.cjs",
     "preview": "vite preview"
   },
   "dependencies": {

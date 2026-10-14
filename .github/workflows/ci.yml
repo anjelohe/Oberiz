@@ -37,6 +37,12 @@ jobs:
         run: cargo clippy --manifest-path backend/Cargo.toml --all-targets --all-features -- -D warnings
       - name: Test
         run: cargo test --manifest-path backend/Cargo.toml --locked
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+      - name: Active dependency security audit
+        shell: pwsh
+        run: ./scripts/audit-dependencies.ps1
 
   frontend:
     runs-on: ubuntu-latest
@@ -50,5 +56,7 @@ jobs:
       - run: npm ci --prefix frontend
       - name: Translation catalogue tests
         run: npm run test:i18n --prefix frontend
+      - name: Storage settings regression tests
+        run: npm run test:storage --prefix frontend
       - name: Typecheck and build
         run: npm run build --prefix frontend

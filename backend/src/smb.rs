@@ -127,6 +127,14 @@ pub async fn save(
         secret,
         shares: old.map(|c| c.shares.clone()).unwrap_or_default(),
     };
+    // IPC$ is only a last resort: some servers refuse it (Windows error 1312)
+    // while accepting a real share with the same credentials. Like `restore`,
+    // reuse a share already discovered for this server when none is given.
+    let share = if share.is_empty() {
+        connection.shares.first().cloned().unwrap_or_default()
+    } else {
+        share
+    };
     let candidate = connection.clone();
     let shares = tokio::task::spawn_blocking(move || native::connect(&candidate, &share))
         .await
@@ -285,10 +293,10 @@ mod native {
             unsafe { WNetAddConnection2W(&resource, password.as_ptr(), username.as_ptr(), 0) };
         password.fill(0);
         if status != 0 {
-            return Err(if status == 1219 {
-                "An SMB session already uses different credentials. Oberiz will not disconnect it; use the same account or close that session yourself.".into()
-            } else {
-                format!("SMB authentication failed (Windows error {status})")
+            return Err(match status {
+                1219 => "An SMB session already uses different credentials. Oberiz will not disconnect it; use the same account or close that session yourself.".into(),
+                1312 if share.is_empty() => "This server refused a connection without a share name (Windows error 1312). Enter the name of any shared folder once; Oberiz will discover the others and remember them.".into(),
+                _ => format!("SMB authentication failed (Windows error {status})"),
             });
         }
         let server = wide(&format!(r"\\{}", connection.server));

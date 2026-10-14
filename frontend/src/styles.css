@@ -1335,7 +1335,7 @@ body{
 .folder-picker .folder-picker-choice{display:flex;align-items:center;gap:10px;padding:10px;color:var(--muted);overflow-wrap:anywhere}
 .folder-picker-selection{border-top:1px solid var(--line);margin-top:10px;padding-top:5px}
 .folder-picker-selection code{font-size:11px;white-space:normal;overflow-wrap:anywhere}
-.folder-picker-actions{flex-wrap:wrap}
+.folder-picker-actions{flex-wrap:wrap;max-height:30vh;overflow:auto}
 .folder-picker-actions input{flex:1;min-width:120px;max-width:100%;border:1px solid var(--line);background:var(--panel-2);color:var(--text-strong);border-radius:7px;padding:8px 10px}
 .smb-connections{display:grid;gap:10px;padding-bottom:16px;border-bottom:1px solid var(--line);min-width:0}
 .smb-connections h4,.smb-connections p{margin:0;overflow-wrap:anywhere}
@@ -1418,3 +1418,36 @@ body{
 @container dashboard-summary (max-width:360px){.dashboard-library-stats .dashboard-ref-stat{grid-template-columns:36px minmax(0,1fr);gap:10px}.dashboard-library-stats .stat-orb{width:36px;height:36px}.dashboard-library-stats .stat-meter{grid-column:2;justify-self:end}.dashboard-library-stats .series-stats-values{column-gap:14px}}
 @supports not (container-type:inline-size){@media(max-width:1800px){.dashboard-library-stats{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:850px){.dashboard-library-stats{grid-template-columns:1fr}}}
 @media(max-width:650px){.dashboard-library-stats{grid-template-columns:1fr}.library-mapping-row{grid-template-columns:1fr}.library-root-row{align-items:flex-start}}
+
+/* Files and storage: one guided block whose steps appear only when the previous answers need them. */
+.settings-section.storage-settings{gap:0}
+.storage-step{display:grid;gap:12px;padding:16px 0;border-bottom:1px solid var(--line)}
+.storage-step h4{margin:0;font-size:14px;color:var(--text-strong)}
+.storage-choices{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.settings-section .storage-choice{display:flex;align-items:flex-start;gap:10px;padding:12px;border:1px solid var(--line);border-radius:9px;background:var(--panel-2);cursor:pointer}
+.settings-section .storage-choice:has(input:checked){border-color:var(--green)}
+.settings-section .storage-choice input,.settings-section .storage-suggestion input{width:18px;height:18px;margin-top:2px;flex-shrink:0;accent-color:var(--green)}
+.storage-choice span,.storage-suggestion span{display:grid;gap:4px;min-width:0;overflow-wrap:anywhere}
+.storage-choice b{color:var(--text-strong);font-size:13px}
+.storage-choice small{color:var(--muted);line-height:1.45}
+.storage-mappings{display:grid;gap:10px}
+.storage-mapping-actions{flex-wrap:wrap}
+.storage-suggestions{display:grid;gap:10px;padding:12px;border:1px dashed var(--line);border-radius:9px}
+.settings-section .storage-suggestion{display:flex;align-items:flex-start;gap:10px;cursor:pointer}
+.storage-suggestion small.verified{color:var(--green)}
+.storage-suggestion small.unverified{color:#ffb15c}
+.storage-folders label small{font-size:11px}
+.settings-actions.storage-smb-toggle{justify-content:flex-start;padding:14px 0;border-bottom:1px solid var(--line)}
+.storage-details{padding:14px 0;border-bottom:1px solid var(--line)}
+.storage-details:last-child{border-bottom:0;padding-bottom:0}
+.storage-details>summary{cursor:pointer;display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px;font-weight:600;color:var(--text-strong)}
+.storage-details>summary small{font-weight:400;color:var(--muted);font-size:12px}
+.storage-details[open]>summary{margin-bottom:14px}
+.storage-existing-library,.storage-existing-library .library-maintenance{display:grid;gap:14px;min-width:0}
+.library-category-choice em{font-style:normal;color:var(--green)}
+:root[data-theme="middle"] .settings-section .storage-choice:has(input:checked){border-color:#ff8d22}
+:root[data-theme="middle"] .settings-section .storage-choice input,:root[data-theme="middle"] .settings-section .storage-suggestion input{accent-color:#ff8d22}
+:root[data-theme="middle"] .library-category-choice em{color:#ffb465}
+@media(max-width:700px){.storage-choices{grid-template-columns:1fr}}
+.storage-step .smb-connections>h4{display:none}
+.storage-step .smb-connections{border-bottom:0;padding-bottom:0}

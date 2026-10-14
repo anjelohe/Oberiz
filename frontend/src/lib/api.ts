@@ -301,6 +301,15 @@ export type QBittorrentCategoryListResponse = {
   categories:QBittorrentCategory[];
 }
 
+/** A proposed qBittorrent → Oberiz path mapping; `verified` means the translated folder exists. */
+export type MappingSuggestion = {
+  remote:string;
+  local:string;
+  verified:boolean;
+  example_remote:string;
+  example_local:string;
+}
+
 export type QBittorrentTestResult = {
   status: string; version: string; host: string; latency_ms: number; auth_method: string;
 }
@@ -432,6 +441,7 @@ export const rejectTorrent = (hash:string,deleteFiles:boolean) => noContent(`/ap
 export const updateTorrentOrganization = (hash:string,payload:{category:string;tags:string;previous_tags:string}) => json<{status:string}>(`/api/downloads/${encodeURIComponent(hash)}/organization`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
 
 export const getQBittorrentCategories = () => json<QBittorrentCategoryListResponse>('/api/qbittorrent/categories')
+export const getPathMappingSuggestions = () => json<MappingSuggestion[]>('/api/storage/path-mapping-suggestions')
 export const createQBittorrentCategory = (name:string, save_path:string) => json<{status:string}>('/api/qbittorrent/categories',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,save_path})})
 export const updateQBittorrentCategory = (name:string, save_path:string) => json<{status:string}>(`/api/qbittorrent/categories/${encodeURIComponent(name)}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,save_path})})
 export const deleteQBittorrentCategory = (name:string) => json<{status:string}>(`/api/qbittorrent/categories/${encodeURIComponent(name)}`,{method:'DELETE'})

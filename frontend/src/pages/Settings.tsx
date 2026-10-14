@@ -2,11 +2,11 @@ import { ChangeEvent, FormEvent, useEffect, useState } from 'react'
 import {
   backupDownloadUrl, createBackup, deleteBackup, getAuthStatus, getAutomationStatus, getBackups, getDiagnostics, getRssStatus, getSeedPolicies, getSettings, logout, rescanLibrary, restoreBackup, runAutomationNow, runRssNow, saveSeedPolicy, setAdminPassword, uploadBackup,
   saveSettings, AuthStatus, BackupList, Diagnostics, RssStatus, SeedPolicy, Settings as SettingsType, testQBittorrent,
-  getLibraryRoots, LibraryRootStatus, getQBittorrentCategories, QBittorrentCategory
+  getLibraryRoots, LibraryRootStatus, getQBittorrentCategories, QBittorrentCategory, getPathMappingSuggestions, MappingSuggestion
 } from '../lib/api'
 import { Icon } from '../components/Icon'
 import { FolderPicker } from '../components/FolderPicker'
-import { SmbConnections } from '../components/SmbConnections'
+import { mergeMappings, StorageSettings } from '../components/StorageSettings'
 import { normalizeLanguage, setPortalLanguage, useTranslation, t, tf, portalLocale } from '../lib/i18n'
 
 const blankPolicy:SeedPolicy={
@@ -24,31 +24,56 @@ function formatBytes(bytes:number){
   return `${(bytes/(1024*1024)).toFixed(1)} MB`
 }
 
-function LibraryRootsEditor({title,paths,mappings,onChange}:{title:string;paths:string[];mappings:{remote:string;local:string}[];onChange:(paths:string[])=>void}){
+type Mapping={remote:string;local:string}
+const normalizePath=(v:string)=>v.replace(/\\/g,'/').replace(/\/+$/,'')
+function translatePath(path:string,rules:Mapping[]):{path:string;mapping?:Mapping}{
+  const key=(v:string)=>normalizePath(v).toLowerCase()
+  const mapping=[...rules].filter(m=>m.remote&&m.local).sort((a,b)=>b.remote.length-a.remote.length).find(m=>key(path)===key(m.remote)||key(path).startsWith(key(m.remote)+'/'))
+  if(!mapping)return {path}
+  const rest=normalizePath(path).slice(normalizePath(mapping.remote).length)
+  return {path:mapping.local.replace(/[\\/]+$/,'')+(mapping.local.includes('\\')?rest.replace(/\//g,'\\'):rest),mapping}
+}
+
+function LibraryRootsEditor({title,paths,mappings,onChange}:{title:string;paths:string[];mappings:Mapping[];onChange:(paths:string[],addedMappings?:Mapping[])=>void}){
   const [categories,setCategories]=useState<QBittorrentCategory[]>([])
   const [selectedCategories,setSelectedCategories]=useState<string[]>([])
+  // Verified proposals only: a category folder is never translated through
+  // a mapping whose destination Oberiz could not actually open.
+  const [suggestions,setSuggestions]=useState<MappingSuggestion[]>([])
+  const [autoMap,setAutoMap]=useState(true)
   const [error,setError]=useState('')
   async function loadCategories(){
     try{setCategories((await getQBittorrentCategories()).categories);setError('')}
-    catch(e){setError(e instanceof Error?e.message:String(e))}
+    catch(e){setError(e instanceof Error?e.message:String(e));return}
+    getPathMappingSuggestions().then(found=>setSuggestions(found.filter(s=>s.verified))).catch(()=>setSuggestions([]))
   }
-  function categoryPath(path:string){
-    const normalize=(v:string)=>v.replace(/\\/g,'/').replace(/\/+$/,'')
-    const mapping=[...mappings].filter(m=>m.remote&&m.local).sort((a,b)=>b.remote.length-a.remote.length).find(m=>normalize(path)===normalize(m.remote)||normalize(path).startsWith(normalize(m.remote)+'/'))
-    return mapping?mapping.local+normalize(path).slice(normalize(mapping.remote).length):path
+  function categoryPath(path:string):{path:string;newMapping?:Mapping}{
+    const existing=translatePath(path,mappings)
+    if(existing.mapping||!autoMap)return {path:existing.path}
+    const automatic=translatePath(path,suggestions)
+    return {path:automatic.path,newMapping:automatic.mapping}
   }
-  function addPaths(selected:string[]){
+  const needsNewMappings=categories.some(c=>c.save_path&&!translatePath(c.save_path,mappings).mapping&&translatePath(c.save_path,suggestions).mapping)
+  function addSelectedCategories(){
+    const results=categories.filter(c=>c.save_path&&selectedCategories.includes(c.name)).map(c=>categoryPath(c.save_path))
+    const created=mergeMappings([],results.flatMap(r=>r.newMapping?[{remote:r.newMapping.remote,local:r.newMapping.local}]:[]))
+    if(!addPaths(results.map(r=>r.path),created))return
+    setSelectedCategories([])
+  }
+  function addPaths(selected:string[],addedMappings:Mapping[]=[]){
     const key=(path:string)=>path.trim().replace(/\\/g,'/').replace(/\/+$/,'')
     const merged=[...paths.filter(p=>p.trim())]
     for(const path of selected)if(path.trim()&&!merged.some(p=>key(p)===key(path)))merged.push(path)
     if(merged.length>64){setError(t("Maximum 64 folders per media type."));return false}
-    onChange(merged);setError('');return true
+    onChange(merged,addedMappings);setError('');return true
   }
   return <div className="library-root-editor card"><div className="settings-title"><Icon name={title===t("Movies")?'movies':'series'}/><h3>{title}</h3></div>
     {paths.length===0&&<small className="settings-help">{t("Add folder")}</small>}
     {paths.map((path,i)=><div className="library-root-row" key={i}><label>{t("Library folder")}<input value={path} onChange={e=>onChange(paths.map((v,j)=>i===j?e.target.value:v))}/><FolderPicker value={path} onChange={value=>onChange(paths.map((v,j)=>i===j?value:v))}/></label><button type="button" className="danger-button" onClick={()=>onChange(paths.filter((_,j)=>j!==i))}>{t("Remove")}</button></div>)}
     <div className="settings-actions"><FolderPicker value="" onChange={()=>{}} label={t("Add folders")} onSelectMany={selected=>{addPaths(selected)}}/><button type="button" className="ghost-button" onClick={()=>onChange([...paths,''])}>{t("Add folder")}</button><button type="button" className="ghost-button" onClick={()=>void loadCategories()}>{t("Load category folders")}</button></div>
-    {categories.length>0&&<div className="library-category-picker"><strong>{t("Add from qBittorrent category")}</strong><div className="library-category-list">{categories.filter(c=>c.save_path).map(c=><label className="library-category-choice" key={c.name}><input type="checkbox" checked={selectedCategories.includes(c.name)} onChange={e=>setSelectedCategories(selected=>e.target.checked?[...selected,c.name]:selected.filter(name=>name!==c.name))}/><span><b>{c.name}</b><small>{categoryPath(c.save_path)}</small></span></label>)}</div><div className="settings-actions"><span>{tf("{0} folders selected",categories.filter(c=>c.save_path&&selectedCategories.includes(c.name)).length)}</span><button type="button" className="ghost-button" disabled={!categories.some(c=>c.save_path&&selectedCategories.includes(c.name))} onClick={()=>{if(addPaths(categories.filter(c=>c.save_path&&selectedCategories.includes(c.name)).map(c=>categoryPath(c.save_path))))setSelectedCategories([])}}>{t("Add selected folders")}</button></div></div>}
+    {categories.length>0&&<div className="library-category-picker"><strong>{t("Add from qBittorrent category")}</strong><div className="library-category-list">{categories.filter(c=>c.save_path).map(c=>{const translated=categoryPath(c.save_path);return <label className="library-category-choice" key={c.name}><input type="checkbox" checked={selectedCategories.includes(c.name)} onChange={e=>setSelectedCategories(selected=>e.target.checked?[...selected,c.name]:selected.filter(name=>name!==c.name))}/><span><b>{c.name}</b><small>{translated.path}{translated.newMapping&&<em> · {t("new path mapping")}</em>}</small></span></label>})}</div>
+      {needsNewMappings&&<label className="toggle-row"><input type="checkbox" checked={autoMap} onChange={e=>setAutoMap(e.target.checked)}/>{t("Create the path mappings these folders need automatically")}</label>}
+      <div className="settings-actions"><span>{tf("{0} folders selected",categories.filter(c=>c.save_path&&selectedCategories.includes(c.name)).length)}</span><button type="button" className="ghost-button" disabled={!categories.some(c=>c.save_path&&selectedCategories.includes(c.name))} onClick={addSelectedCategories}>{t("Add selected folders")}</button></div></div>}
     {error&&<small role="alert">{error}</small>}
   </div>
 }
@@ -78,9 +103,11 @@ export function Settings(){
   const [authNewPassword,setAuthNewPassword]=useState('')
   const [authConfirmPassword,setAuthConfirmPassword]=useState('')
   const [authMessage,setAuthMessage]=useState('')
+  // "Where does qBittorrent run?": mappings only exist for a remote client.
+  const [qbRemote,setQbRemote]=useState(false)
 
   useEffect(()=>{
-    getSettings().then(setData).catch(e=>setMessage(String(e)))
+    getSettings().then(settings=>{setData(settings);setQbRemote(settings.qbittorrent_path_mappings.length>0)}).catch(e=>setMessage(String(e)))
     getLibraryRoots().then(setRootStatus).catch(()=>{})
     getSeedPolicies().then(setPolicies).catch(()=>{})
     getRssStatus().then(setRssStatus).catch(()=>{})
@@ -97,6 +124,7 @@ export function Settings(){
   if(!data)return <div className="empty-state card">{t("Loading settings…")} {message}</div>
 
   function validatedMappings(){
+    if(!qbRemote)return []
     const mappings=data!.qbittorrent_path_mappings.filter(m=>m.remote.trim()||m.local.trim()).map(m=>({remote:m.remote.trim(),local:m.local.trim()}))
     if(mappings.some(m=>!m.remote||!m.local))throw new Error(t("Complete both paths in each mapping, or remove the row."))
     return mappings
@@ -114,8 +142,10 @@ export function Settings(){
         qbittorrent_username:data!.qbittorrent_username,
         qbittorrent_password:password===''?null:password,
         qbittorrent_https:data!.qbittorrent_https,
-        qbittorrent_remote_path:data!.qbittorrent_remote_path,
-        qbittorrent_local_path:data!.qbittorrent_local_path,
+        // The legacy single mapping is already part of the list the server
+        // returns (and saves back above); clearing it keeps one source of truth.
+        qbittorrent_remote_path:'',
+        qbittorrent_local_path:'',
         movies_path:data!.movies_path,
         series_path:data!.series_path,
         movie_library_paths:data!.movie_library_paths,
@@ -154,7 +184,8 @@ export function Settings(){
       window.dispatchEvent(new CustomEvent('oberiz-theme-changed',{detail:data!.ui_theme}))
       setTmdb('');setTvdb('');setPassword('');
       const savedKey=apiKey!==''
-      setData(await getSettings());setMessage(t("Saved"))
+      const saved=await getSettings()
+      setData(saved);setQbRemote(saved.qbittorrent_path_mappings.length>0);setMessage(t("Saved"))
       setRootStatus(await getLibraryRoots())
       if(savedKey) setApiMessage(t("API key saved. Copy it now — it will not be shown again."))
     }catch(e){setMessage(e instanceof Error?e.message:String(e))}
@@ -365,11 +396,7 @@ export function Settings(){
             <label>{t("Password")}<input type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder={data.qbittorrent_password_set?t("Keep current if blank"):t("Password")}/></label>
           </div>
           <label className="toggle-row"><input type="checkbox" checked={data.qbittorrent_https} onChange={e=>setData({...data,qbittorrent_https:e.target.checked})}/> {t("Use HTTPS")}</label>
-          <div className="form-grid">
-            <label>{t("Remote path (as qBittorrent sees it)")}<input value={data.qbittorrent_remote_path} onChange={e=>setData({...data,qbittorrent_remote_path:e.target.value})} placeholder="/media/WD19TB"/></label>
-            <label>{t("Local path (as Oberiz sees it)")}<input value={data.qbittorrent_local_path} onChange={e=>setData({...data,qbittorrent_local_path:e.target.value})} placeholder={t("Z:\\WD19TB or \\\\nas\\WD19TB")}/></label>
-          </div>
-          <small className="settings-help">{t("Only needed when qBittorrent runs on a different machine than Oberiz. Leave both blank if they share the same filesystem.")}</small>
+          <small className="settings-help">{t("If qBittorrent runs on another computer or the NAS, set its path mappings in Files and storage.")}</small>
           <div className="settings-actions"><span>{qbMessage}</span><button type="button" className="ghost-button" onClick={()=>void testQb()}>{t("Test Connection")}</button></div>
         </section>
 
@@ -431,63 +458,35 @@ export function Settings(){
           <div className="settings-title"><div><h3>{t("Import & Naming")}</h3><span>{t("Completed downloads are imported without breaking active seeding.")}</span></div><span className="connection">{data.import_enabled?t("● Enabled"):t("○ Disabled")}</span></div>
           <div className="settings-path-grid">
             <label className="toggle-row"><input type="checkbox" checked={data.import_enabled} onChange={e=>setData({...data,import_enabled:e.target.checked})}/> {t("Import completed downloads")}</label>
-            <label>{t("Import method")}
-              <select value={data.import_method} onChange={e=>setData({...data,import_method:e.target.value})}>
-                <option value="auto">{t("Auto — hardlink, then copy fallback")}</option>
-                <option value="hardlink">{t("Hardlink only")}</option>
-                <option value="copy">{t("Copy")}</option>
-                <option value="move">{t("Move (only for setups without seeding)")}</option>
-              </select>
-            </label>
-            <label className="toggle-row"><input type="checkbox" checked={data.rename_enabled} onChange={e=>setData({...data,rename_enabled:e.target.checked})}/> {t("Rename imported files")}</label>
+            {data.import_method==='external'
+              ?<p className="settings-help">{t("Oberiz does not manage files: completed downloads stay where qBittorrent saved them, and seed cleanup never deletes their data. Change it in Files and storage.")}</p>
+              :<label>{t("Import method")}
+                <select value={data.import_method} onChange={e=>setData({...data,import_method:e.target.value})}>
+                  <option value="auto">{t("Auto — hardlink, then copy fallback")}</option>
+                  <option value="hardlink">{t("Hardlink only")}</option>
+                  <option value="copy">{t("Copy")}</option>
+                  <option value="move">{t("Move (only for setups without seeding)")}</option>
+                </select>
+              </label>}
+            <label className="toggle-row"><input type="checkbox" checked={data.rename_enabled} disabled={data.import_method==='external'} onChange={e=>setData({...data,rename_enabled:e.target.checked})}/> {t("Rename imported files")}</label>
             <label className="toggle-row"><input type="checkbox" checked={data.keep_reseed_metadata} onChange={e=>setData({...data,keep_reseed_metadata:e.target.checked})}/> {t("Keep .torrent + mapping for future reseed")}</label>
             <label className="toggle-row"><input type="checkbox" checked={data.cleanup_after_seed} onChange={e=>setData({...data,cleanup_after_seed:e.target.checked})}/> {t("Cleanup downloads after seed policy is satisfied")}</label>
           </div>
-          <label>{t("Movie naming template")}<input value={data.movie_naming_template} disabled={!data.rename_enabled} onChange={e=>setData({...data,movie_naming_template:e.target.value})}/></label>
-          <label>{t("Series naming template")}<input value={data.series_naming_template} disabled={!data.rename_enabled} onChange={e=>setData({...data,series_naming_template:e.target.value})}/></label>
+          <label>{t("Movie naming template")}<input value={data.movie_naming_template} disabled={!data.rename_enabled||data.import_method==='external'} onChange={e=>setData({...data,movie_naming_template:e.target.value})}/></label>
+          <label>{t("Series naming template")}<input value={data.series_naming_template} disabled={!data.rename_enabled||data.import_method==='external'} onChange={e=>setData({...data,series_naming_template:e.target.value})}/></label>
           <small className="settings-help">{t("Common tokens:")} {'{Title} {Year} {Resolution} {Source} {Codec} {HDR} {Audio} {Language}'}{t(". Series also supports")} {'{Season} {Season:00} {Episode} {Episode:00} {EpisodeTitle}'}{t(". Season packs are imported file-by-file when episode numbers can be detected.")}</small>
         </section>
         </div>
 
         <div className="settings-row settings-row-full" data-settings-row="5">
-        <section className="settings-section card settings-full">
-          <div className="settings-title"><div><h3>{t("Paths")}</h3><span>{t("Media, downloads, reseed workspace and metadata.")}</span></div></div>
+        <StorageSettings data={data} setData={setData} qbRemote={qbRemote} setQbRemote={setQbRemote}
+          hasExistingLibrary={data.movie_library_paths.length+data.series_library_paths.length>0}
+          existingLibrary={<div className="storage-existing-library">
           <div className="settings-path-grid">
-            <label>{t("Movie import destination")}<input value={data.movies_path} onChange={e=>setData({...data,movies_path:e.target.value})}/><FolderPicker value={data.movies_path} onChange={movies_path=>setData({...data,movies_path})}/></label>
-            <label>{t("Series import destination")}<input value={data.series_path} onChange={e=>setData({...data,series_path:e.target.value})}/><FolderPicker value={data.series_path} onChange={series_path=>setData({...data,series_path})}/></label>
-            <label>{t("Downloads")}<input value={data.downloads_path} onChange={e=>setData({...data,downloads_path:e.target.value})}/><FolderPicker value={data.downloads_path} onChange={downloads_path=>setData({...data,downloads_path})}/></label>
-            <label>{t("Reseed workspace")}<input value={data.reseed_path} onChange={e=>setData({...data,reseed_path:e.target.value})} placeholder={t("Blank = downloads/reseed")}/><FolderPicker value={data.reseed_path} onChange={reseed_path=>setData({...data,reseed_path})}/></label>
-            <label>{t("Torrent metadata")}<input value={data.torrent_metadata_path} onChange={e=>setData({...data,torrent_metadata_path:e.target.value})}/><FolderPicker value={data.torrent_metadata_path} onChange={torrent_metadata_path=>setData({...data,torrent_metadata_path})}/></label>
-            <label>{t("Custom indexers")}<input value={data.custom_indexers_path} onChange={e=>setData({...data,custom_indexers_path:e.target.value})}/><FolderPicker value={data.custom_indexers_path} onChange={custom_indexers_path=>setData({...data,custom_indexers_path})}/></label>
-            <label>{t("Upstream indexers")}<input value={data.upstream_indexers_path} onChange={e=>setData({...data,upstream_indexers_path:e.target.value})}/><FolderPicker value={data.upstream_indexers_path} onChange={upstream_indexers_path=>setData({...data,upstream_indexers_path})}/></label>
+            <LibraryRootsEditor title={t("Movies")} paths={data.movie_library_paths} mappings={qbRemote?data.qbittorrent_path_mappings:[]} onChange={(movie_library_paths,added=[])=>{setData(current=>current?{...current,movie_library_paths,...(added.length?{qbittorrent_path_mappings:mergeMappings(qbRemote?current.qbittorrent_path_mappings:[],added)}:{})}:current);if(added.length)setQbRemote(true)}}/>
+            <LibraryRootsEditor title={t("Series")} paths={data.series_library_paths} mappings={qbRemote?data.qbittorrent_path_mappings:[]} onChange={(series_library_paths,added=[])=>{setData(current=>current?{...current,series_library_paths,...(added.length?{qbittorrent_path_mappings:mergeMappings(qbRemote?current.qbittorrent_path_mappings:[],added)}:{})}:current);if(added.length)setQbRemote(true)}}/>
           </div>
-        </section>
-        </div>
-
-        <div className="settings-row settings-library-block" data-settings-row="6">
-        <section className="settings-section card settings-full">
-          <div className="settings-title"><div><h3>{t("Library folders")}</h3><span>{t("Add every disk containing existing media. Scanning never moves files.")}</span></div></div>
-          <SmbConnections/>
-          <div className="settings-path-grid">
-            <LibraryRootsEditor title={t("Movies")} paths={data.movie_library_paths} mappings={data.qbittorrent_path_mappings} onChange={movie_library_paths=>setData({...data,movie_library_paths})}/>
-            <LibraryRootsEditor title={t("Series")} paths={data.series_library_paths} mappings={data.qbittorrent_path_mappings} onChange={series_library_paths=>setData({...data,series_library_paths})}/>
-          </div>
-        </section>
-
-        <section className="settings-section card settings-full library-mappings-section">
-          <div className="settings-title"><Icon name="settings"/><div><h3>{t("Remote path mappings")}</h3><span>{t("Map qBittorrent paths to folders accessible by the Oberiz server. Categories and torrent states are not changed.")}</span></div></div>
-          {data.qbittorrent_path_mappings.map((mapping,i)=><div className="library-mapping-row" key={i}>
-            <label>{t("Remote path (as qBittorrent sees it)")}<input value={mapping.remote} onChange={e=>setData({...data,qbittorrent_path_mappings:data.qbittorrent_path_mappings.map((m,j)=>j===i?{...m,remote:e.target.value}:m)})}/></label>
-            <label>{t("Local path (as Oberiz sees it)")}<input value={mapping.local} onChange={e=>setData({...data,qbittorrent_path_mappings:data.qbittorrent_path_mappings.map((m,j)=>j===i?{...m,local:e.target.value}:m)})}/><FolderPicker value={mapping.local} onChange={local=>setData({...data,qbittorrent_path_mappings:data.qbittorrent_path_mappings.map((m,j)=>j===i?{...m,local}:m)})}/></label>
-            <button type="button" className="danger-button" onClick={()=>setData({...data,qbittorrent_path_mappings:data.qbittorrent_path_mappings.filter((_,j)=>i!==j)})}>{t("Remove")}</button>
-          </div>)}
-          <div className="settings-actions"><button type="button" className="ghost-button" onClick={()=>setData({...data,qbittorrent_path_mappings:[...data.qbittorrent_path_mappings,{remote:'',local:''}]})}>{t("Add mapping")}</button></div>
-        </section>
-        </div>
-
-        <div className="settings-row settings-row-two" data-settings-row="7">
-        <section className="settings-section card settings-full library-maintenance">
-          <div className="settings-title"><div><h3>{t("Library Maintenance")}</h3><span>{t("Discover existing media files and rebuild real availability.")}</span></div></div>
+          <div className="library-maintenance">
           <div className="library-scan-controls">
             <label className="toggle-row"><input type="checkbox" checked={data.library_scan_enabled} onChange={e=>setData({...data,library_scan_enabled:e.target.checked})}/>{t("Schedule library scans")}</label>
             <label>{t("Interval (minutes)")}<input type="number" min="5" max="10080" value={data.library_scan_interval_minutes} onChange={e=>setData({...data,library_scan_interval_minutes:Number(e.target.value)})}/></label>
@@ -503,6 +502,15 @@ export function Settings(){
             const roots=rootStatus.filter(root=>root.media_type===kind)
             return roots.length>0&&<section className="library-scan-group" key={kind}><header><Icon name={kind==='movie'?'movies':'series'} size={17}/><strong>{t(kind==='movie'?'Movies':'Series')}</strong><span>{roots.length}</span></header><div className="library-root-status-list">{roots.map(root=><div className="library-root-status" key={root.path}><strong title={root.path}>{root.path}</strong><span className={root.accessible?'accessible':'unavailable'}>{root.accessible?t("Accessible"):t("Unavailable")}</span><small>{root.last_scan_at?new Date(root.last_scan_at.replace(' ','T')+'Z').toLocaleString(portalLocale()):t("Not scanned yet")}</small>{root.error&&<small role="alert">{root.error}</small>}</div>)}</div></section>
           })}</div>}
+          </div>
+        </div>}/>
+        </div>
+
+        <div className="settings-row settings-row-two" data-settings-row="7">
+        <section className="settings-section card indexer-folders-section">
+          <div className="settings-title"><div><h3>{t("Indexer folders")}</h3><span>{t("Where tracker definitions are read from. Normally there is no need to change them.")}</span></div></div>
+          <label>{t("Custom indexers")}<input value={data.custom_indexers_path} onChange={e=>setData({...data,custom_indexers_path:e.target.value})}/><FolderPicker value={data.custom_indexers_path} onChange={custom_indexers_path=>setData({...data,custom_indexers_path})}/><small className="settings-help">{t("Your private tracker definitions (.yml). They are never published or synchronized.")}</small></label>
+          <label>{t("Upstream indexers")}<input value={data.upstream_indexers_path} onChange={e=>setData({...data,upstream_indexers_path:e.target.value})}/><FolderPicker value={data.upstream_indexers_path} onChange={upstream_indexers_path=>setData({...data,upstream_indexers_path})}/><small className="settings-help">{t("Public definitions Oberiz downloads when you synchronize the catalogue.")}</small></label>
         </section>
 
         <section className="settings-section card api-key-section settings-full">

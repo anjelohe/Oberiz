@@ -40,8 +40,8 @@ fn restrict_data_directory_permissions(path: &std::path::Path) -> anyhow::Result
     Ok(())
 }
 #[cfg(not(unix))]
-fn restrict_data_directory_permissions(_path: &std::path::Path) -> anyhow::Result<()> {
-    Ok(())
+fn restrict_data_directory_permissions(path: &std::path::Path) -> anyhow::Result<()> {
+    crate::storage_security::protect_directory(path)
 }
 
 pub async fn connect() -> anyhow::Result<SqlitePool> {

@@ -430,12 +430,20 @@ pub struct PasswordRequest {
 }
 pub async fn set_password(
     State(state): State<AppState>,
+    ConnectInfo(address): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(payload): Json<PasswordRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
+    static PASSWORD_CHANGE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _guard = PASSWORD_CHANGE_LOCK.lock().await;
     let existing_hash = settings::get_value(&state.db, PASSWORD_HASH_KEY)
         .await
         .map_err(internal)?
         .filter(|value| !value.is_empty());
+    if existing_hash.is_none() && !initial_setup_is_local(address, &headers) {
+        return Err((StatusCode::FORBIDDEN,
+            "Initial password setup must be completed directly on the Oberiz computer using http://127.0.0.1:2032 (not through a proxy).".into()));
+    }
     let current_password = payload.current_password.unwrap_or_default();
     if current_password.len() > MAX_PASSWORD_LEN {
         return Err((
@@ -477,9 +485,29 @@ pub async fn set_password(
     Ok(StatusCode::NO_CONTENT)
 }
 
+fn initial_setup_is_local(address: SocketAddr, headers: &HeaderMap) -> bool {
+    address.ip().is_loopback()
+        && !headers.contains_key("x-forwarded-for")
+        && !headers.contains_key("x-real-ip")
+        && !trusted_proxies().contains(&address.ip())
+}
+
 #[cfg(test)]
 mod rate_limit_key_tests {
     use super::rate_limit_key;
+
+    #[test]
+    fn first_setup_refuses_network_clients_and_forwarded_loopback() {
+        let mut headers = axum::http::HeaderMap::new();
+        let local = "127.0.0.1:1234".parse().unwrap();
+        assert!(super::initial_setup_is_local(local, &headers));
+        assert!(!super::initial_setup_is_local(
+            "192.0.2.1:1234".parse().unwrap(),
+            &headers
+        ));
+        headers.insert("x-forwarded-for", "127.0.0.1".parse().unwrap());
+        assert!(!super::initial_setup_is_local(local, &headers));
+    }
 
     #[test]
     fn collapses_different_addresses_in_the_same_ipv6_slash_64() {

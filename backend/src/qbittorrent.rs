@@ -517,6 +517,7 @@ pub async fn delete_torrent(
     Query(query): Query<DeleteQuery>,
 ) -> Result<Json<ActionResponse>, (StatusCode, String)> {
     validate_hash(&hash)?;
+    ensure_file_deletion_allowed(&state.db, query.delete_files).await?;
 
     let config = load_config(&state).await?;
     authenticated_form_post(
@@ -537,6 +538,43 @@ pub async fn delete_torrent(
     .await?;
 
     Ok(Json(ActionResponse { status: "ok" }))
+}
+
+/// Refuse destructive torrent removal before making any network request.
+async fn ensure_file_deletion_allowed(
+    db: &sqlx::SqlitePool,
+    delete_files: bool,
+) -> Result<(), (StatusCode, String)> {
+    if delete_files
+        && settings::get_value(db, "import.method")
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .as_deref()
+            == Some("external")
+    {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "File deletion is disabled when Oberiz does not manage files. Remove the torrent without deleting its files.".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// qBittorrent's default save path, as qBittorrent itself sees it.
+pub(crate) async fn default_save_path(state: &AppState) -> Result<String, (StatusCode, String)> {
+    let config = load_config(state).await?;
+    let result = authenticated_get(&config, "/api/v2/app/defaultSavePath").await?;
+    result
+        .response
+        .text()
+        .await
+        .map(|path| path.trim().to_string())
+        .map_err(|e| {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("No se pudo leer la carpeta de descargas de qBittorrent: {e}"),
+            )
+        })
 }
 
 async fn authenticated_get(
@@ -1260,6 +1298,7 @@ pub(crate) async fn delete_torrent_internal(
     delete_files: bool,
 ) -> Result<(), (StatusCode, String)> {
     validate_hash(hash)?;
+    ensure_file_deletion_allowed(&state.db, delete_files).await?;
     let config = load_config(state).await?;
     authenticated_form_post(
         &config,
@@ -1458,6 +1497,33 @@ pub(crate) async fn add_torrent_bytes_with_options(
 #[cfg(test)]
 mod tests {
     use super::{base32_to_hex, magnet_hex_hash};
+
+    #[tokio::test]
+    async fn external_mode_blocks_file_deletion_but_allows_removing_only_the_torrent() {
+        let db = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::query("CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT)")
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO settings(key,value) VALUES('import.method','external')")
+            .execute(&db)
+            .await
+            .unwrap();
+        let error = super::ensure_file_deletion_allowed(&db, true)
+            .await
+            .unwrap_err();
+        assert_eq!(error.0, axum::http::StatusCode::FORBIDDEN);
+        super::ensure_file_deletion_allowed(&db, false)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE settings SET value='auto' WHERE key='import.method'")
+            .execute(&db)
+            .await
+            .unwrap();
+        super::ensure_file_deletion_allowed(&db, true)
+            .await
+            .unwrap();
+    }
 
     /// RFC 4648 base32, mirroring `base32_to_hex`'s decode direction, so the
     /// round trip below verifies both against the same reference alphabet

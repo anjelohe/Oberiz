@@ -5,6 +5,46 @@ SMB / CIFS servers|Servidores SMB / CIFS
 Server|Servidor
 Open|Abrir
 Forget saved connection|Olvidar conexión guardada
+No mapping needed: Oberiz already opens every folder qBittorrent uses, or no matching shared folder was found.|No hace falta ninguna correspondencia: Oberiz ya abre todas las carpetas que usa qBittorrent, o no se encontró ninguna carpeta compartida que coincida.
+{0} mappings added. Save Settings to apply them.|{0} correspondencias añadidas. Guarda los ajustes para aplicarlas.
+Files and storage|Archivos y almacenamiento
+Where qBittorrent downloads, where your movies and series end up, and how Oberiz reaches them.|Dónde descarga qBittorrent, dónde acaban tus películas y series, y cómo llega Oberiz hasta ellas.
+Should Oberiz move and rename downloads?|¿Quieres que Oberiz mueva y renombre las descargas?
+Yes|Sí
+Oberiz imports each completed download into your library folder and renames it.|Oberiz importa cada descarga terminada a la carpeta de tu biblioteca y la renombra.
+No|No
+qBittorrent downloads straight into your library and your media server (Cinetta) tells Oberiz what you have.|qBittorrent descarga directamente en tu biblioteca y tu servidor multimedia (Cinetta) le dice a Oberiz lo que tienes.
+Oberiz will never open, move, rename or delete files. Point each qBittorrent category directly at a library folder. Folders, NAS access and path mappings are not needed for downloads.|Oberiz nunca abrirá, moverá, renombrará ni borrará archivos. Apunta cada categoría de qBittorrent directamente a una carpeta de la biblioteca. Para las descargas no hacen falta carpetas, acceso al NAS ni correspondencias de rutas.
+Where does qBittorrent run?|¿Dónde está qBittorrent?
+On this computer|En este equipo
+Oberiz and qBittorrent see the same paths. Nothing to configure.|Oberiz y qBittorrent ven las mismas rutas. No hay que configurar nada.
+On another computer or the NAS|En otro equipo o en el NAS
+qBittorrent reports its own paths, which Oberiz must translate into folders it can open.|qBittorrent indica sus propias rutas, y Oberiz tiene que traducirlas a carpetas que pueda abrir.
+Example: qBittorrent sees /volume1/WD19TB and Oberiz sees|Ejemplo: qBittorrent ve /volume1/WD19TB y Oberiz ve
+Detecting…|Detectando…
+Detect automatically|Detectar automáticamente
+Suggested mappings|Correspondencias sugeridas
+Checked: {0} opens correctly.|Comprobada: {0} se abre correctamente.
+Not verified: {0} could not be opened. If the NAS needs a password, connect it in the NAS access step first.|Sin comprobar: no se pudo abrir {0}. Si el NAS pide contraseña, conéctalo primero en el paso de acceso al NAS.
+Add selected mappings|Añadir las correspondencias seleccionadas
+Folders|Carpetas
+Where qBittorrent leaves completed downloads, as Oberiz sees it.|Dónde deja qBittorrent las descargas terminadas, tal como lo ve Oberiz.
+Where movies end up, already renamed.|Dónde quedan las películas, ya renombradas.
+Where series end up, already renamed.|Dónde quedan las series, ya renombradas.
+NAS access (SMB)|Acceso al NAS (SMB)
+The NAS username and password, so the Oberiz service can open folders that start with \\. Not needed for folders on this computer.|El usuario y la contraseña del NAS, para que el servicio de Oberiz pueda abrir las carpetas que empiezan por \\. No hace falta para carpetas de este equipo.
+Configure NAS access (SMB)|Configurar acceso al NAS (SMB)
+Advanced options|Opciones avanzadas
+Existing library (optional)|Biblioteca existente (opcional)
+Folders Oberiz scans to detect what you already had. Not needed if your media server (Cinetta) reports your library.|Carpetas que Oberiz escanea para detectar lo que ya tenías. No hace falta si tu servidor multimedia (Cinetta) informa de tu biblioteca.
+new path mapping|nueva correspondencia de ruta
+Create the path mappings these folders need automatically|Crear automáticamente las correspondencias de rutas que necesitan estas carpetas
+If qBittorrent runs on another computer or the NAS, set its path mappings in Files and storage.|Si qBittorrent está en otro equipo o en el NAS, configura sus correspondencias de rutas en Archivos y almacenamiento.
+Oberiz does not manage files: completed downloads stay where qBittorrent saved them, and seed cleanup never deletes their data. Change it in Files and storage.|Oberiz no gestiona archivos: las descargas terminadas se quedan donde las guardó qBittorrent y la limpieza tras la siembra nunca borra sus datos. Se cambia en Archivos y almacenamiento.
+Indexer folders|Carpetas de indexadores
+Where tracker definitions are read from. Normally there is no need to change them.|De dónde se leen las definiciones de los trackers. Normalmente no hace falta cambiarlas.
+Your private tracker definitions (.yml). They are never published or synchronized.|Tus definiciones privadas de trackers (.yml). Nunca se publican ni se sincronizan.
+Public definitions Oberiz downloads when you synchronize the catalogue.|Definiciones públicas que Oberiz descarga al sincronizar el catálogo.
 Forget this saved SMB connection? Existing Windows sessions will not be disconnected.|¿Olvidar esta conexión SMB guardada? No se desconectarán las sesiones existentes de Windows.
 SMB connection saved|Conexión SMB guardada
 Use HTTPS when entering credentials remotely. Saved passwords are protected by Windows; shared folders appear in the folder picker.|Usa HTTPS al introducir credenciales remotamente. Windows protege las contraseñas guardadas; las carpetas compartidas aparecen en el selector.

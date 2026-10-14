@@ -1,3 +1,4 @@
+use crate::yaml::{self as serde_yaml, Value};
 use regex::Regex;
 use reqwest::{
     Client,
@@ -6,7 +7,6 @@ use reqwest::{
 use scraper::{ElementRef, Html, Selector};
 use serde::Serialize;
 use serde_json::{Map as JsonMap, Value as JsonValue};
-use serde_yaml::Value;
 use sha1::{Digest, Sha1};
 use std::{
     collections::HashMap,
@@ -2313,7 +2313,6 @@ fn yaml_to_json(v: &Value) -> JsonValue {
         Value::String(s) => JsonValue::String(s.clone()),
         Value::Sequence(seq) => JsonValue::Array(seq.iter().map(yaml_to_json).collect()),
         Value::Mapping(_) => JsonValue::Null,
-        _ => JsonValue::Null,
     }
 }
 fn json_value_string(v: Option<&JsonValue>) -> Option<String> {
