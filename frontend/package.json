@@ -1,0 +1,25 @@
+{
+  "name": "oberiz-frontend",
+  "private": true,
+  "version": "1.0.0",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "test:i18n": "node tests/i18n.cjs",
+    "test:filters": "node tests/download-filters.cjs",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^5.0.4",
+    "vite": "^7.1.7",
+    "typescript": "~5.9.2",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.16",
+    "@types/react-dom": "^19.1.9"
+  }
+}

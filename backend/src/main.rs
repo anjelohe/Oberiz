@@ -1,0 +1,344 @@
+mod auth;
+mod automation;
+mod backups;
+mod calendar;
+mod cardigann;
+mod cardigann_selector;
+mod db;
+mod diagnostics;
+mod download_client;
+mod filesystem;
+mod history;
+mod importer;
+mod indexers;
+mod library;
+mod library_roots;
+mod movies;
+mod overseerr;
+mod profiles;
+mod public_api;
+mod qbittorrent;
+mod rejections;
+mod releases;
+mod routes;
+mod rss;
+mod search_api;
+mod series;
+#[cfg(windows)]
+mod service;
+mod settings;
+mod smb;
+mod tmdb;
+#[cfg(windows)]
+mod tray;
+mod tvdb;
+
+use automation::AutomationRuntime;
+use axum::{
+    Json, Router,
+    extract::{DefaultBodyLimit, State},
+    http::StatusCode,
+    response::{Html, IntoResponse, Response},
+    routing::get,
+};
+use download_client::DownloadClient;
+use serde::Serialize;
+use sqlx::SqlitePool;
+use std::{sync::Arc, time::Instant};
+use tokio::sync::Mutex;
+use tower_http::services::{ServeDir, ServeFile};
+
+struct TorrentListCache {
+    fetched_at: Instant,
+    torrents: Vec<qbittorrent::QBittorrentTorrent>,
+}
+
+#[derive(Clone)]
+struct AppState {
+    db: SqlitePool,
+    http: reqwest::Client,
+    automation_runtime: AutomationRuntime,
+    download_client: Arc<dyn DownloadClient>,
+    /// qBittorrent's full torrent list can be several megabytes. All UI
+    /// refreshes share this short-lived cache instead of repeatedly making the
+    /// Web API serialize the same list.
+    torrent_list_cache: Arc<Mutex<Option<TorrentListCache>>>,
+    /// Serializes the final "is this already active? if not, grab it" step
+    /// across every path that can commit a grab (RSS, the scheduled/on-add
+    /// automation cycle, manual grabs). Each path already checks cheaply
+    /// before searching, but a search takes real time, and two of these paths
+    /// can run concurrently — without holding this across the recheck-then-
+    /// insert step, both could pass their own check before either commits,
+    /// and grab the same release twice.
+    grab_lock: Arc<Mutex<()>>,
+}
+
+#[derive(Serialize)]
+struct HealthResponse {
+    status: &'static str,
+    name: &'static str,
+    version: &'static str,
+    database: &'static str,
+}
+
+/// A handful of standard, low-risk response headers with no equivalent
+/// anywhere else in the app: nothing here should ever be framed by another
+/// site, sniffed into a different content type, or leak the current URL via
+/// the Referer header on an outbound link.
+async fn security_headers(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let mut response = next.run(request).await;
+    let headers = response.headers_mut();
+    headers.insert(
+        axum::http::header::X_CONTENT_TYPE_OPTIONS,
+        axum::http::HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        axum::http::header::X_FRAME_OPTIONS,
+        axum::http::HeaderValue::from_static("DENY"),
+    );
+    headers.insert(
+        axum::http::header::REFERRER_POLICY,
+        axum::http::HeaderValue::from_static("no-referrer"),
+    );
+    headers.insert(
+        axum::http::HeaderName::from_static("cross-origin-opener-policy"),
+        axum::http::HeaderValue::from_static("same-origin"),
+    );
+    response
+}
+
+async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
+    let database = if sqlx::query_scalar::<_, i32>("SELECT 1")
+        .fetch_one(&state.db)
+        .await
+        .is_ok()
+    {
+        "ok"
+    } else {
+        "error"
+    };
+
+    Json(HealthResponse {
+        status: "ok",
+        name: "Oberiz",
+        version: env!("CARGO_PKG_VERSION"),
+        database,
+    })
+}
+
+/// Liveness: only confirms the process itself is responding. Never depends on
+/// the database or any external service — those going down should not make a
+/// container orchestrator decide to restart an otherwise-healthy process.
+async fn live() -> StatusCode {
+    StatusCode::OK
+}
+
+/// Readiness: confirms the database is reachable (and therefore migrations
+/// already ran at startup). Still deliberately excludes TMDB/qBittorrent/
+/// indexers — those are configuration the user controls, not a reason to
+/// take Oberiz itself out of rotation.
+async fn ready(State(state): State<AppState>) -> Result<StatusCode, StatusCode> {
+    sqlx::query_scalar::<_, i32>("SELECT 1")
+        .fetch_one(&state.db)
+        .await
+        .map(|_| StatusCode::OK)
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)
+}
+
+async fn frontend_shell() -> Response {
+    let static_directory =
+        std::env::var("OBERIZ_STATIC_DIR").unwrap_or_else(|_| "frontend".to_string());
+    match tokio::fs::read_to_string(std::path::Path::new(&static_directory).join("index.html"))
+        .await
+    {
+        Ok(contents) => Html(contents).into_response(),
+        Err(_) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Oberiz web interface is not installed.",
+        )
+            .into_response(),
+    }
+}
+
+async fn build_app_state() -> anyhow::Result<AppState> {
+    let db = db::connect().await?;
+    settings::migrate_legacy_api_key(&db).await?;
+    let http = reqwest::Client::builder()
+        .user_agent(concat!("Oberiz/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?;
+    let state = AppState {
+        db,
+        http,
+        automation_runtime: AutomationRuntime::default(),
+        download_client: Arc::new(download_client::QBittorrentClient),
+        torrent_list_cache: Arc::new(Mutex::new(None)),
+        grab_lock: Arc::new(Mutex::new(())),
+    };
+    // A disconnected NAS must not prevent the UI or SCM from starting.
+    let restore_state = state.clone();
+    let mut restoration = tokio::spawn(async move { smb::restore(&restore_state).await });
+    if tokio::time::timeout(std::time::Duration::from_secs(10), &mut restoration)
+        .await
+        .is_err()
+    {
+        tracing::warn!("SMB startup restoration continues in the background");
+    }
+    Ok(state)
+}
+
+fn spawn_schedulers(state: &AppState) {
+    automation::spawn_scheduler(state.clone());
+    backups::spawn_scheduler(state.clone());
+    rss::spawn_scheduler(state.clone());
+    importer::spawn_import_scheduler(state.clone());
+    indexers::spawn_health_scheduler(state.clone());
+    series::spawn_metadata_refresh_scheduler(state.clone());
+    library::spawn_scan_scheduler(state.clone());
+}
+
+/// Builds the router and serves it until `shutdown` resolves. Shared by the
+/// default (portable) launch path and, on Windows, the real service: both
+/// run the exact same server, differing only in how they start and how they
+/// find out it's time to stop.
+async fn run_server(
+    state: AppState,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> anyhow::Result<()> {
+    let static_directory = std::path::PathBuf::from(
+        std::env::var("OBERIZ_STATIC_DIR").unwrap_or_else(|_| "frontend".to_string()),
+    );
+    let assets_directory = static_directory.join("assets");
+
+    let internal_router = Router::new()
+        .route("/api/health", get(health))
+        .route("/api/health/live", get(live))
+        .route("/api/health/ready", get(ready))
+        .merge(routes::auth::router())
+        .merge(routes::settings::router())
+        .merge(routes::movies::router())
+        .merge(routes::series::router())
+        .merge(routes::downloads::router())
+        .merge(routes::indexers::router())
+        .merge(routes::profiles::router())
+        .merge(routes::scheduling::router())
+        .merge(routes::library::router())
+        .nest_service("/assets", ServeDir::new(assets_directory))
+        .route_service(
+            "/oberiz-logo.png",
+            ServeFile::new(static_directory.join("oberiz-logo.png")),
+        )
+        .route_service(
+            "/oberiz-logo-middle.png",
+            ServeFile::new(static_directory.join("oberiz-logo-middle.png")),
+        )
+        .route_service(
+            "/oberiz-logo-premium.png",
+            ServeFile::new(static_directory.join("oberiz-logo-premium.png")),
+        )
+        .route_service(
+            "/paypal-donate-qr.png",
+            ServeFile::new(static_directory.join("paypal-donate-qr.png")),
+        )
+        .fallback(get(frontend_shell));
+
+    let public_router = routes::public::router();
+
+    // The internal API has no CORS headers of its own: the bundled frontend
+    // is always same-origin, so browsers need none, and this keeps random
+    // third-party web pages from reading responses cross-origin. On top of
+    // that, `auth::require_auth` gates every internal route behind the
+    // optional admin-password session once one has been configured; with no
+    // password set it is a no-op and behavior is unchanged from before.
+    let app = internal_router
+        .merge(public_router)
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_auth,
+        ))
+        // Axum has no request-body cap of its own by default: the backup
+        // upload handler reads the whole body into memory as `Bytes` before
+        // it ever runs, so without this an oversized (or simply mistaken)
+        // upload is bounded only by however much RAM the process can grab.
+        // 512 MiB comfortably covers a real Oberiz database, which holds only
+        // metadata and history, never media files.
+        .layer(DefaultBodyLimit::max(512 * 1024 * 1024))
+        .layer(axum::middleware::from_fn(security_headers))
+        .with_state(state);
+
+    // On Windows, Tokio's asynchronous address resolution can stall before
+    // opening a listener when Oberiz runs as a service. Bind synchronously
+    // first so the operating system either gives us the port immediately or
+    // returns a useful error (for example, if another process owns it).
+    let std_listener = std::net::TcpListener::bind("0.0.0.0:2032")?;
+    std_listener.set_nonblocking(true)?;
+    let listener = tokio::net::TcpListener::from_std(std_listener)?;
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        "Oberiz running on http://localhost:2032"
+    );
+
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown)
+    .await?;
+    Ok(())
+}
+
+fn init_logging() {
+    // OBERIZ_LOG_LEVEL is a friendlier alias for RUST_LOG (e.g. "info",
+    // "oberiz=debug,tower_http=warn"); RUST_LOG wins if both are set.
+    if std::env::var_os("RUST_LOG").is_none()
+        && let Ok(level) = std::env::var("OBERIZ_LOG_LEVEL")
+    {
+        unsafe { std::env::set_var("RUST_LOG", level) };
+    }
+    // `fmt::init()` defaults to a very restrictive filter when neither
+    // variable is set, which made useful warnings invisible in `cargo run`.
+    // Keep explicit RUST_LOG / OBERIZ_LOG_LEVEL settings authoritative, but
+    // make the normal foreground experience observable by default.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,html5ever=error")),
+        )
+        .init();
+}
+
+/// Runs the default, portable launch path: the exact same server as the
+/// Windows service, in the foreground of the current process, with no
+/// graceful-shutdown signal (killing the process is how this has always
+/// stopped) and — on Windows — the classic embedded tray icon.
+async fn run_portable() -> anyhow::Result<()> {
+    let state = build_app_state().await?;
+    spawn_schedulers(&state);
+    #[cfg(windows)]
+    tray::spawn();
+    run_server(state, std::future::pending()).await
+}
+
+fn main() -> anyhow::Result<()> {
+    init_logging();
+
+    #[cfg(windows)]
+    {
+        match std::env::args().nth(1).as_deref() {
+            Some("--service") => return service::run_as_service(),
+            Some("--install-service") => return service::install(),
+            Some("--uninstall-service") => return service::uninstall(),
+            Some("--tray") => {
+                tray::run_standalone();
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+
+    tokio::runtime::Runtime::new()?.block_on(run_portable())
+}

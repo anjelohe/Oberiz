@@ -1,0 +1,19 @@
+.qb-test-ok,
+.qb-test-info {
+  margin-top: 2px;
+  padding: 10px 12px;
+  border-radius: 7px;
+  font-size: 12px;
+}
+
+.qb-test-ok {
+  color: #20f5a0;
+  background: rgba(0, 112, 70, .18);
+  border: 1px solid rgba(29, 241, 151, .25);
+}
+
+.qb-test-info {
+  color: #8fc8c0;
+  background: rgba(9, 57, 58, .22);
+  border: 1px solid rgba(73, 167, 155, .20);
+}
