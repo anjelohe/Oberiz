@@ -517,6 +517,11 @@ pub async fn delete_torrent(
     Query(query): Query<DeleteQuery>,
 ) -> Result<Json<ActionResponse>, (StatusCode, String)> {
     validate_hash(&hash)?;
+    let _media_guard = if query.delete_files {
+        Some(crate::importer::MEDIA_OPERATION_GATE.lock().await)
+    } else {
+        None
+    };
     ensure_file_deletion_allowed(&state.db, query.delete_files).await?;
 
     let config = load_config(&state).await?;
@@ -1179,6 +1184,7 @@ async fn apply_and_verify_metadata(
     let config = load_config(state).await?;
 
     if let Some(save_path) = save_path.filter(|p| !p.trim().is_empty()) {
+        crate::importer::require_managed_files(state).await?;
         // qBittorrent treats adding a torrent whose infohash it already knows
         // as a no-op beyond refreshing category/tags — it keeps seeding from
         // wherever that existing entry's savepath already points. Without
@@ -1298,6 +1304,11 @@ pub(crate) async fn delete_torrent_internal(
     delete_files: bool,
 ) -> Result<(), (StatusCode, String)> {
     validate_hash(hash)?;
+    let _media_guard = if delete_files {
+        Some(crate::importer::MEDIA_OPERATION_GATE.lock().await)
+    } else {
+        None
+    };
     ensure_file_deletion_allowed(&state.db, delete_files).await?;
     let config = load_config(state).await?;
     authenticated_form_post(

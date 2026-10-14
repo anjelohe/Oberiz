@@ -699,6 +699,15 @@ pub(crate) async fn scan_media(
     state: &AppState,
     kind: &str,
 ) -> Result<Vec<RescanResult>, (StatusCode, String)> {
+    let _media_guard = crate::importer::MEDIA_OPERATION_GATE.lock().await;
+    crate::importer::require_managed_files(state).await?;
+    scan_media_managed(state, kind).await
+}
+
+async fn scan_media_managed(
+    state: &AppState,
+    kind: &str,
+) -> Result<Vec<RescanResult>, (StatusCode, String)> {
     let _guard = SCAN_LOCK.lock().await;
     let roots = independent_roots(
         library_roots::roots(&state.db, kind)
@@ -751,6 +760,10 @@ pub struct RootStatus {
 pub async fn root_status(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<RootStatus>>, (StatusCode, String)> {
+    let _media_guard = crate::importer::MEDIA_OPERATION_GATE.lock().await;
+    if crate::importer::external_mode(&state).await? {
+        return Ok(Json(Vec::new()));
+    }
     let mut rows = Vec::new();
     for kind in ["movie", "series"] {
         let scans=sqlx::query_as::<_,(String,Option<String>,Option<String>)>("SELECT root_path,completed_at,error FROM library_scans WHERE media_type=? AND id IN (SELECT MAX(id) FROM library_scans WHERE media_type=? GROUP BY root_path) ORDER BY id DESC")
@@ -782,6 +795,10 @@ pub(crate) async fn ensure_discovered(
     kind: &str,
     id: i64,
 ) -> Result<(), (StatusCode, String)> {
+    let _media_guard = crate::importer::MEDIA_OPERATION_GATE.lock().await;
+    if crate::importer::external_mode(state).await? {
+        return Ok(());
+    }
     let roots = independent_roots(
         library_roots::roots(&state.db, kind)
             .await
@@ -812,7 +829,7 @@ pub(crate) async fn ensure_discovered(
     .map_err(internal)?
         > 0;
     if !checked && !roots.is_empty() {
-        let results = scan_media(state, kind).await?;
+        let results = scan_media_managed(state, kind).await?;
         if let Some(error) = results.into_iter().find_map(|r| r.error) {
             return Err((StatusCode::CONFLICT, error));
         }
@@ -944,7 +961,10 @@ pub fn spawn_scan_scheduler(state: AppState) {
                 .and_then(|v| v.parse::<u64>().ok())
                 .unwrap_or(120)
                 .clamp(5, 10080);
-            if !enabled || last.elapsed().as_secs() < minutes * 60 {
+            if !enabled
+                || crate::importer::external_mode(&state).await.unwrap_or(true)
+                || last.elapsed().as_secs() < minutes * 60
+            {
                 continue;
             }
             last = std::time::Instant::now();

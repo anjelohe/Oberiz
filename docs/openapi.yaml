@@ -31,6 +31,81 @@ security:
   - ApiKeyAuth: []
 
 paths:
+  /library:
+    put:
+      operationId: reportExternalLibrary
+      summary: Report Cinetta inventory without accessing its files
+      description: |
+        API-key authorization runs before JSON extraction. At most two inventory
+        requests are admitted at once; excess requests return 429 rather than
+        queueing large bodies. Maximum body size is 128 MiB, with 1000000 movie
+        and episode entries combined and 1024 roots. Paths are bounded to 4096
+        bytes; codec/HDR strings to 128 bytes. Conflicting identities for the
+        same path and invalid episode ranges or measurements are rejected.
+
+        Reports are additive by default: omitted files remain present. Setting
+        allow_large_removal=true explicitly confirms omissions only underneath
+        available reported roots containing at least one managed reported file.
+        Offline, suddenly empty and unreported roots remain protected. Clients
+        must not enable removal confirmation automatically.
+
+        With import.method=external, Oberiz does not scan, import, reseed, move,
+        rename or delete library files. superseded is always empty and reported
+        paths are not matched to download ownership. Cinetta must not interpret
+        the response as a file-action command. Use one reporting installation
+        and serialize reports; multi-client snapshot ordering is not supported.
+      tags: [Library]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                movies:
+                  type: array
+                  items:
+                    type: object
+                    required: [tmdb_id, path]
+                    properties:
+                      tmdb_id: {type: integer, minimum: 1}
+                      path: {type: string, maxLength: 4096}
+                episodes:
+                  type: array
+                  items:
+                    type: object
+                    required: [series_tmdb_id, season, episode, path]
+                    properties:
+                      series_tmdb_id: {type: integer, minimum: 1}
+                      season: {type: integer, minimum: 0}
+                      episode: {type: integer, minimum: 1}
+                      episode_end: {type: integer, minimum: 1, nullable: true}
+                      path: {type: string, maxLength: 4096}
+                roots:
+                  type: array
+                  maxItems: 1024
+                  items:
+                    type: object
+                    required: [path, available]
+                    properties:
+                      path: {type: string, maxLength: 4096}
+                      available: {type: boolean}
+                allow_large_removal: {type: boolean, default: false}
+      responses:
+        "200":
+          description: Inventory accepted; no filesystem action performed.
+        "400":
+          description: Invalid JSON, paths, metadata, ranges or file identities.
+        "401":
+          $ref: "#/components/responses/InvalidApiKey"
+        "403":
+          $ref: "#/components/responses/ApiDisabled"
+        "428":
+          description: Public API key is not configured.
+        "413":
+          description: Body or collection limits exceeded.
+        "429":
+          description: Two inventory requests are already active; retry later.
   /status:
     get:
       operationId: getStatus

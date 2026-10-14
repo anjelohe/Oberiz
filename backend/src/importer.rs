@@ -26,6 +26,26 @@ use crate::{
     AppState, cardigann::ReleaseResult, history, profiles, qbittorrent, releases, series, settings,
 };
 
+// Mode changes wait for active managed-file operations to finish.
+pub(crate) static MEDIA_OPERATION_GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+pub(crate) async fn external_mode(state: &AppState) -> Result<bool, (StatusCode, String)> {
+    Ok(settings::get_value(&state.db, "import.method")
+        .await
+        .map_err(internal)?
+        .is_some_and(|method| method.trim().eq_ignore_ascii_case("external")))
+}
+
+pub(crate) async fn require_managed_files(state: &AppState) -> Result<(), (StatusCode, String)> {
+    if external_mode(state).await? {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "File operations disabled in external inventory mode".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Marks jobs missing only after qBittorrent answered successfully.
 /// This also clears an old queued job that never received a qBittorrent hash, so a failed
 /// hand-off cannot indefinitely stop automation from trying the media again.
@@ -253,6 +273,8 @@ pub async fn reseed(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<i64>,
 ) -> Result<Json<ReseedResponse>, (StatusCode, String)> {
+    let _media_guard = MEDIA_OPERATION_GATE.lock().await;
+    require_managed_files(&state).await?;
     let job = get_job(&state, id)
         .await?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "Import job no encontrado".into()))?;
@@ -496,6 +518,7 @@ async fn import_job(
     job: &DownloadJob,
     torrent: &qbittorrent::QBittorrentTorrent,
 ) -> Result<(), (StatusCode, String)> {
+    let _media_guard = MEDIA_OPERATION_GATE.lock().await;
     let method = settings::get_value(&state.db, "import.method")
         .await
         .map_err(internal)?
@@ -1010,7 +1033,8 @@ async fn maybe_cleanup(
     // When Oberiz does not manage files, the torrent's data IS the library
     // copy: removing it would delete the movie or episode itself.
     let delete_files = policy.cleanup_mode == "remove_torrent_and_original"
-        && job.import_method.as_deref() != Some("external");
+        && job.import_method.as_deref() != Some("external")
+        && !external_mode(state).await?;
     state
         .download_client
         .delete_torrent(state, hash, delete_files)

@@ -58,5 +58,7 @@ jobs:
         run: npm run test:i18n --prefix frontend
       - name: Storage settings regression tests
         run: npm run test:storage --prefix frontend
+      - name: External imports regression tests
+        run: npm run test:imports --prefix frontend
       - name: Typecheck and build
         run: npm run build --prefix frontend

@@ -400,6 +400,11 @@ pub async fn update_settings(
     State(state): State<AppState>,
     Json(mut payload): Json<UpdateSettingsRequest>,
 ) -> Result<StatusCode, StatusCode> {
+    let _media_guard = if payload.import_method.is_some() {
+        Some(crate::importer::MEDIA_OPERATION_GATE.lock().await)
+    } else {
+        None
+    };
     // Reject invalid new library settings before persisting any other form field.
     if let Some(paths) = payload.movie_library_paths.take() {
         payload.movie_library_paths =

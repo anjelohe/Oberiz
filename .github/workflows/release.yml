@@ -9,7 +9,7 @@ on:
       release_version:
         description: Release tag to publish
         required: true
-        default: v1.0.0
+        default: v1.0.1
         type: string
       windows_only:
         description: Build and publish only the Windows portable ZIP and installer
@@ -55,6 +55,7 @@ jobs:
           npm run test:i18n --prefix frontend
           npm run test:filters --prefix frontend
           npm run test:storage --prefix frontend
+          npm run test:imports --prefix frontend
           npm run build --prefix frontend
       - name: Dependency security audit
         shell: pwsh

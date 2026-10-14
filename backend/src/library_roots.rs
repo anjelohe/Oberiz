@@ -231,6 +231,10 @@ fn is_absolute_remote(path: &str) -> bool {
 pub async fn mapping_suggestions(
     axum::extract::State(state): axum::extract::State<crate::AppState>,
 ) -> Result<axum::Json<Vec<MappingSuggestion>>, (StatusCode, String)> {
+    let _media_guard = crate::importer::MEDIA_OPERATION_GATE.lock().await;
+    if crate::importer::external_mode(&state).await? {
+        return Ok(axum::Json(Vec::new()));
+    }
     let mut remote_paths = Vec::new();
     let mut first_error = None;
     let default_path = match crate::qbittorrent::default_save_path(&state).await {

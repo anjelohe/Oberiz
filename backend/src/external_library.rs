@@ -10,21 +10,37 @@
 use crate::{AppState, history, library_roots, profiles, public_api, releases, series};
 use axum::{
     Json,
-    extract::State,
-    http::{HeaderMap, StatusCode},
+    extract::{FromRequestParts, State},
+    http::{StatusCode, request::Parts},
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 pub(crate) const PREFIX: &str = "cinetta:";
 const MAX_ITEMS: usize = 1_000_000;
-/// A report that drops more than this share of the files Cinetta reported
-/// before (and at least `LARGE_REMOVAL_MIN` of them) is refused unless the
-/// client confirms it: an offline disk on Cinetta's side looks exactly like a
-/// deleted library, and accepting it would make automation re-download it.
-const LARGE_REMOVAL_RATIO: f64 = 0.25;
-const LARGE_REMOVAL_MIN: usize = 20;
+const MAX_ROOTS: usize = 1024;
+static REPORT_SLOTS: LazyLock<Arc<tokio::sync::Semaphore>> =
+    LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(2)));
+
+pub struct AuthorizedInventory {
+    _permit: tokio::sync::OwnedSemaphorePermit,
+}
+
+impl FromRequestParts<AppState> for AuthorizedInventory {
+    type Rejection = Error;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Error> {
+        public_api::authorize(state, &parts.headers).await?;
+        let permit = REPORT_SLOTS.clone().try_acquire_owned().map_err(|_| {
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                "Inventory receiver busy; retry later".into(),
+            )
+        })?;
+        Ok(Self { _permit: permit })
+    }
+}
 type Error = (StatusCode, String);
 
 #[derive(Debug, Deserialize)]
@@ -75,8 +91,8 @@ pub struct LibraryReport {
     /// were: an offline disk must never look like a deleted library.
     #[serde(default)]
     pub roots: Vec<ReportedRoot>,
-    /// Confirms that a report removing most (or all) previously reported
-    /// files is intentional rather than an unmounted disk.
+    /// Explicitly confirms omissions under reported available, nonempty roots.
+    /// Without confirmation reports are additive, even for a single omission.
     #[serde(default)]
     pub allow_large_removal: bool,
 }
@@ -117,11 +133,16 @@ static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 pub async fn report(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    _authorization: AuthorizedInventory,
     Json(report): Json<LibraryReport>,
 ) -> Result<Json<LibraryReportResult>, Error> {
-    public_api::authorize(&state, &headers).await?;
-    if report.movies.len() + report.episodes.len() > MAX_ITEMS {
+    validate(&report)?;
+    let _guard = LOCK.lock().await;
+    Ok(Json(apply(&state, report).await?))
+}
+
+fn validate(report: &LibraryReport) -> Result<(), Error> {
+    if report.movies.len() + report.episodes.len() > MAX_ITEMS || report.roots.len() > MAX_ROOTS {
         return Err((StatusCode::PAYLOAD_TOO_LARGE, "Too many files".into()));
     }
     for path in report
@@ -136,7 +157,8 @@ pub async fn report(
         }
     }
     if report.episodes.iter().any(|e| {
-        e.season < 0
+        e.series_tmdb_id <= 0
+            || e.season < 0
             || e.episode <= 0
             || e.episode_end.is_some_and(|end| {
                 end.checked_sub(e.episode)
@@ -145,11 +167,55 @@ pub async fn report(
     }) {
         return Err((StatusCode::BAD_REQUEST, "Invalid episode range".into()));
     }
-    let _guard = LOCK.lock().await;
-    Ok(Json(apply(&state, report).await?))
+    let mut identities = HashMap::new();
+    for (path, identity) in report
+        .movies
+        .iter()
+        .map(|m| (&m.file.path, ("movie", m.tmdb_id)))
+        .chain(
+            report
+                .episodes
+                .iter()
+                .map(|e| (&e.file.path, ("series", e.series_tmdb_id))),
+        )
+    {
+        if identity.1 <= 0
+            || identities
+                .insert(path, identity)
+                .is_some_and(|old| old != identity)
+        {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "Conflicting file identities".into(),
+            ));
+        }
+    }
+    for file in report
+        .movies
+        .iter()
+        .map(|m| &m.file)
+        .chain(report.episodes.iter().map(|e| &e.file))
+    {
+        if file.size.is_some_and(|n| n < 0)
+            || [file.width, file.height]
+                .into_iter()
+                .flatten()
+                .any(|n| !(1..=32768).contains(&n))
+            || [&file.video_codec, &file.hdr, &file.audio_codec]
+                .into_iter()
+                .flatten()
+                .any(|s| s.len() > 128 || s.contains('\0'))
+        {
+            return Err((StatusCode::BAD_REQUEST, "Invalid file metadata".into()));
+        }
+    }
+    Ok(())
 }
 
 async fn apply(state: &AppState, report: LibraryReport) -> Result<LibraryReportResult, Error> {
+    validate(&report)?;
+    let external = crate::importer::external_mode(state).await?;
+    let mappings = library_roots::mappings(&state.db).await.map_err(internal)?;
     type MovieRow = (i64, i64, String, Option<String>, Option<i32>, Option<i64>);
     let movies: HashMap<i64, MovieRow> = sqlx::query_as::<_, MovieRow>(
         "SELECT id,tmdb_id,title,original_title,year,quality_profile_id FROM movies",
@@ -302,19 +368,14 @@ async fn apply(state: &AppState, report: LibraryReport) -> Result<LibraryReportR
             .any(|root| library_roots::contains_path(root, real))
         {
             kept_offline += 1;
-        } else {
+        } else if report.allow_large_removal
+            && report
+                .roots
+                .iter()
+                .any(|root| root.available && library_roots::contains_path(&root.path, real))
+        {
             removed.push(*id);
         }
-    }
-    if removes_too_much(previous.len(), removed.len()) && !report.allow_large_removal {
-        return Err((
-            StatusCode::CONFLICT,
-            format!(
-                "This report would mark {} of {} previously reported files as missing. Refused to avoid re-downloading a library whose disk may be offline; send allow_large_removal=true if the files were really removed.",
-                removed.len(),
-                previous.len()
-            ),
-        ));
     }
 
     let mut tx = state.db.begin().await.map_err(internal)?;
@@ -372,10 +433,6 @@ async fn apply(state: &AppState, report: LibraryReport) -> Result<LibraryReportR
         .fetch_one(&mut *tx)
         .await
         .map_err(internal)?;
-        if item.episode_ids.is_empty() {
-            movie_files += 1;
-            continue;
-        }
         // A file Cinetta re-identified as other episodes must not keep
         // marking the old ones as present; every episode it still contains
         // stays linked.
@@ -408,7 +465,11 @@ async fn apply(state: &AppState, report: LibraryReport) -> Result<LibraryReportR
             .map_err(internal)?;
             affected_episodes.insert(*episode_id);
         }
-        episode_files += 1;
+        if item.episode_ids.is_empty() {
+            movie_files += 1;
+        } else {
+            episode_files += 1;
+        }
     }
     // Only episodes whose Cinetta links changed are recomputed: a season pack
     // import can mark an episode present without a per-file link, and a full
@@ -420,10 +481,18 @@ async fn apply(state: &AppState, report: LibraryReport) -> Result<LibraryReportR
             .await
             .map_err(internal)?;
     }
-    link_external_jobs(&mut tx).await?;
+    if !external {
+        link_external_jobs(&mut tx, &mappings).await?;
+    }
     tx.commit().await.map_err(internal)?;
 
-    let superseded = superseded(state).await?;
+    // Inventory is informational only: no deletion proposals or filename-based
+    // ownership inference are sent back to Cinetta in external mode.
+    let superseded = if external {
+        Vec::new()
+    } else {
+        superseded(state).await?
+    };
     history::record(
         &state.db,
         "library.cinetta",
@@ -443,10 +512,6 @@ async fn apply(state: &AppState, report: LibraryReport) -> Result<LibraryReportR
         kept_offline_files: kept_offline,
         superseded,
     })
-}
-
-fn removes_too_much(previous: usize, removed: usize) -> bool {
-    removed >= LARGE_REMOVAL_MIN && removed as f64 > previous as f64 * LARGE_REMOVAL_RATIO
 }
 
 /// Roots whose previously reported files must be kept as they are: those the
@@ -473,11 +538,14 @@ fn offline_roots<'a>(
         .collect()
 }
 
-/// Links each reported file to the Oberiz download that produced it, by the
-/// torrent's file or folder name appearing as a component of Cinetta's path.
+/// Links files only beneath the download's full, explicitly mapped source
+/// path. A matching basename on a different disk is not ownership evidence.
 /// Only downloads completed while Oberiz was not managing files qualify: in
 /// any other mode the import already recorded the file itself.
-async fn link_external_jobs(tx: &mut sqlx::SqliteConnection) -> Result<(), Error> {
+async fn link_external_jobs(
+    tx: &mut sqlx::SqliteConnection,
+    mappings: &[library_roots::PathMapping],
+) -> Result<(), Error> {
     let jobs = sqlx::query_as::<_, (i64, String, i64, Option<i32>, Option<i32>, String)>(
         "SELECT id,media_type,media_id,season_number,episode_number,COALESCE(source_path,'') FROM download_jobs WHERE import_method='external' AND imported_at IS NOT NULL ORDER BY id DESC",
     )
@@ -494,12 +562,12 @@ async fn link_external_jobs(tx: &mut sqlx::SqliteConnection) -> Result<(), Error
     .await
     .map_err(internal)?;
     for (file_id, media_type, media_id, path) in files {
-        let components: Vec<String> = components(&path);
+        let real = path.trim_start_matches(PREFIX);
         let job = jobs.iter().find(|(_, job_type, job_media, _, _, source)| {
             *job_type == media_type
                 && *job_media == media_id
-                && last_component(source)
-                    .is_some_and(|name| components.contains(&name.to_lowercase()))
+                && !source.is_empty()
+                && library_roots::contains_path(&library_roots::map_path(source, mappings), real)
         });
         if let Some((job_id, ..)) = job {
             sqlx::query("UPDATE media_files SET download_job_id=? WHERE id=?")
@@ -571,6 +639,19 @@ async fn superseded(state: &AppState) -> Result<Vec<Superseded>, Error> {
             }
         }
     }
+    // A multi-episode file is redundant only when every linked episode has
+    // a replacement; replacing E01 must not nominate an E01-E02 pack.
+    let mut coverage = HashMap::<String, usize>::new();
+    let mut replacements = HashMap::<String, usize>::new();
+    for row in &rows {
+        *coverage
+            .entry(row.4.trim_start_matches(PREFIX).to_owned())
+            .or_default() += 1;
+    }
+    for candidate in &out {
+        *replacements.entry(candidate.path.clone()).or_default() += 1;
+    }
+    out.retain(|candidate| replacements.get(&candidate.path) == coverage.get(&candidate.path));
     out.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(out)
 }
@@ -723,6 +804,7 @@ fn audio_token(codec: Option<&str>) -> Option<&'static str> {
     }
 }
 
+#[cfg(test)]
 fn components(path: &str) -> Vec<String> {
     path.trim_start_matches(PREFIX)
         .split(['/', '\\'])
@@ -787,14 +869,6 @@ mod tests {
         assert_eq!(parsed.audio.as_deref(), Some("DTS-HD"));
     }
 
-    #[test]
-    fn large_removals_need_confirmation_but_small_ones_do_not() {
-        assert!(!removes_too_much(1000, 19));
-        assert!(!removes_too_much(1000, 200));
-        assert!(removes_too_much(1000, 300));
-        assert!(removes_too_much(20, 20));
-    }
-
     async fn state() -> AppState {
         use std::sync::Arc;
         use tokio::sync::Mutex;
@@ -846,6 +920,235 @@ mod tests {
             .unwrap()
     }
 
+    fn empty_report() -> LibraryReport {
+        LibraryReport {
+            movies: vec![],
+            episodes: vec![],
+            roots: vec![],
+            allow_large_removal: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn switching_to_external_waits_for_active_media_operations() {
+        let state = state().await;
+        let guard = crate::importer::MEDIA_OPERATION_GATE.lock().await;
+        let payload =
+            serde_json::from_value(serde_json::json!({"import_method":"external"})).unwrap();
+        let mut update = tokio::spawn({
+            let state = state.clone();
+            async move { crate::settings::update_settings(State(state), Json(payload)).await }
+        });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut update)
+                .await
+                .is_err()
+        );
+        assert!(!crate::importer::external_mode(&state).await.unwrap());
+        drop(guard);
+        assert!(update.await.unwrap().is_ok());
+        assert!(crate::importer::external_mode(&state).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn authorization_precedes_json_and_busy_reports_are_not_queued() {
+        let state = state().await;
+        crate::settings::set_value(&state.db, "api.enabled", "true")
+            .await
+            .unwrap();
+        crate::settings::set_value(
+            &state.db,
+            "api.key_hash",
+            &crate::settings::hash_api_key("synthetic-test-key"),
+        )
+        .await
+        .unwrap();
+        let app = axum::Router::new()
+            .route("/inventory", axum::routing::put(report))
+            .layer(axum::extract::DefaultBodyLimit::max(1024))
+            .with_state(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/inventory", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let response = client
+            .put(&url)
+            .header("content-type", "application/json")
+            .body("not-json".repeat(1024))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let response = client
+            .put(&url)
+            .header("x-api-key", "synthetic-test-key")
+            .header("content-type", "application/json")
+            .body("not-json")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let response = client
+            .put(&url)
+            .header("x-api-key", "synthetic-test-key")
+            .header("content-type", "application/json")
+            .body(" ".repeat(2048))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let held = REPORT_SLOTS.clone().acquire_many_owned(2).await.unwrap();
+        let response = client
+            .put(&url)
+            .header("x-api-key", "synthetic-test-key")
+            .header("content-type", "application/json")
+            .body("not-json")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        drop(held);
+        let response = client
+            .put(&url)
+            .header("x-api-key", "synthetic-test-key")
+            .json(&serde_json::json!({}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        server.abort();
+    }
+
+    #[test]
+    fn invalid_ranges_metadata_roots_and_conflicting_paths_are_rejected() {
+        let mut report = empty_report();
+        report
+            .episodes
+            .push(episode(i32::MIN, Some(i32::MAX), "/file.mkv"));
+        assert_eq!(validate(&report).unwrap_err().0, StatusCode::BAD_REQUEST);
+        report.episodes.clear();
+        report.movies.push(movie(603, "/same.mkv", 1080));
+        report.episodes.push(episode(1, None, "/same.mkv"));
+        assert!(validate(&report).is_err());
+        report.episodes.clear();
+        report.movies[0].file.size = Some(-1);
+        assert!(validate(&report).is_err());
+        report.movies.clear();
+        report.roots = (0..=MAX_ROOTS)
+            .map(|i| ReportedRoot {
+                path: format!("/root/{i}"),
+                available: true,
+            })
+            .collect();
+        assert_eq!(
+            validate(&report).unwrap_err().0,
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
+    }
+
+    #[tokio::test]
+    async fn reidentifying_a_series_file_as_a_movie_removes_old_episode_links() {
+        let state = state().await;
+        let mut report = empty_report();
+        report
+            .episodes
+            .push(episode(1, Some(2), "/media/reidentified.mkv"));
+        apply(&state, report).await.unwrap();
+        assert_eq!(episodes_with_file(&state).await, vec![1, 2]);
+        let mut report = empty_report();
+        report
+            .movies
+            .push(movie(603, "/media/reidentified.mkv", 1080));
+        apply(&state, report).await.unwrap();
+        assert!(episodes_with_file(&state).await.is_empty());
+        let links: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM episode_files")
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+        assert_eq!(links, 0);
+    }
+
+    #[tokio::test]
+    async fn external_mode_blocks_old_jobs_and_local_discovery_and_returns_no_deletion_advice() {
+        let state = state().await;
+        crate::settings::set_value(&state.db, "import.method", "external")
+            .await
+            .unwrap();
+        crate::settings::set_value(&state.db, "movies_path", "/unreachable/synthetic-share")
+            .await
+            .unwrap();
+        assert_eq!(
+            crate::importer::reseed(State(state.clone()), axum::extract::Path(123))
+                .await
+                .unwrap_err()
+                .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            crate::library::scan_media(&state, "movie")
+                .await
+                .unwrap_err()
+                .0,
+            StatusCode::FORBIDDEN
+        );
+        crate::library::ensure_discovered(&state, "movie", 1)
+            .await
+            .unwrap();
+        assert!(
+            crate::library::root_status(State(state.clone()))
+                .await
+                .unwrap()
+                .0
+                .is_empty()
+        );
+        assert!(
+            crate::library_roots::mapping_suggestions(State(state.clone()))
+                .await
+                .unwrap()
+                .0
+                .is_empty()
+        );
+        let mut report = empty_report();
+        report.movies.push(movie(603, "/media/Matrix.mkv", 1080));
+        assert!(apply(&state, report).await.unwrap().superseded.is_empty());
+    }
+
+    #[tokio::test]
+    async fn replacing_one_episode_does_not_supersede_a_multi_episode_file() {
+        let state = state().await;
+        let mut report = empty_report();
+        let mut old = episode(1, Some(2), "/tv/Silo/old.720p.mkv");
+        old.file.height = Some(720);
+        let mut new = episode(1, None, "/tv/Silo/new.1080p.mkv");
+        new.file.height = Some(1080);
+        report.episodes = vec![old, new];
+        apply(&state, report).await.unwrap();
+        sqlx::query("INSERT INTO download_jobs(id,media_type,media_id,release_title,indexer_id,status) VALUES(7,'series',1,'Synthetic','idx','seeding')").execute(&state.db).await.unwrap();
+        sqlx::query("UPDATE media_files SET download_job_id=7 WHERE path LIKE '%new.1080p.mkv'")
+            .execute(&state.db)
+            .await
+            .unwrap();
+        assert!(superseded(&state).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_matching_basename_on_another_disk_does_not_claim_download_ownership() {
+        let state = state().await;
+        sqlx::query("INSERT INTO download_jobs(id,media_type,media_id,release_title,indexer_id,status,source_path,import_method,imported_at) VALUES(7,'movie',1,'Matrix','idx','seeding','/another-disk/Matrix','external',CURRENT_TIMESTAMP)").execute(&state.db).await.unwrap();
+        let mut report = empty_report();
+        report
+            .movies
+            .push(movie(603, "/media/Matrix/Matrix.mkv", 1080));
+        apply(&state, report).await.unwrap();
+        let owner: Option<i64> = sqlx::query_scalar("SELECT download_job_id FROM media_files")
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+        assert_eq!(owner, None);
+    }
+
     #[tokio::test]
     async fn reported_files_make_managed_titles_available_and_ignore_the_rest() {
         let state = state().await;
@@ -885,7 +1188,7 @@ mod tests {
                 .unwrap();
         assert_eq!(episodes, vec![(1, false), (2, true)]);
 
-        // The file disappears from Cinetta: it is no longer available.
+        // An incomplete or empty report is not evidence of deletion.
         let result = apply(
             &state,
             LibraryReport {
@@ -897,13 +1200,13 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(result.missing_files, 2);
-        assert_eq!(available(&state).await, 0);
+        assert_eq!(result.missing_files, 0);
+        assert_eq!(available(&state).await, 1);
         let has_file: bool = sqlx::query_scalar("SELECT has_file FROM series_episodes WHERE id=2")
             .fetch_one(&state.db)
             .await
             .unwrap();
-        assert!(!has_file);
+        assert!(has_file);
     }
 
     #[tokio::test]
@@ -920,7 +1223,7 @@ mod tests {
         )
         .await
         .unwrap();
-        sqlx::query("INSERT INTO download_jobs(id,media_type,media_id,release_title,indexer_id,status,source_path,import_method,imported_at) VALUES(7,'movie',1,'Matrix.1999.2160p.BluRay.x265','idx','seeding','/volume1/peliculas/Matrix.1999.2160p.BluRay.x265','external',CURRENT_TIMESTAMP)")
+        sqlx::query("INSERT INTO download_jobs(id,media_type,media_id,release_title,indexer_id,status,source_path,import_method,imported_at) VALUES(7,'movie',1,'Matrix.1999.2160p.BluRay.x265','idx','seeding','/media/Matrix.1999.2160p.BluRay.x265','external',CURRENT_TIMESTAMP)")
             .execute(&state.db)
             .await
             .unwrap();
@@ -952,7 +1255,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_large_drop_is_refused_until_confirmed() {
+    async fn removals_require_confirmation_and_a_readable_nonempty_root() {
         let state = state().await;
         let many = (0..30)
             .map(|i| movie(603, &format!("/media/Matrix/{i}.mkv"), 1080))
@@ -968,7 +1271,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let refused = apply(
+        let preserved = apply(
             &state,
             LibraryReport {
                 movies: vec![],
@@ -978,21 +1281,24 @@ mod tests {
             },
         )
         .await
-        .unwrap_err();
-        assert_eq!(refused.0, StatusCode::CONFLICT);
+        .unwrap();
+        assert_eq!(preserved.missing_files, 0);
         assert_eq!(available(&state).await, 30);
         apply(
             &state,
             LibraryReport {
-                movies: vec![],
+                movies: vec![movie(603, "/media/Matrix/new.mkv", 1080)],
                 episodes: vec![],
-                roots: vec![],
+                roots: vec![ReportedRoot {
+                    path: "/media".into(),
+                    available: true,
+                }],
                 allow_large_removal: true,
             },
         )
         .await
         .unwrap();
-        assert_eq!(available(&state).await, 0);
+        assert_eq!(available(&state).await, 1);
     }
 
     fn episode(number: i32, end: Option<i32>, path: &str) -> ReportedEpisode {
@@ -1086,6 +1392,7 @@ mod tests {
         report
             .movies
             .push(movie(603, "/disk-a/Other/Other.mkv", 1080));
+        report.allow_large_removal = true;
         let result = apply(&state, report).await.unwrap();
         assert_eq!(result.missing_files, 1);
     }

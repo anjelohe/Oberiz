@@ -1,6 +1,6 @@
 import { t, useTranslation, tf } from '../lib/i18n'
 import { useEffect, useState } from 'react'
-import { deleteImports, getImports, ImportJob, reseedImport } from '../lib/api'
+import { deleteImports, getImports, getSettings, ImportJob, reseedImport } from '../lib/api'
 import { Icon } from '../components/Icon'
 
 function pretty(status:string){return t(status.replaceAll('_',' ').replace(/\b\w/g,c=>c.toUpperCase()))}
@@ -8,13 +8,14 @@ function pretty(status:string){return t(status.replaceAll('_',' ').replace(/\b\w
 export function Imports(){
   useTranslation()
   const [rows,setRows]=useState<ImportJob[]>([])
+  const [managedFiles,setManagedFiles]=useState(false)
   const [message,setMessage]=useState('')
   const [busy,setBusy]=useState<number|null>(null)
   const [selected,setSelected]=useState<number[]>([])
   const [deleting,setDeleting]=useState(false)
   const [selectionAnchor,setSelectionAnchor]=useState<number|null>(null)
 
-  async function load(){try{const next=await getImports();setRows(next);setSelected(current=>current.filter(id=>next.some(row=>row.id===id)))}catch(e){setMessage(e instanceof Error?e.message:String(e))}}
+  async function load(){try{const [next,settings]=await Promise.all([getImports(),getSettings()]);setManagedFiles(settings.import_method!=='external');setRows(next);setSelected(current=>current.filter(id=>next.some(row=>row.id===id)))}catch(e){setManagedFiles(false);setMessage(e instanceof Error?e.message:String(e))}}
   useEffect(()=>{void load();const t=setInterval(()=>void load(),5000);return()=>clearInterval(t)},[])
 
   async function reseed(row:ImportJob){
@@ -58,7 +59,7 @@ export function Imports(){
           <span>{row.indexer_name||row.indexer_id}</span>
           <span>{row.import_method||'—'}</span>
           <span className="import-path">{row.library_path||row.last_error||'—'}</span>
-          <div className="import-actions">{row.torrent_metadata_path&&row.library_path?<button className="ghost-button" disabled={busy===row.id} onClick={()=>void reseed(row)}>{busy===row.id?t("Starting…"):'Reseed'}</button>:<span title={t("This record has no reusable .torrent metadata and library path.")}>{t("Unavailable")}</span>}{removable(row)&&<button className="danger-button" disabled={deleting} onClick={()=>void remove([row.id])}>{t("Remove")}</button>}</div>
+          <div className="import-actions">{managedFiles&&row.torrent_metadata_path&&row.library_path?<button className="ghost-button" disabled={busy===row.id} onClick={()=>void reseed(row)}>{busy===row.id?t("Starting…"):'Reseed'}</button>:<span>{t("Unavailable")}</span>}{removable(row)&&<button className="danger-button" disabled={deleting} onClick={()=>void remove([row.id])}>{t("Remove")}</button>}</div>
         </div>
       )}
     </section>
