@@ -1,6 +1,8 @@
 # Bibliotecas en varios discos — desarrollo del 14 de octubre de 2026
 
-Incluido en v1.0.0. La publicación no actualiza automáticamente la instancia instalada del usuario. Para conexiones SMB de Windows, véase [Conexiones SMB](Oberiz_SMB.md).
+Descripción histórica del flujo publicado en v1.0.0. El flujo de trabajo posterior
+a v1.0.1 se explica en [Almacenamiento simplificado](Oberiz_Almacenamiento_Simplificado.md):
+escaneo local de solo lectura o Cinetta por API, sin conexiones SMB gestionadas por Oberiz.
 
 ## Configuración
 

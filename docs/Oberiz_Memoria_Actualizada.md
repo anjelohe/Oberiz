@@ -1,6 +1,28 @@
 # Oberiz — Memoria del proyecto
 
-Versión de producto: **1.0.0**, primera versión de este repositorio.
+## Cambio de arquitectura — 2026-10-15 · v1.0.2
+
+La arquitectura de v1.0.2 está documentada en
+[Almacenamiento simplificado](Oberiz_Almacenamiento_Simplificado.md).
+Se retiran importación directa, copias/hardlinks/movimientos y conexiones SMB.
+Inventario seleccionable: Cinetta por API o escaneo local de solo lectura, sin
+cambio automático por desconexión. Fecha del último informe y retención de nuevas
+adquisiciones si falta un inventario Cinetta de menos de 24 horas.
+Renombrado opcional exclusivamente mediante qBittorrent, desactivado por defecto
+y con consentimiento nuevo independiente del antiguo ajuste de importación.
+Archivo `.torrent`/hash/destino/diario en SQLite, recuperación detenida y recheck,
+sin arranque automático. Historial antiguo preservado; recuperación antigua manual.
+No se cambian NAS, torrents reales, la instalación activa ni el repositorio Cinetta.
+El emisor sí existe en `cinetta/src/services/oberizInventory*.js`; la revisión previa
+limitada a Rust fue incompleta. Sus 11 pruebas sintéticas han pasado.
+Prueba con qBittorrent 5.2.3 real en perfil aislado: renombrado, exportación/hash,
+recuperación detenida y recheck correctos. Se detectó que su API puede sobrescribir
+archivos ajenos; se añadió y probó una comprobación remota del directorio mediante
+la API de qBittorrent, que bloquea destinos ocupados y falla de forma segura cuando
+la consulta no está disponible. No hay garantía atómica frente a otros escritores.
+Los apartados siguientes describen el estado publicado anterior, no el flujo nuevo.
+
+Versión de producto: **1.0.2**. La descripción histórica de abajo parte de la primera versión **1.0.0**; los cambios del 15 de octubre están resumidos arriba. La publicación no actualiza automáticamente las instalaciones existentes.
 
 ## Propósito y arquitectura
 

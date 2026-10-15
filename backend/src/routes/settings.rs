@@ -4,19 +4,10 @@ use axum::{
     routing::{delete, get, post},
 };
 
-use crate::{
-    AppState, backups, diagnostics, filesystem, library_roots, qbittorrent, settings, smb,
-};
+use crate::{AppState, backups, diagnostics, filesystem, library_roots, qbittorrent, settings};
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route(
-            "/api/storage/smb",
-            get(smb::list)
-                .post(smb::save)
-                .delete(smb::forget)
-                .layer(DefaultBodyLimit::max(16384)),
-        )
         .route(
             "/api/storage/path-mapping-suggestions",
             get(library_roots::mapping_suggestions),

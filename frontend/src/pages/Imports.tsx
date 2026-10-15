@@ -1,6 +1,6 @@
 import { t, useTranslation, tf } from '../lib/i18n'
 import { useEffect, useState } from 'react'
-import { deleteImports, getImports, getSettings, ImportJob, reseedImport } from '../lib/api'
+import { deleteImports, getImports, ImportJob, reseedImport } from '../lib/api'
 import { Icon } from '../components/Icon'
 
 function pretty(status:string){return t(status.replaceAll('_',' ').replace(/\b\w/g,c=>c.toUpperCase()))}
@@ -8,22 +8,22 @@ function pretty(status:string){return t(status.replaceAll('_',' ').replace(/\b\w
 export function Imports(){
   useTranslation()
   const [rows,setRows]=useState<ImportJob[]>([])
-  const [managedFiles,setManagedFiles]=useState(false)
   const [message,setMessage]=useState('')
   const [busy,setBusy]=useState<number|null>(null)
   const [selected,setSelected]=useState<number[]>([])
   const [deleting,setDeleting]=useState(false)
   const [selectionAnchor,setSelectionAnchor]=useState<number|null>(null)
 
-  async function load(){try{const [next,settings]=await Promise.all([getImports(),getSettings()]);setManagedFiles(settings.import_method!=='external');setRows(next);setSelected(current=>current.filter(id=>next.some(row=>row.id===id)))}catch(e){setManagedFiles(false);setMessage(e instanceof Error?e.message:String(e))}}
+  async function load(){try{const next=await getImports();setRows(next);setSelected(current=>current.filter(id=>next.some(row=>row.id===id)))}catch(e){setMessage(e instanceof Error?e.message:String(e))}}
   useEffect(()=>{void load();const t=setInterval(()=>void load(),5000);return()=>clearInterval(t)},[])
 
   async function reseed(row:ImportJob){
-    try{setBusy(row.id);const r=await reseedImport(row.id);setMessage(tf("Reseed started in {0}", r.path));await load()}
+    if(!confirm(t("Restore this torrent stopped in qBittorrent, restore its recorded names and request a recheck? Inspect the result before resuming manually.")))return
+    try{setBusy(row.id);const r=await reseedImport(row.id);setMessage(tf("Restored stopped in {0}. Recheck requested; inspect and resume in qBittorrent.", r.path));await load()}
     catch(e){setMessage(e instanceof Error?e.message:String(e))}
     finally{setBusy(null)}
   }
-  const removable=(row:ImportJob)=>['duplicate','error','missing','cleaned','rejected'].includes(row.status)
+  const removable=(row:ImportJob)=>!row.torrent_metadata_path?.startsWith('archive:')&&['duplicate','error','missing','cleaned','rejected'].includes(row.status)
   const removableRows=rows.filter(removable)
   function toggle(id:number,range:boolean){
     if(range&&selectionAnchor!=null){
@@ -46,7 +46,7 @@ export function Imports(){
   }
 
   return <>
-    <div className="page-heading"><div><h1><Icon name="imports" size={32}/> {t("Imports & Reseed")}</h1><p>{t("Completed imports, seed cleanup and recoverable torrent metadata.")}</p></div></div>
+    <div className="page-heading"><div><h1><Icon name="imports" size={32}/> {t("Downloads & recovery")}</h1><p>{t("Torrent metadata, destinations and naming history. Recovery never starts downloading automatically.")}</p></div></div>
     {message&&<div className="card import-message">{message}</div>}
     <section className="card imports-table">
       <div className="imports-toolbar"><span>{removableRows.length} {t("obsolete record")}{removableRows.length===1?'':'s'} {t("can be removed safely. Use Shift to select a range.")}</span><button className="danger-button" disabled={!selected.length||deleting} onClick={()=>void remove(selected)}>{deleting?t("Removing…"):tf("Remove selected{0}", selected.length?` (${selected.length})`:'')}</button></div>
@@ -59,7 +59,7 @@ export function Imports(){
           <span>{row.indexer_name||row.indexer_id}</span>
           <span>{row.import_method||'—'}</span>
           <span className="import-path">{row.library_path||row.last_error||'—'}</span>
-          <div className="import-actions">{managedFiles&&row.torrent_metadata_path&&row.library_path?<button className="ghost-button" disabled={busy===row.id} onClick={()=>void reseed(row)}>{busy===row.id?t("Starting…"):'Reseed'}</button>:<span>{t("Unavailable")}</span>}{removable(row)&&<button className="danger-button" disabled={deleting} onClick={()=>void remove([row.id])}>{t("Remove")}</button>}</div>
+          <div className="import-actions">{row.torrent_metadata_path?.startsWith('archive:')&&['missing','cleaned'].includes(row.status)?<button className="ghost-button" disabled={busy===row.id} onClick={()=>void reseed(row)}>{busy===row.id?t("Starting…"):t('Restore stopped')}</button>:<span>{t("Unavailable")}</span>}{removable(row)&&<button className="danger-button" disabled={deleting} onClick={()=>void remove([row.id])}>{t("Remove")}</button>}</div>
         </div>
       )}
     </section>

@@ -28,7 +28,7 @@ pub struct DirectoryListing {
 /// Lists only immediate child directories for the local Oberiz host.
 /// No file contents or file names are exposed through this helper.
 pub async fn list_directories(
-    State(state): State<crate::AppState>,
+    State(_state): State<crate::AppState>,
     Query(query): Query<DirectoryQuery>,
 ) -> Result<Json<DirectoryListing>, (StatusCode, String)> {
     if matches!(allowed_roots(), AllowedRoots::Misconfigured) {
@@ -37,12 +37,7 @@ pub async fn list_directories(
             "OBERIZ_FS_ALLOWED_ROOTS is set but none of its paths could be resolved; fix the configured roots or the mounts they point to.".into(),
         ));
     }
-    let mut available_roots = roots();
-    if matches!(allowed_roots(), AllowedRoots::Unset) {
-        available_roots.extend(crate::smb::roots(&state).await);
-        available_roots.sort();
-        available_roots.dedup();
-    }
+    let available_roots = roots();
     if query
         .path
         .as_deref()
@@ -181,7 +176,7 @@ fn within_allowed_roots(path: &std::path::Path) -> bool {
     }
 }
 
-fn roots() -> Vec<String> {
+pub(crate) fn roots() -> Vec<String> {
     if let AllowedRoots::Configured(configured) = allowed_roots() {
         return configured
             .into_iter()

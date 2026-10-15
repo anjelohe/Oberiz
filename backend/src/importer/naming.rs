@@ -23,12 +23,6 @@ pub(super) fn parse_episode_numbers(name: &str) -> Option<(i32, i32, Option<i32>
     None
 }
 
-pub(super) fn parse_absolute_episode(name: &str) -> Option<i32> {
-    let re = regex::Regex::new(r"(?i)(?:^|[ ._\-])(?:EP?|EPISODE)[ ._\-]?(\d{1,3})(?:[ ._\-]|$)")
-        .ok()?;
-    re.captures(name)?.get(1)?.as_str().parse().ok()
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_series_template(
     template: &str,

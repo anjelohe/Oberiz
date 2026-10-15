@@ -11,6 +11,44 @@ use axum::http::StatusCode;
 
 #[async_trait]
 pub trait DownloadClient: Send + Sync {
+    async fn directory_entries(
+        &self,
+        _: &AppState,
+        _: &str,
+    ) -> Result<Vec<String>, (StatusCode, String)> {
+        Err((
+            StatusCode::NOT_IMPLEMENTED,
+            "Client cannot check remote naming destinations; naming is blocked".into(),
+        ))
+    }
+    async fn files(
+        &self,
+        _: &AppState,
+        _: &str,
+    ) -> Result<Vec<crate::qbittorrent::TorrentFile>, (StatusCode, String)> {
+        Err((
+            StatusCode::NOT_IMPLEMENTED,
+            "Client cannot list torrent files".into(),
+        ))
+    }
+    async fn rename_file(
+        &self,
+        _: &AppState,
+        _: &str,
+        _: &str,
+        _: &str,
+    ) -> Result<(), (StatusCode, String)> {
+        Err((
+            StatusCode::NOT_IMPLEMENTED,
+            "Client cannot rename torrent files".into(),
+        ))
+    }
+    async fn recheck(&self, _: &AppState, _: &str) -> Result<(), (StatusCode, String)> {
+        Err((
+            StatusCode::NOT_IMPLEMENTED,
+            "Client cannot recheck torrents".into(),
+        ))
+    }
     async fn list_torrents(
         &self,
         state: &AppState,
@@ -57,6 +95,32 @@ pub struct QBittorrentClient;
 
 #[async_trait]
 impl DownloadClient for QBittorrentClient {
+    async fn directory_entries(
+        &self,
+        state: &AppState,
+        directory: &str,
+    ) -> Result<Vec<String>, (StatusCode, String)> {
+        crate::qbittorrent::directory_entries(state, directory).await
+    }
+    async fn files(
+        &self,
+        state: &AppState,
+        hash: &str,
+    ) -> Result<Vec<crate::qbittorrent::TorrentFile>, (StatusCode, String)> {
+        crate::qbittorrent::torrent_files(state, hash).await
+    }
+    async fn rename_file(
+        &self,
+        state: &AppState,
+        hash: &str,
+        old: &str,
+        new: &str,
+    ) -> Result<(), (StatusCode, String)> {
+        crate::qbittorrent::rename_file(state, hash, old, new).await
+    }
+    async fn recheck(&self, state: &AppState, hash: &str) -> Result<(), (StatusCode, String)> {
+        crate::qbittorrent::recheck_torrent(state, hash).await
+    }
     async fn list_torrents(
         &self,
         state: &AppState,

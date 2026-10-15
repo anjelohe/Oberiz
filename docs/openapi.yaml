@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Oberiz Public API v1
-  version: "1.2.0"
+  version: "1.0.2"
   license:
     name: AGPL-3.0-or-later
     url: https://www.gnu.org/licenses/agpl-3.0.html
@@ -49,9 +49,11 @@ paths:
         Offline, suddenly empty and unreported roots remain protected. Clients
         must not enable removal confirmation automatically.
 
-        With import.method=external, Oberiz does not scan, import, reseed, move,
-        rename or delete library files. superseded is always empty and reported
-        paths are not matched to download ownership. Cinetta must not interpret
+        Select library.source=cinetta before submitting (local mode returns 409).
+        Oberiz does not access NAS files. Optional naming is independently
+        disabled by default and can only be executed through qBittorrent.
+        superseded is always empty and reported paths are not matched to
+        download ownership. Cinetta must not interpret
         the response as a file-action command. Use one reporting installation
         and serialize reports; multi-client snapshot ordering is not supported.
       tags: [Library]
@@ -96,6 +98,8 @@ paths:
           description: Inventory accepted; no filesystem action performed.
         "400":
           description: Invalid JSON, paths, metadata, ranges or file identities.
+        "409":
+          description: Select Cinetta as the inventory source; local scanning is selected.
         "401":
           $ref: "#/components/responses/InvalidApiKey"
         "403":

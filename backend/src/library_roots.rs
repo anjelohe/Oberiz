@@ -139,6 +139,7 @@ pub struct MappingSuggestion {
 /// the same name: `/volume1/WD19TB/downloads` → `/volume1/WD19TB` ↦
 /// `\\nas\WD19TB`. These are only proposals: unverified ones are returned too
 /// so the user can see them, but nothing is applied without confirmation.
+#[cfg(test)]
 pub fn suggest_mappings(
     remote_paths: &[String],
     local_roots: &[String],
@@ -219,6 +220,7 @@ pub fn suggest_mappings(
     out
 }
 
+#[cfg(test)]
 fn is_absolute_remote(path: &str) -> bool {
     let path = path.replace('\\', "/");
     path.starts_with('/')
@@ -228,77 +230,11 @@ fn is_absolute_remote(path: &str) -> bool {
             && path.as_bytes()[2] == b'/')
 }
 
+// Compatibility endpoint: path translation is no longer part of download handling.
 pub async fn mapping_suggestions(
-    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    _: axum::extract::State<crate::AppState>,
 ) -> Result<axum::Json<Vec<MappingSuggestion>>, (StatusCode, String)> {
-    let _media_guard = crate::importer::MEDIA_OPERATION_GATE.lock().await;
-    if crate::importer::external_mode(&state).await? {
-        return Ok(axum::Json(Vec::new()));
-    }
-    let mut remote_paths = Vec::new();
-    let mut first_error = None;
-    let default_path = match crate::qbittorrent::default_save_path(&state).await {
-        Ok(path) => {
-            remote_paths.push(path.clone());
-            path
-        }
-        Err(error) => {
-            first_error.get_or_insert(error);
-            String::new()
-        }
-    };
-    match crate::qbittorrent::list_categories(axum::extract::State(state.clone())).await {
-        Ok(axum::Json(list)) => {
-            for category in list.categories {
-                let path = category.save_path.trim().to_string();
-                // A relative category path lives under the default save path.
-                if !path.is_empty() && !is_absolute_remote(&path) && !default_path.is_empty() {
-                    remote_paths.push(format!(
-                        "{}/{path}",
-                        default_path.trim_end_matches(['/', '\\'])
-                    ));
-                } else {
-                    remote_paths.push(path);
-                }
-            }
-        }
-        Err(error) => {
-            first_error.get_or_insert(error);
-        }
-    }
-    if let Ok(torrents) = crate::qbittorrent::list_torrents_internal(&state).await {
-        remote_paths.extend(torrents.into_iter().map(|t| t.save_path));
-    }
-    if remote_paths.iter().all(|p| p.trim().is_empty()) {
-        return Err(first_error.unwrap_or((
-            StatusCode::BAD_GATEWAY,
-            "qBittorrent did not report any download folder".into(),
-        )));
-    }
-    let mut seen = std::collections::HashSet::new();
-    remote_paths.retain(|p| !p.trim().is_empty() && seen.insert(path_key(p)));
-    remote_paths.truncate(200);
-
-    let mut local_roots = crate::smb::roots(&state).await;
-    for kind in ["movie", "series"] {
-        local_roots.extend(roots(&state.db, kind).await.unwrap_or_default());
-    }
-    for key in ["paths.movies", "paths.series", "paths.downloads"] {
-        if let Ok(Some(path)) = settings::get_value(&state.db, key).await
-            && !path.trim().is_empty()
-        {
-            local_roots.push(path);
-        }
-    }
-    let existing = mappings(&state.db).await.unwrap_or_default();
-    let suggestions = tokio::task::spawn_blocking(move || {
-        suggest_mappings(&remote_paths, &local_roots, &existing, &|path: &str| {
-            Path::new(path).is_dir()
-        })
-    })
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(axum::Json(suggestions))
+    Ok(axum::Json(Vec::new()))
 }
 
 pub fn normalize_mappings(mappings: Vec<PathMapping>) -> Result<Vec<PathMapping>, StatusCode> {

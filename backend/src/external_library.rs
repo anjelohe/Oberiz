@@ -138,6 +138,13 @@ pub async fn report(
 ) -> Result<Json<LibraryReportResult>, Error> {
     validate(&report)?;
     let _guard = LOCK.lock().await;
+    let _media_guard = crate::importer::MEDIA_OPERATION_GATE.lock().await;
+    if !crate::importer::external_mode(&state).await? {
+        return Err((
+            StatusCode::CONFLICT,
+            "Select Cinetta as the library source before reporting inventory".into(),
+        ));
+    }
     Ok(Json(apply(&state, report).await?))
 }
 
@@ -484,6 +491,8 @@ async fn apply(state: &AppState, report: LibraryReport) -> Result<LibraryReportR
     if !external {
         link_external_jobs(&mut tx, &mappings).await?;
     }
+    sqlx::query("INSERT INTO settings(key,value) VALUES('library.last_external_report',strftime('%Y-%m-%dT%H:%M:%SZ','now')) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+        .execute(&mut *tx).await.map_err(internal)?;
     tx.commit().await.map_err(internal)?;
 
     // Inventory is informational only: no deletion proposals or filename-based
@@ -934,7 +943,7 @@ mod tests {
         let state = state().await;
         let guard = crate::importer::MEDIA_OPERATION_GATE.lock().await;
         let payload =
-            serde_json::from_value(serde_json::json!({"import_method":"external"})).unwrap();
+            serde_json::from_value(serde_json::json!({"library_source":"cinetta"})).unwrap();
         let mut update = tokio::spawn({
             let state = state.clone();
             async move { crate::settings::update_settings(State(state), Json(payload)).await }
@@ -966,7 +975,7 @@ mod tests {
         let app = axum::Router::new()
             .route("/inventory", axum::routing::put(report))
             .layer(axum::extract::DefaultBodyLimit::max(1024))
-            .with_state(state);
+            .with_state(state.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}/inventory", listener.local_addr().unwrap());
         let server = tokio::spawn(async move {
@@ -1017,7 +1026,24 @@ mod tests {
             .send()
             .await
             .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        crate::settings::set_value(&state.db, "library.source", "cinetta")
+            .await
+            .unwrap();
+        let response = client
+            .put(&url)
+            .header("x-api-key", "synthetic-test-key")
+            .json(&serde_json::json!({}))
+            .send()
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            crate::settings::get_value(&state.db, "library.last_external_report")
+                .await
+                .unwrap()
+                .is_some()
+        );
         server.abort();
     }
 
@@ -1073,7 +1099,7 @@ mod tests {
     #[tokio::test]
     async fn external_mode_blocks_old_jobs_and_local_discovery_and_returns_no_deletion_advice() {
         let state = state().await;
-        crate::settings::set_value(&state.db, "import.method", "external")
+        crate::settings::set_value(&state.db, "library.source", "cinetta")
             .await
             .unwrap();
         crate::settings::set_value(&state.db, "movies_path", "/unreachable/synthetic-share")
@@ -1084,7 +1110,7 @@ mod tests {
                 .await
                 .unwrap_err()
                 .0,
-            StatusCode::FORBIDDEN
+            StatusCode::NOT_FOUND
         );
         assert_eq!(
             crate::library::scan_media(&state, "movie")
@@ -1095,7 +1121,7 @@ mod tests {
         );
         crate::library::ensure_discovered(&state, "movie", 1)
             .await
-            .unwrap();
+            .unwrap_err();
         assert!(
             crate::library::root_status(State(state.clone()))
                 .await

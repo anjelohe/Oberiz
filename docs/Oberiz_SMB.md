@@ -1,5 +1,9 @@
 # Conexiones SMB del servidor de Oberiz
 
+Documento histórico de v1.0.0/v1.0.1. Las conexiones y credenciales SMB de Oberiz
+se han retirado del flujo de trabajo nuevo. Véase
+[Almacenamiento simplificado](Oberiz_Almacenamiento_Simplificado.md).
+
 Incluido en v1.0.0 para instalaciones nativas de Windows. No depende de la marca del NAS, Cinetta ni de unidades de red conectadas en otra sesión de Windows.
 
 ## Uso opcional y compatibilidad

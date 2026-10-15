@@ -247,7 +247,7 @@ export function Downloads() {
   const [category, setCategory] = useState('')
   const [busyHash, setBusyHash] = useState<string | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Torrent | null>(null)
-  const [deleteFiles, setDeleteFiles] = useState(false)
+  const deleteFiles = false
   // Same confirmation dialog as delete, but also records the release as rejected.
   const [rejectMode, setRejectMode] = useState(false)
   const [rejectedReleases, setRejectedReleases] = useState<RejectedRelease[]>([])
@@ -542,7 +542,7 @@ export function Downloads() {
       }
 
       setDeleteTarget(null)
-      setDeleteFiles(false)
+
       setRejectMode(false)
       await loadDownloads(true)
       void loadRejected()
@@ -910,7 +910,7 @@ export function Downloads() {
                             disabled={busy}
                             className="danger"
                             onClick={() => {
-                              setDeleteFiles(false)
+
                               setRejectMode(true)
                               setDeleteTarget(torrent)
                             }}
@@ -925,7 +925,7 @@ export function Downloads() {
                           disabled={busy}
                           className="danger"
                           onClick={() => {
-                            setDeleteFiles(false)
+
                             setRejectMode(false)
                             setDeleteTarget(torrent)
                           }}
@@ -1102,17 +1102,7 @@ export function Downloads() {
               </p>
             )}
 
-            <label className="dl-check">
-              <input
-                type="checkbox"
-                checked={deleteFiles}
-                onChange={(event) => setDeleteFiles(event.target.checked)}
-              />
-              <span>
-                <strong>{t("Also delete downloaded files")}</strong>
-                <small>{t("This permanently removes the data from disk.")}</small>
-              </span>
-            </label>
+            <p className="dl-delete-hint">{t("Downloaded files are always kept.")}</p>
 
             <div className="dl-modal-actions">
               <button type="button" className="dl-secondary" onClick={() => setDeleteTarget(null)}>

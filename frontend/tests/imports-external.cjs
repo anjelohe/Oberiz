@@ -9,8 +9,8 @@ async function scenario(mode, failure = false) {
   const effects = []
   let index = 0
   const jsx = (type, props) => ({ type, props })
-  const row = { id: 1, status: 'seeding', release_title: 'Synthetic old import',
-    media_type: 'movie', torrent_metadata_path: '/synthetic/old.torrent', library_path: '/synthetic/library' }
+  const row = { id: 1, status: 'missing', release_title: 'Synthetic recovery',
+    media_type: 'movie', torrent_metadata_path: mode==='archive'?'archive:1':'/synthetic/old.torrent', library_path: '/synthetic/library' }
   const source = fs.readFileSync(path.join(__dirname, '../src/pages/Imports.tsx'), 'utf8')
   const output = ts.transpileModule(source, { compilerOptions: {
     module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX,
@@ -27,7 +27,7 @@ async function scenario(mode, failure = false) {
     if (name === 'react/jsx-runtime') return { jsx, jsxs: jsx }
     if (name.endsWith('/i18n')) return { t: value => value, tf: value => value, useTranslation: () => {} }
     if (name.endsWith('/api')) return {
-      getImports: async () => [row],
+      getImports: async () => { if(failure)throw new Error('Synthetic failure');return [row] },
       getSettings: async () => {
         if (failure) throw new Error('Synthetic settings failure')
         return { import_method: mode }
@@ -43,7 +43,7 @@ async function scenario(mode, failure = false) {
   const tree = context.exports.Imports()
   function hasReseed(node) {
     if (!node || typeof node !== 'object') return false
-    if (node.type === 'button' && node.props.children === 'Reseed') return true
+    if (node.type === 'button' && node.props.children === 'Restore stopped') return true
     return [node.props?.children].flat(Infinity).some(hasReseed)
   }
   return hasReseed(tree)
@@ -51,7 +51,7 @@ async function scenario(mode, failure = false) {
 
 ;(async () => {
   assert.equal(await scenario('external'), false)
-  assert.equal(await scenario('auto'), true)
-  assert.equal(await scenario('auto', true), false)
-  console.log('Old imports cannot offer reseed in external mode or when settings cannot be verified OK')
+  assert.equal(await scenario('archive'), true)
+  assert.equal(await scenario('archive', true), false)
+  console.log('Only archived remote records offer stopped recovery; legacy imports cannot trigger file operations OK')
 })().catch(error => { console.error(error); process.exitCode = 1 })

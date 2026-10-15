@@ -2,9 +2,9 @@
 //! works on a brand-new database but breaks an existing installation's data
 //! on upgrade.
 //!
-//! `tests/fixtures/migrations_v1.0.2` is a frozen copy of the exact
-//! migrations shipped in the last public release (v1.0.2, commit 3ba6793),
-//! taken straight from git history. This test builds a database with only
+//! `tests/fixtures/migrations_v1.0.2` is a frozen legacy-development schema
+//! (commit 3ba6793), predating the repository's version reset. Its directory
+//! name does not describe the new public v1.0.2 release. This test builds a database with only
 //! those applied — simulating a real user's existing install — seeds it with
 //! sample data, then runs the *current* migrations on top and checks both
 //! that the upgrade succeeds and that the pre-existing data survives
@@ -20,6 +20,52 @@ use sqlx::{
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
 };
 use std::{path::PathBuf, str::FromStr};
+
+#[tokio::test]
+async fn storage_transition_preserves_history_and_never_inherits_rename_consent() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    let migrator = Migrator::new(PathBuf::from("migrations")).await.unwrap();
+    for migration in migrator.iter().filter(|m| m.version < 22) {
+        sqlx::raw_sql(&migration.sql).execute(&pool).await.unwrap();
+    }
+    for (key, value) in [
+        ("import.method", "external"),
+        ("import.rename_enabled", "true"),
+        ("storage.smb.connections", "synthetic-retired-secret"),
+    ] {
+        sqlx::query("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(key).bind(value).execute(&pool).await.unwrap();
+    }
+    sqlx::query("INSERT INTO download_jobs(media_type,media_id,release_title,indexer_id,status,file_mappings_json) VALUES('movie',1,'Historical torrent','fixture','cleaned','[{\"original_rel\":\"original.mkv\",\"library_rel\":\"named.mkv\"}]')").execute(&pool).await.unwrap();
+    sqlx::raw_sql(&migrator.iter().find(|m| m.version == 22).unwrap().sql)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let value = |key: &'static str| {
+        sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key=?")
+            .bind(key)
+            .fetch_one(&pool)
+    };
+    assert_eq!(value("library.source").await.unwrap(), "cinetta");
+    assert_eq!(value("qbittorrent.rename_enabled").await.unwrap(), "false");
+    let legacy: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM settings WHERE key='storage.smb.connections'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(legacy, 0);
+    let mappings: String = sqlx::query_scalar(
+        "SELECT file_mappings_json FROM download_jobs WHERE release_title='Historical torrent'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(mappings.contains("original.mkv") && mappings.contains("named.mkv"));
+    sqlx::query("INSERT INTO torrent_archives(job_id,hash,save_path,torrent_data,mappings_json) VALUES(1,'synthetic','/opaque',X'0102','[]')").execute(&pool).await.unwrap();
+}
 
 async fn temp_pool() -> (sqlx::SqlitePool, PathBuf) {
     let path = std::env::temp_dir().join(format!(
@@ -43,10 +89,10 @@ async fn temp_pool() -> (sqlx::SqlitePool, PathBuf) {
 }
 
 #[tokio::test]
-async fn upgrading_from_the_last_release_preserves_existing_data() {
+async fn upgrading_from_the_legacy_fixture_preserves_existing_data() {
     let (pool, path) = temp_pool().await;
 
-    // Step 1: build the database exactly as a real v1.0.2 install would have it.
+    // Step 1: reconstruct the historical legacy fixture, not public v1.0.2.
     let old_migrator = Migrator::new(PathBuf::from("tests/fixtures/migrations_v1.0.2"))
         .await
         .expect("load frozen v1.0.2 migrations");

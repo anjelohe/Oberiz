@@ -28,7 +28,6 @@ mod series;
 #[cfg(windows)]
 mod service;
 mod settings;
-mod smb;
 mod storage_security;
 mod tmdb;
 #[cfg(windows)]
@@ -187,15 +186,6 @@ async fn build_app_state() -> anyhow::Result<AppState> {
         torrent_list_cache: Arc::new(Mutex::new(None)),
         grab_lock: Arc::new(Mutex::new(())),
     };
-    // A disconnected NAS must not prevent the UI or SCM from starting.
-    let restore_state = state.clone();
-    let mut restoration = tokio::spawn(async move { smb::restore(&restore_state).await });
-    if tokio::time::timeout(std::time::Duration::from_secs(10), &mut restoration)
-        .await
-        .is_err()
-    {
-        tracing::warn!("SMB startup restoration continues in the background");
-    }
     Ok(state)
 }
 

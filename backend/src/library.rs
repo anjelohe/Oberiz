@@ -797,6 +797,11 @@ pub(crate) async fn ensure_discovered(
 ) -> Result<(), (StatusCode, String)> {
     let _media_guard = crate::importer::MEDIA_OPERATION_GATE.lock().await;
     if crate::importer::external_mode(state).await? {
+        let fresh: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM settings WHERE key='library.last_external_report' AND julianday(value)>=julianday('now','-24 hours'))")
+            .fetch_one(&state.db).await.map_err(internal)?;
+        if !fresh {
+            return Err((StatusCode::CONFLICT,"Cinetta inventory missing or older than 24 hours. Acquisition is held to avoid duplicate downloads.".into()));
+        }
         return Ok(());
     }
     let roots = independent_roots(

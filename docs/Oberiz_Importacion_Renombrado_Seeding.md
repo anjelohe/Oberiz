@@ -1,5 +1,9 @@
 # Oberiz — Importación, renombrado y políticas de seed
 
+Documento histórico de v1.0.0/v1.0.1. Desde v1.0.2 se retiran las transferencias
+directas y SMB; el renombrado opcional se ejecuta mediante qBittorrent y empieza
+desactivado. Véase [Almacenamiento simplificado](Oberiz_Almacenamiento_Simplificado.md).
+
 ## Nota operativa — 14/10/2026
 
 El método `move` se verificó con el código real entre dos recursos del NAS y un archivo temporal, sin modificar contenido existente. Esto confirma el funcionamiento con la conexión usada por la prueba, no los permisos de LocalSystem. `auto` continúa siendo un método distinto: intenta hardlink y recurre a copia; no equivale a mover.

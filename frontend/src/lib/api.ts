@@ -177,6 +177,8 @@ export type AutomationStatus = {
 export type RssStatus = { enabled:boolean; interval_minutes:number; configured_feeds:number; states:Array<{indexer_id:string;last_synced_at:string|null;last_status:string;last_new_items:number;last_matched_items:number;last_grabbed_items:number;last_error:string|null;updated_at:string}> }
 
 export type Settings = {
+  library_source: 'local'|'cinetta';
+  last_external_report: string|null;
   tmdb_api_key_set: boolean;
   tvdb_api_key_set: boolean;
   qbittorrent_host: string;

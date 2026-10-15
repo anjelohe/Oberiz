@@ -16,6 +16,8 @@ pub(crate) fn hash_api_key(key: &str) -> String {
 
 #[derive(Debug, Serialize)]
 pub struct SettingsResponse {
+    pub library_source: String,
+    pub last_external_report: Option<String>,
     pub tmdb_api_key_set: bool,
     pub tvdb_api_key_set: bool,
     pub qbittorrent_host: String,
@@ -62,6 +64,7 @@ pub struct SettingsResponse {
 
 #[derive(Debug, Deserialize, Default)]
 pub struct UpdateSettingsRequest {
+    pub library_source: Option<String>,
     pub tmdb_api_key: Option<String>,
     pub tvdb_api_key: Option<String>,
     pub qbittorrent_host: Option<String>,
@@ -93,6 +96,7 @@ pub struct UpdateSettingsRequest {
     pub import_enabled: Option<bool>,
     pub import_method: Option<String>,
     pub rename_enabled: Option<bool>,
+    pub qbittorrent_rename_enabled: Option<bool>,
     pub movie_naming_template: Option<String>,
     pub series_naming_template: Option<String>,
     pub keep_reseed_metadata: Option<bool>,
@@ -314,8 +318,9 @@ pub async fn get_settings(
         .unwrap_or(7);
 
     let import_enabled = boolean(&state.db, "import.enabled", true).await?;
-    let import_method = text(&state.db, "import.method", "auto").await?;
-    let rename_enabled = boolean(&state.db, "import.rename_enabled", true).await?;
+    let library_source = text(&state.db, "library.source", "local").await?;
+    let import_method = "qbittorrent".to_string();
+    let rename_enabled = boolean(&state.db, "qbittorrent.rename_enabled", false).await?;
     let movie_naming_template = text(
         &state.db,
         "import.movie_template",
@@ -353,6 +358,10 @@ pub async fn get_settings(
     let overseerr_compat_enabled = boolean(&state.db, "overseerr.compat_enabled", false).await?;
 
     Ok(Json(SettingsResponse {
+        library_source,
+        last_external_report: get_value(&state.db, "library.last_external_report")
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
         tmdb_api_key_set: !tmdb_api_key.is_empty(),
         tvdb_api_key_set: !tvdb_api_key.is_empty(),
         qbittorrent_host,
@@ -400,12 +409,22 @@ pub async fn update_settings(
     State(state): State<AppState>,
     Json(mut payload): Json<UpdateSettingsRequest>,
 ) -> Result<StatusCode, StatusCode> {
-    let _media_guard = if payload.import_method.is_some() {
+    let _media_guard = if payload.import_method.is_some()
+        || payload.library_source.is_some()
+        || payload.qbittorrent_rename_enabled.is_some()
+    {
         Some(crate::importer::MEDIA_OPERATION_GATE.lock().await)
     } else {
         None
     };
     // Reject invalid new library settings before persisting any other form field.
+    if payload
+        .library_source
+        .as_deref()
+        .is_some_and(|source| !matches!(source, "local" | "cinetta"))
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     if let Some(paths) = payload.movie_library_paths.take() {
         payload.movie_library_paths =
             Some(crate::library_roots::normalize_roots(paths).map_err(|e| e.0)?);
@@ -578,7 +597,14 @@ pub async fn update_settings(
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     }
+    set_text!(payload.library_source, "library.source");
+    // Old clients may still submit import.rename_enabled=true. That is NOT
+    // consent to remote file operations; only the new explicit field opts in.
     set_bool!(payload.rename_enabled, "import.rename_enabled");
+    set_bool!(
+        payload.qbittorrent_rename_enabled,
+        "qbittorrent.rename_enabled"
+    );
     set_text!(payload.movie_naming_template, "import.movie_template");
     set_text!(payload.series_naming_template, "import.series_template");
     set_bool!(payload.keep_reseed_metadata, "import.keep_reseed_metadata");

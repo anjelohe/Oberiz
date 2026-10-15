@@ -1,6 +1,31 @@
 // Interface copy only: media titles, paths, tracker definitions and protocol values are untouched.
 export const spanish: Record<string, string> = Object.fromEntries(String.raw`
 Dashboard|Inicio
+Library inventory|Inventario de la biblioteca
+qBittorrent does not provide atomic no-overwrite renaming. Visible destinations are checked; do not run other organizers on these folders simultaneously.|qBittorrent no ofrece un renombrado atómico sin reemplazo. Se comprueban los destinos visibles; no ejecutes otros organizadores sobre estas carpetas al mismo tiempo.
+Choose one source. Download destinations are managed in qBittorrent categories.|Elige el origen del inventario. Los destinos de descarga se configuran en las categorías de qBittorrent.
+Receive the library through the public API. No NAS access required.|Recibe la biblioteca por la API pública. No requiere acceso al NAS.
+Local folders|Carpetas locales
+Read-only scanning. Oberiz never imports, copies or moves media files.|Escaneo de solo lectura. Oberiz nunca importa, copia ni mueve archivos multimedia.
+Enable Public API v1, generate a key and save Settings. In Cinetta, configure the Oberiz URL and key and enable inventory reporting.|Activa API pública v1, genera una clave y guarda los ajustes. En Cinetta, configura la dirección y la clave de Oberiz y activa el envío del inventario.
+Cinetta sends the inventory; selecting this mode does not initiate a sync.|Cinetta envía el inventario; seleccionar este modo no inicia una sincronización.
+Last inventory received:|Último inventario recibido:
+Not received yet|Todavía no se ha recibido
+If Cinetta stops reporting, the last inventory is preserved. Local scanning is never enabled automatically.|Si Cinetta deja de informar, se conserva el último inventario. El escaneo local nunca se activa automáticamente.
+Optional renaming is configured separately and performed only through qBittorrent. Recovery metadata is included in Oberiz database backups.|El renombrado opcional se configura aparte y se ejecuta solo mediante qBittorrent. Las copias de la base de datos de Oberiz incluyen los metadatos de recuperación.
+No recent Cinetta inventory: automatic acquisition is held until a report is received (maximum age: 24 hours).|No hay inventario reciente de Cinetta: las nuevas adquisiciones quedan en espera hasta recibirlo (antigüedad máxima: 24 horas).
+qBittorrent naming & recovery|Renombrado mediante qBittorrent y recuperación
+Disabled by default. Oberiz requests changes through qBittorrent; it never opens media files.|Desactivado por defecto. Oberiz solicita los cambios a qBittorrent; nunca abre los archivos multimedia.
+Rename completed downloads through qBittorrent|Renombrar descargas completadas mediante qBittorrent
+Apply sharing policies (keep all downloaded files)|Aplicar políticas de compartición (conservar todos los archivos descargados)
+Only Oberiz downloads are processed. Ambiguous files, external subtitles and naming conflicts require manual review.|Solo se procesan las descargas de Oberiz. Si hay archivos ambiguos, subtítulos externos o conflictos de nombres, se detiene el renombrado para revisión.
+Set download destinations in qBittorrent categories. Oberiz does not need NAS credentials.|Configura los destinos de descarga en las categorías de qBittorrent. Oberiz no necesita credenciales del NAS.
+Downloads & recovery|Descargas y recuperación
+Torrent metadata, destinations and naming history. Recovery never starts downloading automatically.|Metadatos del torrent, destinos e historial de nombres. La recuperación nunca inicia descargas automáticamente.
+Restore stopped|Recuperar detenido
+Restore this torrent stopped in qBittorrent, restore its recorded names and request a recheck? Inspect the result before resuming manually.|¿Recuperar este torrent detenido en qBittorrent, restaurar los nombres registrados y solicitar una comprobación? Revisa el resultado antes de reanudarlo manualmente.
+Restored stopped in {0}. Recheck requested; inspect and resume in qBittorrent.|Recuperado detenido en {0}. Comprobación solicitada; revisa y reanuda en qBittorrent.
+Downloaded files are always kept.|Los archivos descargados se conservan siempre.
 SMB / CIFS servers|Servidores SMB / CIFS
 Server|Servidor
 Open|Abrir

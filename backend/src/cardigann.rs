@@ -1224,7 +1224,7 @@ async fn read_capped_bytes(
 /// Check the small, essential part of bencoded torrent metainfo before passing
 /// it to qBittorrent. A response page from a tracker can also start with `d`,
 /// so checking just its first byte is not enough.
-fn validate_torrent_metainfo(bytes: &[u8]) -> Result<(), &'static str> {
+pub(crate) fn validate_torrent_metainfo(bytes: &[u8]) -> Result<(), &'static str> {
     if bytes.first() != Some(&b'd') {
         return Err("no empieza por un diccionario bencode");
     }

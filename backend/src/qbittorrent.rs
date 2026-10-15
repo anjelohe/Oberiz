@@ -12,6 +12,84 @@ use tokio::time::sleep;
 
 use crate::{AppState, settings};
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TorrentFile {
+    pub index: i64,
+    pub name: String,
+    pub size: i64,
+}
+
+pub(crate) async fn directory_entries(
+    state: &AppState,
+    directory: &str,
+) -> Result<Vec<String>, (StatusCode, String)> {
+    let config = load_config(state).await?;
+    let query = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("dirPath", directory)
+        .append_pair("mode", "all")
+        .finish();
+    authenticated_get(&config, &format!("/api/v2/app/getDirectoryContent?{query}"))
+        .await?
+        .response
+        .json()
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("Cannot verify qBittorrent destination; naming blocked: {e}"),
+            )
+        })
+}
+
+pub(crate) async fn torrent_files(
+    state: &AppState,
+    hash: &str,
+) -> Result<Vec<TorrentFile>, (StatusCode, String)> {
+    validate_hash(hash)?;
+    let config = load_config(state).await?;
+    authenticated_get(&config, &format!("/api/v2/torrents/files?hash={hash}"))
+        .await?
+        .response
+        .json()
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))
+}
+
+pub(crate) async fn rename_file(
+    state: &AppState,
+    hash: &str,
+    old: &str,
+    new: &str,
+) -> Result<(), (StatusCode, String)> {
+    validate_hash(hash)?;
+    let config = load_config(state).await?;
+    authenticated_form_post(
+        &config,
+        "/api/v2/torrents/renameFile",
+        &[
+            ("hash", hash.into()),
+            ("oldPath", old.into()),
+            ("newPath", new.into()),
+        ],
+    )
+    .await?;
+    invalidate_torrent_cache(state).await;
+    Ok(())
+}
+pub(crate) async fn recheck_torrent(
+    state: &AppState,
+    hash: &str,
+) -> Result<(), (StatusCode, String)> {
+    validate_hash(hash)?;
+    let config = load_config(state).await?;
+    authenticated_form_post(
+        &config,
+        "/api/v2/torrents/recheck",
+        &[("hashes", hash.into())],
+    )
+    .await
+}
+
 #[derive(Debug, Serialize)]
 pub struct QBittorrentTestResponse {
     pub status: &'static str,
@@ -547,39 +625,17 @@ pub async fn delete_torrent(
 
 /// Refuse destructive torrent removal before making any network request.
 async fn ensure_file_deletion_allowed(
-    db: &sqlx::SqlitePool,
+    _db: &sqlx::SqlitePool,
     delete_files: bool,
 ) -> Result<(), (StatusCode, String)> {
-    if delete_files
-        && settings::get_value(db, "import.method")
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-            .as_deref()
-            == Some("external")
-    {
+    if delete_files {
         return Err((
             StatusCode::FORBIDDEN,
-            "File deletion is disabled when Oberiz does not manage files. Remove the torrent without deleting its files.".into(),
+            "Oberiz never deletes library data. Remove the torrent without deleting its files."
+                .into(),
         ));
     }
     Ok(())
-}
-
-/// qBittorrent's default save path, as qBittorrent itself sees it.
-pub(crate) async fn default_save_path(state: &AppState) -> Result<String, (StatusCode, String)> {
-    let config = load_config(state).await?;
-    let result = authenticated_get(&config, "/api/v2/app/defaultSavePath").await?;
-    result
-        .response
-        .text()
-        .await
-        .map(|path| path.trim().to_string())
-        .map_err(|e| {
-            (
-                StatusCode::BAD_GATEWAY,
-                format!("No se pudo leer la carpeta de descargas de qBittorrent: {e}"),
-            )
-        })
 }
 
 async fn authenticated_get(
@@ -1184,30 +1240,10 @@ async fn apply_and_verify_metadata(
     let config = load_config(state).await?;
 
     if let Some(save_path) = save_path.filter(|p| !p.trim().is_empty()) {
-        crate::importer::require_managed_files(state).await?;
-        // qBittorrent treats adding a torrent whose infohash it already knows
-        // as a no-op beyond refreshing category/tags — it keeps seeding from
-        // wherever that existing entry's savepath already points. Without
-        // this, reseed's freshly reconstructed files at the new job folder
-        // would simply never be the files qBittorrent is actually serving
-        // from, making the whole reconstruction pointless. setLocation moves
-        // it there and recheck makes it verify pieces against what's now on
-        // disk at that path instead of trusting stale progress state.
-        authenticated_form_post(
-            &config,
-            "/api/v2/torrents/setLocation",
-            &[
-                ("hashes", hash.to_string()),
-                ("location", save_path.to_string()),
-            ],
-        )
-        .await?;
-        authenticated_form_post(
-            &config,
-            "/api/v2/torrents/recheck",
-            &[("hashes", hash.to_string())],
-        )
-        .await?;
+        return Err((
+            StatusCode::CONFLICT,
+            format!("Existing torrent will not be relocated to {save_path}"),
+        ));
     }
 
     // qBittorrent's dedicated APIs are the authoritative way to set these after add.
@@ -1335,19 +1371,24 @@ pub(crate) async fn export_torrent(
 ) -> Result<Vec<u8>, (StatusCode, String)> {
     validate_hash(hash)?;
     let config = load_config(state).await?;
-    let result =
+    let mut result =
         authenticated_get(&config, &format!("/api/v2/torrents/export?hash={hash}")).await?;
-    result
+    let mut data = Vec::new();
+    while let Some(chunk) = result
         .response
-        .bytes()
+        .chunk()
         .await
-        .map(|b| b.to_vec())
-        .map_err(|e| {
-            (
-                StatusCode::BAD_GATEWAY,
-                format!("No se pudo exportar el .torrent: {e}"),
-            )
-        })
+        .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?
+    {
+        if data.len() + chunk.len() > 32 * 1024 * 1024 {
+            return Err((
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "Exported torrent exceeds 32 MiB".into(),
+            ));
+        }
+        data.extend_from_slice(&chunk);
+    }
+    Ok(data)
 }
 
 pub(crate) async fn add_url(
@@ -1410,6 +1451,12 @@ pub(crate) async fn add_torrent_bytes_with_options(
     if let Some(info_hash) = crate::cardigann::torrent_v1_info_hash(&bytes)
         && torrent_by_hash(state, &info_hash).await?.is_some()
     {
+        if reseed {
+            return Err((
+                StatusCode::CONFLICT,
+                "Torrent already exists; recovery did not change it".into(),
+            ));
+        }
         let tags = oberiz_tags(user_tags, job_id, reseed);
         let torrent =
             apply_and_verify_metadata(state, &info_hash, category, &tags, save_path).await?;
@@ -1433,6 +1480,7 @@ pub(crate) async fn add_torrent_bytes_with_options(
         title: &str,
         tags: &str,
         save_path: Option<&str>,
+        stopped: bool,
         basic: bool,
     ) -> Result<reqwest::Response, reqwest::Error> {
         let filename = format!(
@@ -1448,6 +1496,14 @@ pub(crate) async fn add_torrent_bytes_with_options(
             .mime_str("application/x-bittorrent")
             .unwrap();
         let mut form = reqwest::multipart::Form::new().part("torrents", part);
+        if stopped {
+            form = form
+                .text("paused", "true")
+                .text("stopped", "true")
+                .text("autoTMM", "false")
+                .text("skip_checking", "false")
+                .text("contentLayout", "Original");
+        }
         if !category.trim().is_empty() {
             form = form.text("category", category.to_string());
         }
@@ -1473,6 +1529,7 @@ pub(crate) async fn add_torrent_bytes_with_options(
         title,
         &tags,
         save_path,
+        reseed,
         true,
     )
     .await
@@ -1483,7 +1540,7 @@ pub(crate) async fn add_torrent_bytes_with_options(
     } else {
         login_cookie(&client, &config).await?;
         let response = send(
-            &client, &url, &config, bytes, category, title, &tags, save_path, false,
+            &client, &url, &config, bytes, category, title, &tags, save_path, reseed, false,
         )
         .await
         .map_err(|e| connection_error(&base_url, e))?;
@@ -1507,6 +1564,76 @@ pub(crate) async fn add_torrent_bytes_with_options(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn recovery_upload_sends_stopped_flags_and_never_requests_start_or_location_change() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        use tokio::sync::Mutex;
+        let present = Arc::new(AtomicBool::new(false));
+        let uploaded = Arc::new(Mutex::new(String::new()));
+        let hash = "1111111111111111111111111111111111111111";
+        let app=axum::Router::new()
+            .route("/api/v2/torrents/info",axum::routing::get({let present=present.clone();move||{let present=present.clone();async move{
+                axum::Json(if present.load(Ordering::SeqCst){serde_json::json!([{"hash":hash,"name":"Fixture","category":"","tags":"","save_path":"/opaque-nas/library","state":"stoppedDL"}])}else{serde_json::json!([])})
+            }}}))
+            .route("/api/v2/torrents/add",axum::routing::post({let present=present.clone();let uploaded=uploaded.clone();move|body:axum::body::Bytes|{let present=present.clone();let uploaded=uploaded.clone();async move {
+                *uploaded.lock().await=String::from_utf8_lossy(&body).into_owned();present.store(true,Ordering::SeqCst);"Ok."
+            }}}))
+            .route("/api/v2/torrents/setCategory",axum::routing::post(||async{""}));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let db = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&db).await.unwrap();
+        for (key, value) in [
+            ("qbittorrent.host", "127.0.0.1".to_owned()),
+            ("qbittorrent.port", port.to_string()),
+        ] {
+            crate::settings::set_value(&db, key, &value).await.unwrap();
+        }
+        let state = crate::AppState {
+            db,
+            http: reqwest::Client::new(),
+            automation_runtime: Default::default(),
+            download_client: Arc::new(crate::download_client::QBittorrentClient),
+            torrent_list_cache: Arc::new(Mutex::new(None)),
+            grab_lock: Arc::new(Mutex::new(())),
+        };
+        let added = super::add_torrent_bytes_with_options(
+            &state,
+            b"d4:infodee".to_vec(),
+            "",
+            "Fixture",
+            "",
+            None,
+            Some("/opaque-nas/library"),
+            true,
+        )
+        .await
+        .unwrap();
+        assert_eq!(added, hash);
+        let body = uploaded.lock().await;
+        for (key, value) in [
+            ("paused", "true"),
+            ("stopped", "true"),
+            ("autoTMM", "false"),
+            ("skip_checking", "false"),
+            ("contentLayout", "Original"),
+            ("savepath", "/opaque-nas/library"),
+        ] {
+            assert!(
+                body.contains(&format!("name=\"{key}\"\r\n\r\n{value}")),
+                "Missing {key}"
+            );
+        }
+        server.abort();
+    }
     use super::{base32_to_hex, magnet_hex_hash};
 
     #[tokio::test]
@@ -1533,7 +1660,7 @@ mod tests {
             .unwrap();
         super::ensure_file_deletion_allowed(&db, true)
             .await
-            .unwrap();
+            .unwrap_err();
     }
 
     /// RFC 4648 base32, mirroring `base32_to_hex`'s decode direction, so the

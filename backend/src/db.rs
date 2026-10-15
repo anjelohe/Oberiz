@@ -71,6 +71,33 @@ pub async fn connect() -> anyhow::Result<SqlitePool> {
         .execute(&pool)
         .await?;
 
+    // This transition removes NAS credentials and retires file management.
+    // Take a standalone, WAL-consistent rollback copy before changing an existing DB.
+    let tracked: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='_sqlx_migrations')",
+    )
+    .fetch_one(&pool)
+    .await?;
+    if tracked {
+        let version: i64 =
+            sqlx::query_scalar("SELECT COALESCE(MAX(version),0) FROM _sqlx_migrations")
+                .fetch_one(&pool)
+                .await?;
+        if (1..22).contains(&version) {
+            let backups = data_directory.join("backups");
+            std::fs::create_dir_all(&backups)?;
+            let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+            let destination = backups.join(format!(
+                "oberiz-before-storage-simplification-{stamp}.sqlite3"
+            ));
+            sqlx::query("VACUUM INTO ?")
+                .bind(destination.to_string_lossy().as_ref())
+                .execute(&pool)
+                .await?;
+            tracing::info!("Created pre-simplification database backup");
+        }
+    }
+
     run_migrations_with_legacy_checksum_repair(&pool, &database_path).await?;
 
     Ok(pool)

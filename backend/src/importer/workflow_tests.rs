@@ -7,6 +7,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
+use std::{fs, path::PathBuf};
 use tokio::sync::Mutex;
 
 struct Folder(PathBuf);
@@ -97,7 +98,7 @@ async fn rss_download_import_rescan_upgrade_and_failure_recovery() {
                 .unwrap()
                 .as_nanos()
         )));
-    let library = folder.0.join("library");
+    let library = folder.0.join("downloads");
     let downloads = folder.0.join("downloads");
     fs::create_dir_all(&library).unwrap();
     fs::create_dir_all(&downloads).unwrap();
@@ -183,7 +184,8 @@ async fn rss_download_import_rescan_upgrade_and_failure_recovery() {
     );
     fs::rename(&offline, &source).unwrap();
     run_cycle(&state).await.unwrap();
-    assert!(source.exists()); // Copy import keeps seeding payload intact.
+    assert!(source.exists()); // Tracking never opens or copies the media.
+    crate::library::scan_media(&state, "movie").await.unwrap();
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM media_files WHERE file_exists=1")
             .fetch_one(&state.db)
@@ -213,13 +215,12 @@ async fn rss_download_import_rescan_upgrade_and_failure_recovery() {
     assert_eq!(upgrade.grabbed, 1, "{outcomes:?}");
     run_cycle(&state).await.unwrap();
     assert_eq!(client.adds.load(Ordering::SeqCst), 2);
+    crate::library::scan_media(&state, "movie").await.unwrap();
     assert_eq!(
-        sqlx::query_scalar::<_, i64>(
-            "SELECT count(*) FROM media_files WHERE file_exists=1 AND discovered_by='import'"
-        )
-        .fetch_one(&state.db)
-        .await
-        .unwrap(),
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM media_files WHERE file_exists=1")
+            .fetch_one(&state.db)
+            .await
+            .unwrap(),
         2
     );
     let statuses: Vec<String> = sqlx::query_scalar("SELECT status FROM download_jobs ORDER BY id")
@@ -248,7 +249,7 @@ async fn rss_download_import_rescan_upgrade_and_failure_recovery() {
             .fetch_one(&state.db)
             .await
             .unwrap(),
-        3
+        2
     );
     assert!(
         client
