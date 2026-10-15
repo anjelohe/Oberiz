@@ -17,6 +17,7 @@ pub(crate) fn hash_api_key(key: &str) -> String {
 #[derive(Debug, Serialize)]
 pub struct SettingsResponse {
     pub library_source: String,
+    pub pause_on_stale_inventory: bool,
     pub last_external_report: Option<String>,
     pub tmdb_api_key_set: bool,
     pub tvdb_api_key_set: bool,
@@ -65,6 +66,7 @@ pub struct SettingsResponse {
 #[derive(Debug, Deserialize, Default)]
 pub struct UpdateSettingsRequest {
     pub library_source: Option<String>,
+    pub pause_on_stale_inventory: Option<bool>,
     pub tmdb_api_key: Option<String>,
     pub tvdb_api_key: Option<String>,
     pub qbittorrent_host: Option<String>,
@@ -359,6 +361,8 @@ pub async fn get_settings(
 
     Ok(Json(SettingsResponse {
         library_source,
+        pause_on_stale_inventory: boolean(&state.db, "library.pause_on_stale_inventory", false)
+            .await?,
         last_external_report: get_value(&state.db, "library.last_external_report")
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
@@ -411,6 +415,7 @@ pub async fn update_settings(
 ) -> Result<StatusCode, StatusCode> {
     let _media_guard = if payload.import_method.is_some()
         || payload.library_source.is_some()
+        || payload.pause_on_stale_inventory.is_some()
         || payload.qbittorrent_rename_enabled.is_some()
     {
         Some(crate::importer::MEDIA_OPERATION_GATE.lock().await)
@@ -598,6 +603,10 @@ pub async fn update_settings(
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     }
     set_text!(payload.library_source, "library.source");
+    set_bool!(
+        payload.pause_on_stale_inventory,
+        "library.pause_on_stale_inventory"
+    );
     // Old clients may still submit import.rename_enabled=true. That is NOT
     // consent to remote file operations; only the new explicit field opts in.
     set_bool!(payload.rename_enabled, "import.rename_enabled");

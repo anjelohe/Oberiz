@@ -32,6 +32,18 @@ for(const mode of ['local','cinetta']){
   assert.equal(changes[0].library_source,'cinetta')
   assert.equal(changes[1].library_source,'local')
   assert.ok(changes.every(next=>next.rename_enabled===false))
+  const pause=find(tree,node=>node.type==='input'&&node.props.type==='checkbox')
+  assert.equal(Boolean(pause),mode==='cinetta')
+  assert.equal(Boolean(find(tree,node=>node.props.role==='alert')),false)
+  if(pause){
+    assert.equal(pause.props.checked,false)
+    pause.props.onChange({target:{checked:true}})
+    assert.equal(changes.at(-1).pause_on_stale_inventory,true)
+    const enabled=context.exports.StorageSettings({data:changes.at(-1),setData:()=>{},existingLibrary:null})
+    assert.ok(find(enabled,node=>node.props.role==='alert'))
+    const fresh=context.exports.StorageSettings({data:{...changes.at(-1),last_external_report:new Date().toISOString()},setData:()=>{},existingLibrary:null})
+    assert.equal(Boolean(find(fresh,node=>node.props.role==='alert')),false)
+  }
 }
 assert.ok(!source.includes('SmbConnections'))
 assert.ok(!source.includes('getPathMappingSuggestions'))

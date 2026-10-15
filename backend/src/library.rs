@@ -797,6 +797,14 @@ pub(crate) async fn ensure_discovered(
 ) -> Result<(), (StatusCode, String)> {
     let _media_guard = crate::importer::MEDIA_OPERATION_GATE.lock().await;
     if crate::importer::external_mode(state).await? {
+        if settings::get_value(&state.db, "library.pause_on_stale_inventory")
+            .await
+            .map_err(internal)?
+            .as_deref()
+            != Some("true")
+        {
+            return Ok(());
+        }
         let fresh: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM settings WHERE key='library.last_external_report' AND julianday(value)>=julianday('now','-24 hours'))")
             .fetch_one(&state.db).await.map_err(internal)?;
         if !fresh {
@@ -1049,6 +1057,59 @@ mod tests {
             }))),
             grab_lock: Arc::new(Mutex::new(())),
         }
+    }
+    #[tokio::test]
+    async fn stale_cinetta_pause_is_opt_in_and_can_be_disabled() {
+        let state = state().await;
+        settings::set_value(&state.db, "library.source", "cinetta")
+            .await
+            .unwrap();
+        assert!(
+            !crate::settings::get_settings(axum::extract::State(state.clone()))
+                .await
+                .unwrap()
+                .0
+                .pause_on_stale_inventory
+        );
+        ensure_discovered(&state, "movie", 1).await.unwrap();
+        let set_pause = |enabled| crate::settings::UpdateSettingsRequest {
+            pause_on_stale_inventory: Some(enabled),
+            ..Default::default()
+        };
+        crate::settings::update_settings(
+            axum::extract::State(state.clone()),
+            Json(set_pause(true)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            ensure_discovered(&state, "movie", 1).await.unwrap_err().0,
+            StatusCode::CONFLICT
+        );
+        settings::set_value(
+            &state.db,
+            "library.last_external_report",
+            "2000-01-01T00:00:00Z",
+        )
+        .await
+        .unwrap();
+        assert!(ensure_discovered(&state, "movie", 1).await.is_err());
+        sqlx::query("UPDATE settings SET value=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE key='library.last_external_report'").execute(&state.db).await.unwrap();
+        ensure_discovered(&state, "movie", 1).await.unwrap();
+        settings::set_value(
+            &state.db,
+            "library.last_external_report",
+            "2000-01-01T00:00:00Z",
+        )
+        .await
+        .unwrap();
+        crate::settings::update_settings(
+            axum::extract::State(state.clone()),
+            Json(set_pause(false)),
+        )
+        .await
+        .unwrap();
+        ensure_discovered(&state, "movie", 1).await.unwrap();
     }
     async fn roots(state: &AppState, kind: &str, paths: Vec<String>) {
         settings::set_value(

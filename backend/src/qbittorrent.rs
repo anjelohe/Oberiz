@@ -600,7 +600,8 @@ pub async fn delete_torrent(
     } else {
         None
     };
-    ensure_file_deletion_allowed(&state.db, query.delete_files).await?;
+    // This authenticated manual action explicitly opts into deleting files.
+    // Internal callers (including policies/rejection) retain their separate guard.
 
     let config = load_config(&state).await?;
     authenticated_form_post(
@@ -623,7 +624,7 @@ pub async fn delete_torrent(
     Ok(Json(ActionResponse { status: "ok" }))
 }
 
-/// Refuse destructive torrent removal before making any network request.
+/// Internal actions must preserve data; only the manual delete endpoint opts out.
 async fn ensure_file_deletion_allowed(
     _db: &sqlx::SqlitePool,
     delete_files: bool,
@@ -1565,6 +1566,88 @@ pub(crate) async fn add_torrent_bytes_with_options(
 #[cfg(test)]
 mod tests {
     #[tokio::test]
+    async fn manual_deletion_forwards_explicit_file_choice_but_internal_deletion_blocks_it() {
+        use axum::extract::{Path, Query, State};
+        use std::sync::Arc;
+        use tokio::sync::Mutex;
+        let received = Arc::new(Mutex::new(Vec::<String>::new()));
+        let app = axum::Router::new().route(
+            "/api/v2/torrents/delete",
+            axum::routing::post({
+                let received = received.clone();
+                move |body: axum::body::Bytes| {
+                    let received = received.clone();
+                    async move {
+                        received
+                            .lock()
+                            .await
+                            .push(String::from_utf8(body.to_vec()).unwrap());
+                        "Ok."
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let db = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&db).await.unwrap();
+        for (key, value) in [
+            ("qbittorrent.host", "127.0.0.1".to_owned()),
+            ("qbittorrent.port", port.to_string()),
+            ("library.source", "cinetta".to_owned()),
+        ] {
+            crate::settings::set_value(&db, key, &value).await.unwrap();
+        }
+        let state = crate::AppState {
+            db,
+            http: reqwest::Client::new(),
+            automation_runtime: Default::default(),
+            download_client: Arc::new(crate::download_client::QBittorrentClient),
+            torrent_list_cache: Arc::new(Mutex::new(None)),
+            grab_lock: Arc::new(Mutex::new(())),
+        };
+        let hash = "1111111111111111111111111111111111111111".to_owned();
+        let default_query: super::DeleteQuery = serde_json::from_str("{}").unwrap();
+        assert!(!default_query.delete_files);
+        let _ = super::delete_torrent(
+            State(state.clone()),
+            Path(hash.clone()),
+            Query(default_query),
+        )
+        .await
+        .unwrap();
+        let _ = super::delete_torrent(
+            State(state.clone()),
+            Path(hash.clone()),
+            Query(super::DeleteQuery { delete_files: true }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            super::delete_torrent_internal(&state, &hash, true)
+                .await
+                .unwrap_err()
+                .0,
+            axum::http::StatusCode::FORBIDDEN
+        );
+        let bodies = received.lock().await;
+        assert_eq!(bodies.len(), 2);
+        assert!(bodies[0].contains("deleteFiles=false"));
+        assert!(bodies[1].contains("deleteFiles=true"));
+        assert!(
+            bodies
+                .iter()
+                .all(|body| body.contains(&format!("hashes={hash}")))
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn recovery_upload_sends_stopped_flags_and_never_requests_start_or_location_change() {
         use std::sync::{
             Arc,
@@ -1637,7 +1720,7 @@ mod tests {
     use super::{base32_to_hex, magnet_hex_hash};
 
     #[tokio::test]
-    async fn external_mode_blocks_file_deletion_but_allows_removing_only_the_torrent() {
+    async fn internal_actions_block_file_deletion_in_all_library_modes() {
         let db = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
         sqlx::query("CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT)")
             .execute(&db)

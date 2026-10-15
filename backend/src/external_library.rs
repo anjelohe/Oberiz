@@ -1121,7 +1121,7 @@ mod tests {
         );
         crate::library::ensure_discovered(&state, "movie", 1)
             .await
-            .unwrap_err();
+            .unwrap();
         assert!(
             crate::library::root_status(State(state.clone()))
                 .await

@@ -2,12 +2,13 @@
 
 ## Primera contraseña
 
-Una instancia sin contraseña solo permite configurarla entrando directamente
-en `http://127.0.0.1:2032` desde el equipo donde corre Oberiz. Los clientes de
-red y los accesos por proxy no pueden apropiarse de la instalación.
-Para un servidor sin escritorio, utilizar un túnel SSH autenticado hacia su
-puerto de loopback; no exponer el primer arranque a Internet. Una vez configurada
-la contraseña, la autenticación normal funciona desde la red.
+La primera contraseña puede configurarse desde el navegador de otro dispositivo,
+también mediante un proxy, sin acceder al escritorio del servidor. No se exige
+una dirección de loopback. Completar este paso en una red de confianza antes de
+publicar la instancia: mientras no hay contraseña, quien alcance el formulario
+puede establecerla. Los cambios se serializan y, una vez configurada, sustituirla
+requiere conocer la contraseña actual. Se mantienen los límites de longitud,
+el hash seguro y la revocación de sesiones al cambiarla.
 
 ## Directorios privados
 
@@ -48,8 +49,11 @@ La clave se comprueba antes de deserializar cuerpos, incluso con la API desactiv
 La integración tiene límite de concurrencia. La clave actual conserva su contrato
 para no romper Cinetta/Overseerr: no se ha cambiado ni sustituido automáticamente.
 Debe mantenerse secreta; todavía no existen permisos separados por cliente/scope.
-El modo externo prohíbe borrar archivos a través de qBittorrent, incluso desde
-rechazo de releases. Un informe Cinetta solo actualiza datos de Oberiz.
+Las políticas automáticas y el rechazo de releases conservan los archivos.
+En Descargas, el borrado manual pide confirmación y permite marcar «Borrar también
+los archivos descargados», desmarcado por defecto. Al marcarlo, qBittorrent ejecuta
+el borrado incluso si Oberiz no tiene acceso al NAS o usa inventario Cinetta.
+Un informe Cinetta solo actualiza datos de Oberiz.
 No utilizar `superseded` como instrucción de borrado sin validación independiente.
 
 ## Credenciales y copias

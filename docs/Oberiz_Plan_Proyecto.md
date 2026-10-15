@@ -1,6 +1,9 @@
 # Oberiz — Plan de producto
 
-## Base v1.0.2
+## Base v1.0.3
+
+Incluye configuración inicial remota, borrado manual confirmado con archivos
+opcional, pausa Cinetta optativa desactivada por defecto y versión visible dinámica.
 
 Biblioteca de películas y series, automatización/RSS, perfiles, qBittorrent,
 indexadores, API y seis idiomas. Inventario Cinetta o escaneo local de solo

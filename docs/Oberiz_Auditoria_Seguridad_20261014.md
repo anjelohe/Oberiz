@@ -2,6 +2,12 @@
 
 ## Estado después de las correcciones
 
+Actualización v1.0.3: se retira la obligación de crear la primera contraseña
+desde loopback. Configurar inicialmente en una red de confianza. El borrado
+manual de archivos mediante qBittorrent se permite con confirmación y casilla
+desmarcada; las políticas automáticas y rechazo conservan los datos. Los puntos
+de abajo documentan la auditoría y las medidas iniciales, no estas revisiones.
+
 Los hallazgos siguientes describen la auditoría original. Después se han añadido:
 
 - Protección de directorios privados y sus archivos en Windows; permisos 0700

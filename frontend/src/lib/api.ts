@@ -179,6 +179,7 @@ export type RssStatus = { enabled:boolean; interval_minutes:number; configured_f
 export type Settings = {
   library_source: 'local'|'cinetta';
   last_external_report: string|null;
+  pause_on_stale_inventory: boolean;
   tmdb_api_key_set: boolean;
   tvdb_api_key_set: boolean;
   qbittorrent_host: string;

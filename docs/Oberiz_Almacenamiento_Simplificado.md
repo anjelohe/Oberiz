@@ -21,9 +21,10 @@ instalada ni modifica el NAS o los torrents existentes: hay que instalar la nuev
 2. En **Inventario de la biblioteca**, elegir **Cinetta** o **Carpetas locales**.
 3. Con Cinetta: activar la API pública v1, generar una clave y guardar; configurar
    URL/clave de Oberiz y activar el inventario en los ajustes de Cinetta.
-   Se muestra la fecha del último informe aceptado. Si nunca se recibió uno o
-   tiene más de 24 horas se retienen nuevas adquisiciones, sin escanear rutas
-   remotas ni declarar ausentes los archivos del último inventario.
+   Se muestra la fecha del último informe aceptado. Las adquisiciones continúan
+   aunque Cinetta no informe. La casilla opcional de pausa, desactivada por defecto
+   también al actualizar, permite retener nuevas adquisiciones si falta el informe
+   o tiene más de 24 horas. Se conserva el último inventario sin escanear rutas remotas.
 4. Con carpetas locales: añadir una o varias carpetas, guardar y ejecutar o
    programar el escaneo. Escanear no mueve, renombra ni borra archivos.
 5. En **Renombrado mediante qBittorrent y recuperación**, el renombrado está
@@ -115,8 +116,10 @@ no se desconectan montajes del sistema operativo ni se toca el NAS.
 
 Las políticas siguen siendo una función separada. Las políticas antiguas de
 «quitar torrent y original» se convierten en «quitar torrent conservando archivos».
-También se rechazan las peticiones manuales `delete_files=true`. Una única copia
-descargada no se trata como un original desechable después de importarla.
+El borrado manual desde Descargas permite eliminar también los archivos mediante
+una casilla desmarcada por defecto y una confirmación con aviso permanente.
+qBittorrent ejecuta esa orden incluso sin acceso de Oberiz al NAS. Las políticas
+automáticas y el rechazo de releases siguen conservando los archivos.
 
 Los campos y el endpoint de sugerencias de correspondencias antiguos se mantienen
 temporalmente por compatibilidad; este último devuelve una lista vacía y no

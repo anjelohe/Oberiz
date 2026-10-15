@@ -1,4 +1,5 @@
 import { ReactNode, useEffect, useRef, useState } from 'react'
+import { version } from '../../package.json'
 import { Icon } from './Icon'
 import { AddMediaModal } from './AddMediaModal'
 import { useTranslation, t, tf } from '../lib/i18n'
@@ -94,7 +95,7 @@ export function Layout({
       </label>
       <div className="sidebar-theme-icons" role="group" aria-label={t("Theme")}><button className={theme==='dark'?'active':''} type="button" onClick={()=>onTheme('dark')} title={t("Dark theme")} aria-label={t("Dark theme")} aria-pressed={theme==='dark'}>◐</button><button className={theme==='middle'?'active':''} type="button" onClick={()=>onTheme('middle')} title={t("Middle theme")} aria-label={t("Middle theme")} aria-pressed={theme==='middle'}>●</button><button className={theme==='light'?'active':''} type="button" onClick={()=>onTheme('light')} title={t("Light theme")} aria-label={t("Light theme")} aria-pressed={theme==='light'}>☀</button></div>
       <button className={`system-ok ${systemStatus==='warn'?'warn':systemStatus==='unknown'?'unknown':''}`} onClick={()=>navigate('settings')} title={t("Open system diagnostics")}><span/> {t(systemLabel)}</button>
-      <div className="version"><b>v1.1.1</b><span>{t("Self-hosted Media Automation")}</span></div>
+      <div className="version"><b>v{version}</b><span>{t("Self-hosted Media Automation")}</span></div>
     </aside>
 
     <main className="main">

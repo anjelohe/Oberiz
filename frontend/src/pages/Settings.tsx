@@ -90,6 +90,7 @@ export function Settings(){
         movie_library_paths:data!.movie_library_paths,
         series_library_paths:data!.series_library_paths,
         library_source:data!.library_source,
+        pause_on_stale_inventory:data!.pause_on_stale_inventory,
         library_scan_enabled:data!.library_scan_enabled,
         library_scan_interval_minutes:data!.library_scan_interval_minutes,
         custom_indexers_path:data!.custom_indexers_path,

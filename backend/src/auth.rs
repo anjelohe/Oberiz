@@ -430,8 +430,6 @@ pub struct PasswordRequest {
 }
 pub async fn set_password(
     State(state): State<AppState>,
-    ConnectInfo(address): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Json(payload): Json<PasswordRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     static PASSWORD_CHANGE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -440,10 +438,6 @@ pub async fn set_password(
         .await
         .map_err(internal)?
         .filter(|value| !value.is_empty());
-    if existing_hash.is_none() && !initial_setup_is_local(address, &headers) {
-        return Err((StatusCode::FORBIDDEN,
-            "Initial password setup must be completed directly on the Oberiz computer using http://127.0.0.1:2032 (not through a proxy).".into()));
-    }
     let current_password = payload.current_password.unwrap_or_default();
     if current_password.len() > MAX_PASSWORD_LEN {
         return Err((
@@ -485,28 +479,59 @@ pub async fn set_password(
     Ok(StatusCode::NO_CONTENT)
 }
 
-fn initial_setup_is_local(address: SocketAddr, headers: &HeaderMap) -> bool {
-    address.ip().is_loopback()
-        && !headers.contains_key("x-forwarded-for")
-        && !headers.contains_key("x-real-ip")
-        && !trusted_proxies().contains(&address.ip())
-}
-
 #[cfg(test)]
 mod rate_limit_key_tests {
     use super::rate_limit_key;
 
-    #[test]
-    fn first_setup_refuses_network_clients_and_forwarded_loopback() {
-        let mut headers = axum::http::HeaderMap::new();
-        let local = "127.0.0.1:1234".parse().unwrap();
-        assert!(super::initial_setup_is_local(local, &headers));
-        assert!(!super::initial_setup_is_local(
-            "192.0.2.1:1234".parse().unwrap(),
-            &headers
-        ));
-        headers.insert("x-forwarded-for", "127.0.0.1".parse().unwrap());
-        assert!(!super::initial_setup_is_local(local, &headers));
+    #[tokio::test]
+    async fn setup_is_not_tied_to_client_address_and_changes_require_current_password() {
+        use axum::{Json, extract::State, http::StatusCode};
+        use std::sync::Arc;
+        use tokio::sync::Mutex;
+
+        let db = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&db).await.unwrap();
+        let state = crate::AppState {
+            db,
+            http: reqwest::Client::new(),
+            automation_runtime: Default::default(),
+            download_client: Arc::new(crate::download_client::QBittorrentClient),
+            torrent_list_cache: Arc::new(Mutex::new(None)),
+            grab_lock: Arc::new(Mutex::new(())),
+        };
+        let request = |current: Option<&str>, new: &str| {
+            Json(super::PasswordRequest {
+                current_password: current.map(str::to_owned),
+                new_password: Some(new.into()),
+            })
+        };
+        // Setup deliberately needs no client IP or proxy headers.
+        assert_eq!(
+            super::set_password(State(state.clone()), request(None, "test-password-123"))
+                .await
+                .unwrap(),
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            super::set_password(State(state.clone()), request(None, "replacement-123"))
+                .await
+                .unwrap_err()
+                .0,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            super::set_password(
+                State(state),
+                request(Some("test-password-123"), "replacement-123")
+            )
+            .await
+            .unwrap(),
+            StatusCode::NO_CONTENT
+        );
     }
 
     #[test]

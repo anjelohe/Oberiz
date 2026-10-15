@@ -1,6 +1,6 @@
 # Documentación de Oberiz
 
-- [Versión 1.0.2](releases/v1.0.2.md): cambios, actualización y límites.
+- [Versión 1.0.3](releases/v1.0.3.md): configuración remota, borrado manual confirmado, pausa opcional y versión visible corregida.
 - [Almacenamiento simplificado](Oberiz_Almacenamiento_Simplificado.md): flujo de v1.0.2, renombrado por qBittorrent desactivado por defecto, inventario Cinetta/local y recuperación detenida.
 
 - [Memoria del proyecto](Oberiz_Memoria_Actualizada.md): arquitectura, funciones, decisiones y verificaciones.

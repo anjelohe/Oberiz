@@ -247,7 +247,7 @@ export function Downloads() {
   const [category, setCategory] = useState('')
   const [busyHash, setBusyHash] = useState<string | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Torrent | null>(null)
-  const deleteFiles = false
+  const [deleteFiles, setDeleteFiles] = useState(false)
   // Same confirmation dialog as delete, but also records the release as rejected.
   const [rejectMode, setRejectMode] = useState(false)
   const [rejectedReleases, setRejectedReleases] = useState<RejectedRelease[]>([])
@@ -533,7 +533,7 @@ export function Downloads() {
 
     try {
       if (rejectMode) {
-        await rejectTorrent(deleteTarget.hash, deleteFiles)
+        await rejectTorrent(deleteTarget.hash, false)
       } else {
         await action(
           `/api/downloads/${deleteTarget.hash}?delete_files=${deleteFiles ? 'true' : 'false'}`,
@@ -912,6 +912,7 @@ export function Downloads() {
                             onClick={() => {
 
                               setRejectMode(true)
+                              setDeleteFiles(false)
                               setDeleteTarget(torrent)
                             }}
                             title={t("Reject this release: remove it and never pick it again")}
@@ -927,6 +928,7 @@ export function Downloads() {
                           onClick={() => {
 
                             setRejectMode(false)
+                            setDeleteFiles(false)
                             setDeleteTarget(torrent)
                           }}
                           title={t("Delete")}
@@ -1102,13 +1104,24 @@ export function Downloads() {
               </p>
             )}
 
-            <p className="dl-delete-hint">{t("Downloaded files are always kept.")}</p>
+            {rejectMode ? (
+              <p className="dl-delete-hint">{t("Downloaded files are always kept.")}</p>
+            ) : (
+              <>
+                <label className="dl-check">
+                  <input type="checkbox" checked={deleteFiles} disabled={busyHash !== null}
+                    onChange={(event) => setDeleteFiles(event.target.checked)} />
+                  {t("Also delete downloaded files")}
+                </label>
+                {deleteFiles && <p className="dl-delete-hint" role="alert">{t("This permanently removes the data from disk.")}</p>}
+              </>
+            )}
 
             <div className="dl-modal-actions">
               <button type="button" className="dl-secondary" onClick={() => setDeleteTarget(null)}>
                 {t("Cancel")}
               </button>
-              <button type="button" className="dl-danger-button" onClick={() => void confirmDelete()}>
+              <button type="button" className="dl-danger-button" disabled={busyHash !== null} onClick={() => void confirmDelete()}>
                 {rejectMode
                   ? deleteFiles ? t("Reject + delete files") : t("Reject release")
                   : deleteFiles ? t("Delete torrent + files") : t("Delete torrent")}

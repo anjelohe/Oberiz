@@ -1,5 +1,14 @@
 # Oberiz — Memoria del proyecto
 
+## Ajustes acordados — 2026-10-15 · v1.0.3
+
+Primera contraseña configurable remotamente, sin exigir loopback; configurar en
+red de confianza. Borrado manual de torrent con casilla de archivos desmarcada y
+aviso permanente; automatismos conservan datos. Pausa por inventario Cinetta
+ausente/antiguo opcional y desactivada por defecto, también al actualizar.
+Barra lateral usa la versión de package.json en lugar de un literal obsoleto.
+Estos ajustes sustituyen las restricciones de v1.0.2 descritas debajo.
+
 ## Cambio de arquitectura — 2026-10-15 · v1.0.2
 
 La arquitectura de v1.0.2 está documentada en
@@ -22,7 +31,7 @@ la API de qBittorrent, que bloquea destinos ocupados y falla de forma segura cua
 la consulta no está disponible. No hay garantía atómica frente a otros escritores.
 Los apartados siguientes describen el estado publicado anterior, no el flujo nuevo.
 
-Versión de producto: **1.0.2**. La descripción histórica de abajo parte de la primera versión **1.0.0**; los cambios del 15 de octubre están resumidos arriba. La publicación no actualiza automáticamente las instalaciones existentes.
+Versión de producto: **1.0.3**. La descripción histórica de abajo parte de la primera versión **1.0.0**; los cambios del 15 de octubre están resumidos arriba. La publicación no actualiza automáticamente las instalaciones existentes.
 
 ## Propósito y arquitectura
 

@@ -2,6 +2,7 @@
 export const spanish: Record<string, string> = Object.fromEntries(String.raw`
 Dashboard|Inicio
 Library inventory|Inventario de la biblioteca
+Pause new acquisitions if Cinetta inventory is missing or older than 24 hours|Pausar nuevas adquisiciones si no hay inventario de Cinetta o tiene más de 24 horas
 qBittorrent does not provide atomic no-overwrite renaming. Visible destinations are checked; do not run other organizers on these folders simultaneously.|qBittorrent no ofrece un renombrado atómico sin reemplazo. Se comprueban los destinos visibles; no ejecutes otros organizadores sobre estas carpetas al mismo tiempo.
 Choose one source. Download destinations are managed in qBittorrent categories.|Elige el origen del inventario. Los destinos de descarga se configuran en las categorías de qBittorrent.
 Receive the library through the public API. No NAS access required.|Recibe la biblioteca por la API pública. No requiere acceso al NAS.
