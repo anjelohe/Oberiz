@@ -1,6 +1,8 @@
 // Interface copy only: media titles, paths, tracker definitions and protocol values are untouched.
 export const spanish: Record<string, string> = Object.fromEntries(String.raw`
 Missing content reports|Informes de contenido faltante
+Reports use the last inventory Cinetta sent to Oberiz. Updating a report does not request a new sync or require another API key.|Los informes usan el último inventario que Cinetta ha enviado a Oberiz. Actualizar un informe no solicita una nueva sincronización ni requiere otra clave API.
+No Cinetta inventory received yet. Enable inventory sending in Cinetta using the existing Oberiz API key.|Todavía no se ha recibido el inventario de Cinetta. Activa su envío en Cinetta usando la clave API de Oberiz que ya tienes.
 Read-only reports from Cinetta, separate from the managed library.|Informes de solo lectura desde Cinetta, separados de la biblioteca gestionada.
 Cinetta URL|Dirección de Cinetta
 Cinetta inventory read key|Clave de lectura del inventario de Cinetta

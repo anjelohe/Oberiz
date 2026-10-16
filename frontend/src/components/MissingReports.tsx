@@ -7,7 +7,7 @@ type Item={title:string;season_number:number|null;episode_number:number|null;rel
 type Report={state:string;job_id:string;generated_at:string;inventory_generated_at:string|null;filters:Filters;warnings:string[];totals:{groups:number|null;episodes:number|null;movies:number|null};groups:Array<{type:string;tmdb_id:number;title:string;items:Item[]}>;page:number;next_page:number|null}
 export type MissingTarget={scope:'series'|'collections'|'series_one'|'collection_one';tmdb_id?:number;title?:string}
 const messages:Record<string,string>={
-  cinetta_not_configured:'Configure Cinetta inventory access in Settings first.',
+  cinetta_inventory_not_received:'No Cinetta inventory received yet. Enable inventory sending in Cinetta using the existing Oberiz API key.',
   tmdb_not_configured:'TMDB is not configured.',
   report_not_found:'No saved report. Use Update to start a check.',
   cinetta_access_denied:'Cinetta rejected the inventory key.',

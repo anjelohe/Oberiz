@@ -1,5 +1,38 @@
 # Oberiz — Project memory
 
+## v1.0.4 rebuild authorized — October 16, 2026
+
+The user explicitly requests republishing the shared-inventory changes as the
+existing v1.0.4, updating memory and project documentation. This supersedes the
+local-only publication restriction below. Commit the changes, move only the
+v1.0.4 tag with an expected-old-value check, and trigger the full release workflow
+to regenerate Windows/Linux/Docker distributions. Do not rewrite main history,
+delete older releases, deploy the installed service, or restart qBittorrent.
+Release notes remain English. Until the workflow completes, existing downloadable
+assets are from the previous build and must not be described as regenerated.
+
+## Shared received inventory — local change after v1.0.4, October 16, 2026
+
+User requests one integration key, reusing Cinetta's existing inventory PUT.
+Missing reports no longer require a Cinetta URL or library:read token and never
+query Cinetta. Settings fields and backend credentials removed; migration 0024
+deletes obsolete connection settings and adds an independent normalized received
+inventory cache, including unmanaged titles. No titles, requests or downloads
+are created for these entries. Additive/offline/empty-root protections retained.
+Refresh uses the last accepted cache and shows receipt time. First use after
+upgrade requires the next normal inventory submission; old managed-title records
+cannot reconstruct previously ignored content. TMDB remains the metadata source.
+External report endpoints still use the existing Oberiz key with opt-in permission.
+No new release, tag, push, installed-service deployment or qBittorrent restart is
+authorized by this local implementation request. Historical sections below
+describe the original two-direction v1.0.4 integration, superseded by this change.
+
+Verification: 125 unit tests passed, one ignored; two migration tests passed;
+five frontend suites and build passed; Rust formatting and strict Clippy passed.
+Regression coverage verifies no outbound Cinetta inventory requests, no second-key
+settings, unmanaged identity retention, multi-episode coverage, offline retention,
+confirmed omission and reidentification without creating managed titles or jobs.
+
 ## English public documentation — October 16, 2026
 
 The user requests English throughout the public GitHub repository. Translate documentation, repository metadata, and release notes without changing application localization, protocol identifiers, release tags, or installers. Retain historical filenames to preserve links. The v1.0.4 release notes were already translated in commit `5bcef71`; this pass covers the remaining documentation and older releases.

@@ -493,6 +493,7 @@ async fn apply(state: &AppState, report: LibraryReport) -> Result<LibraryReportR
     }
     sqlx::query("INSERT INTO settings(key,value) VALUES('library.last_external_report',strftime('%Y-%m-%dT%H:%M:%SZ','now')) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
         .execute(&mut *tx).await.map_err(internal)?;
+    cache_received_inventory(&mut tx, &report).await?;
     tx.commit().await.map_err(internal)?;
 
     // Inventory is informational only: no deletion proposals or filename-based
@@ -527,6 +528,66 @@ async fn apply(state: &AppState, report: LibraryReport) -> Result<LibraryReportR
 /// client says it cannot read, and those it says it can read but that came
 /// back with no files at all although they had some before — an empty mount
 /// point looks exactly like that (library scans refuse it the same way).
+async fn cache_received_inventory(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    report: &LibraryReport,
+) -> Result<(), Error> {
+    use serde_json::{Value, json};
+    use std::collections::BTreeMap;
+    let previous: Option<String> =
+        sqlx::query_scalar("SELECT items_json FROM received_library_inventory WHERE id=1")
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(internal)?;
+    let mut saved: BTreeMap<String, Vec<Value>> = previous
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(internal)?
+        .unwrap_or_default();
+    let mut incoming = BTreeMap::<String, Vec<Value>>::new();
+    for movie in &report.movies {
+        incoming
+            .entry(format!("{PREFIX}{}", movie.file.path))
+            .or_default()
+            .push(json!({"type":"movie","tmdb_id":movie.tmdb_id}));
+    }
+    for episode in &report.episodes {
+        incoming.entry(format!("{PREFIX}{}", episode.file.path)).or_default()
+            .push(json!({"type":"episode","series_tmdb_id":episode.series_tmdb_id,"season_number":episode.season,"episode_number":episode.episode,"episode_number_end":episode.episode_end}));
+    }
+    let reported: HashSet<&str> = incoming.keys().map(String::as_str).collect();
+    let offline: Vec<String> = offline_roots(&report.roots, saved.keys(), &reported)
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    // Match the receiver's additive/offline semantics, including unknown titles.
+    saved.retain(|path, _| {
+        let real = path.trim_start_matches(PREFIX);
+        reported.contains(path.as_str())
+            || !report.allow_large_removal
+            || offline
+                .iter()
+                .any(|root| library_roots::contains_path(root, real))
+            || !report
+                .roots
+                .iter()
+                .any(|root| root.available && library_roots::contains_path(&root.path, real))
+    });
+    saved.extend(incoming);
+    let count: usize = saved.values().map(Vec::len).sum();
+    let encoded = serde_json::to_string(&saved).map_err(internal)?;
+    if count > 500_000 || encoded.len() > 32 * 1024 * 1024 {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "Received inventory cache limit exceeded".into(),
+        ));
+    }
+    sqlx::query("INSERT INTO received_library_inventory(id,received_at,items_json) VALUES(1,strftime('%Y-%m-%dT%H:%M:%fZ','now'),?) ON CONFLICT(id) DO UPDATE SET received_at=excluded.received_at,items_json=excluded.items_json")
+        .bind(encoded).execute(&mut **tx).await.map_err(internal)?;
+    Ok(())
+}
+
 fn offline_roots<'a>(
     roots: &'a [ReportedRoot],
     previous: impl Iterator<Item = &'a String> + Clone,
@@ -1433,5 +1494,84 @@ mod tests {
             last_component("/downloads/Film.2020.2160p/").as_deref(),
             Some("Film.2020.2160p")
         );
+    }
+
+    #[tokio::test]
+    async fn received_inventory_keeps_unmanaged_titles_without_creating_library_entries() {
+        let state = state().await;
+        let mut counts = Vec::new();
+        for table in [
+            "movies",
+            "series",
+            "media_requests",
+            "download_jobs",
+            "media_files",
+        ] {
+            counts.push(
+                sqlx::query_scalar::<_, i64>(&format!("SELECT count(*) FROM {table}"))
+                    .fetch_one(&state.db)
+                    .await
+                    .unwrap(),
+            );
+        }
+        let mut report = empty_report();
+        report.movies.push(movie(12345, "/media/unknown.mkv", 1080));
+        let mut unmanaged = episode(1, Some(2), "/media/series.mkv");
+        unmanaged.series_tmdb_id = 987654;
+        report.episodes.push(unmanaged);
+        apply(&state, report).await.unwrap();
+        let read_cache = || {
+            sqlx::query_scalar::<_, String>(
+                "SELECT items_json FROM received_library_inventory WHERE id=1",
+            )
+        };
+        let cached: serde_json::Value =
+            serde_json::from_str(&read_cache().fetch_one(&state.db).await.unwrap()).unwrap();
+        assert_eq!(cached["cinetta:/media/unknown.mkv"][0]["tmdb_id"], 12345);
+        assert_eq!(
+            cached["cinetta:/media/series.mkv"][0]["episode_number_end"],
+            2
+        );
+        for (index, table) in [
+            "movies",
+            "series",
+            "media_requests",
+            "download_jobs",
+            "media_files",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let count: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM {table}"))
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+            assert_eq!(count, counts[index], "Unexpected mutation of {table}");
+        }
+        // Omission, offline disks and suddenly empty roots must preserve presence.
+        let mut offline = empty_report();
+        offline.allow_large_removal = true;
+        offline.roots.push(ReportedRoot {
+            path: "/media".into(),
+            available: false,
+        });
+        apply(&state, offline).await.unwrap();
+        let cached: serde_json::Value =
+            serde_json::from_str(&read_cache().fetch_one(&state.db).await.unwrap()).unwrap();
+        assert_eq!(cached.as_object().unwrap().len(), 2);
+        let mut replacement = empty_report();
+        replacement.allow_large_removal = true;
+        replacement.roots.push(ReportedRoot {
+            path: "/media".into(),
+            available: true,
+        });
+        replacement
+            .movies
+            .push(movie(99999, "/media/unknown.mkv", 1080));
+        apply(&state, replacement).await.unwrap();
+        let cached: serde_json::Value =
+            serde_json::from_str(&read_cache().fetch_one(&state.db).await.unwrap()).unwrap();
+        assert_eq!(cached.as_object().unwrap().len(), 1);
+        assert_eq!(cached["cinetta:/media/unknown.mkv"][0]["tmdb_id"], 99999);
     }
 }

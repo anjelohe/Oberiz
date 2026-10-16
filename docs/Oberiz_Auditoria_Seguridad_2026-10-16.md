@@ -1,5 +1,22 @@
 # Security audit before 1.0.4 — October 16, 2026
 
+## Local architectural follow-up after release
+
+The user requested reusing the existing incoming inventory integration instead of
+adding a second Cinetta connection/key. Missing reports now consume an immutable
+copy of the locally received inventory. Migration 0024 removes obsolete URL/key
+settings and stores normalized identities for all reported titles independently
+of managed media, with bounded storage and additive/offline safeguards. Cache
+updates occur in the inventory acceptance transaction; errors roll back the PUT.
+No outbound Cinetta request remains. Report refresh does not request a new scan.
+The existing key and external-report opt-in remain unchanged. This local change
+has passed 125 unit tests, two migration tests, frontend checks/build and Clippy;
+one optional live test remains ignored. No new publication or service deployment.
+The historical outbound library:read design below is superseded by this change.
+The user subsequently authorized republishing this change under the existing
+v1.0.4 tag and rebuilding all distributions. The local-only restriction above
+is superseded for publication, but installed-service deployment remains excluded.
+
 ## Delivery traceability
 
 Fixes delivered to GitHub on `main`, commit `ca0d1d3`, tag `v1.0.4`, with an atomic push. CI `38929148251` and installers `38929148331` were recorded as running during the initial delivery check. The release was later confirmed available with five assets when its notes were translated. No service deployment or qBittorrent restart. Real memory consumption remains to be checked. Post-delivery documentation does not modify the release tag.

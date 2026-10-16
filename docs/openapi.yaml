@@ -88,7 +88,7 @@ paths:
         "400": {description: Invalid filters or missing idempotency key}
         "401": {description: Invalid API key}
         "403": {description: Public API or reports permission disabled}
-        "409": {description: Cinetta not configured or conflicting idempotency key}
+        "409": {description: No received Cinetta inventory yet or conflicting idempotency key}
         "428": {description: TMDB not configured}
         "429": {description: Too many concurrent jobs}
   /library:

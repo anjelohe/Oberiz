@@ -5,6 +5,10 @@ const vm=require('node:vm')
 const ts=require('typescript')
 const crypto=require('node:crypto')
 const source=fs.readFileSync(path.join(__dirname,'../src/components/MissingReports.tsx'),'utf8')
+const settingsSource=fs.readFileSync(path.join(__dirname,'../src/pages/Settings.tsx'),'utf8')
+assert.ok(!settingsSource.includes('cinetta_inventory_key'))
+assert.ok(!settingsSource.includes('cinetta_url'))
+assert.ok(settingsSource.includes('Reports use the last inventory Cinetta sent to Oberiz.'))
 const code=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText
 const values=[],calls=[],effects=[]
 let cursor=0,closed=false

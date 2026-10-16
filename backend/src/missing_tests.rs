@@ -92,7 +92,7 @@ async fn terminal_reports_are_retained_with_quota_and_previous_valid_report() {
     let error = refresh_inner(state.clone(), headers, filters("all", None), None)
         .await
         .unwrap_err();
-    assert_eq!(error.1, "cinetta_not_configured");
+    assert_eq!(error.1, "cinetta_inventory_not_received");
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM missing_reports")
         .fetch_one(&state.db)
         .await
@@ -167,15 +167,6 @@ fn strict_filters_dates_and_urls() {
     ] {
         assert!(!released(&date, "2026-10-16"));
     }
-    assert!(validate_base("http://localhost:3000/cinetta").is_ok());
-    for url in [
-        "file:///private",
-        "https://user:password@server",
-        "http://server/?key=secret",
-        "http://server/#key",
-    ] {
-        assert!(validate_base(url).is_err());
-    }
 }
 
 #[test]
@@ -239,8 +230,17 @@ async fn providers() -> (
                 .timeout(Duration::from_secs(5))
                 .build()
                 .unwrap(),
-            inventory_url: format!("http://{address}/inventory"),
-            inventory_key: "synthetic-inventory-key".into(),
+            inventory: Inventory {
+                items: vec![
+                    json!({"type":"movie","tmdb_id":10}),
+                    json!({"type":"episode","series_tmdb_id":20,"season_number":1,"episode_number":1}),
+                    json!({"type":"episode","series_tmdb_id":20,"season_number":1,"episode_number":2,"episode_number_end":3}),
+                ],
+                generated: json!("2026-10-16T00:00:00Z"),
+                version: json!("fixed_version"),
+                warnings: BTreeSet::new(),
+                complete: false,
+            },
             tmdb_base: format!("http://{address}/3"),
             tmdb_key: "synthetic-metadata-key".into(),
         },
@@ -287,7 +287,7 @@ async fn real_http_comparison_excludes_future_unknown_and_offline_indexed_items_
             .iter()
             .filter(|v| *v == "inventory")
             .count(),
-        2
+        0
     );
     let mut missing = filters("series_one", None);
     missing.tvdb_id = Some(123);
@@ -463,25 +463,28 @@ async fn external_http_requires_key_and_explicit_permission_before_json_or_jobs(
 }
 
 #[tokio::test]
-async fn inventory_credentials_are_not_returned_and_invalid_urls_do_not_partially_save() {
+async fn missing_reports_need_received_inventory_not_a_second_key() {
     let state = state().await;
-    settings::set_value(&state.db, "cinetta.inventory_key", "private-synthetic-key")
+    assert_eq!(
+        Sources::configured(&state).await.err().unwrap().1,
+        "cinetta_inventory_not_received"
+    );
+    settings::set_value(&state.db, "cinetta.inventory_key", "obsolete-secret")
         .await
         .unwrap();
     let Json(value) = settings::get_settings(State(state.clone())).await.unwrap();
     let json = serde_json::to_string(&value).unwrap();
-    assert!(value.cinetta_inventory_key_set);
-    assert!(!value.missing_reports_enabled);
-    assert!(!json.contains("private-synthetic-key"));
-    let request = settings::UpdateSettingsRequest {
-        cinetta_url: Some("http://user:secret@localhost".into()),
-        missing_reports_enabled: Some(true),
-        ..Default::default()
-    };
-    assert!(
-        settings::update_settings(State(state.clone()), Json(request))
-            .await
-            .is_err()
-    );
-    assert!(authorize_external(&state).await.is_err());
+    assert!(!json.contains("obsolete-secret"));
+    assert!(!json.contains("cinetta_url"));
+    assert!(!json.contains("cinetta_inventory_key"));
+    sqlx::query("INSERT INTO received_library_inventory VALUES(1,'2026-10-16T00:00:00Z','{}')")
+        .execute(&state.db)
+        .await
+        .unwrap();
+    settings::set_value(&state.db, "tmdb.api_key", "synthetic")
+        .await
+        .unwrap();
+    let sources = Sources::configured(&state).await.unwrap();
+    assert!(sources.inventory.items.is_empty());
+    assert_eq!(sources.inventory.generated, "2026-10-16T00:00:00Z");
 }

@@ -1,4 +1,5 @@
-//! Read-only remote comparison. Writes are restricted to independent report tables.
+//! Read-only comparison of received inventory with remote metadata.
+//! Writes are restricted to independent report tables.
 #[cfg(test)]
 #[path = "missing_tests.rs"]
 mod tests;
@@ -373,46 +374,32 @@ fn page_report(mut report: Value, page: usize) -> Result<Value> {
     Ok(report)
 }
 
-pub(crate) fn validate_base(raw: &str) -> Result<url::Url> {
-    let url =
-        url::Url::parse(raw).map_err(|_| err(StatusCode::BAD_REQUEST, "invalid_cinetta_url"))?;
-    if !["http", "https"].contains(&url.scheme())
-        || url.host_str().is_none()
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.query().is_some()
-        || url.fragment().is_some()
-    {
-        return Err(err(StatusCode::BAD_REQUEST, "invalid_cinetta_url"));
-    }
-    Ok(url)
-}
 #[derive(Clone)]
 struct Sources {
     client: reqwest::Client,
-    inventory_url: String,
-    inventory_key: String,
+    inventory: Inventory,
     tmdb_base: String,
     tmdb_key: String,
 }
 impl Sources {
     async fn configured(state: &AppState) -> Result<Self> {
-        let url = settings::get_value(&state.db, "cinetta.url")
-            .await
-            .map_err(db_error)?
-            .unwrap_or_default();
-        let key = settings::get_value(&state.db, "cinetta.inventory_key")
-            .await
-            .map_err(db_error)?
-            .unwrap_or_default();
-        if url.is_empty() || key.is_empty() {
-            return Err(err(StatusCode::CONFLICT, "cinetta_not_configured"));
-        }
-        let mut base = validate_base(&url)?;
-        base.set_path(&format!(
-            "{}/api/v1/library/inventory",
-            base.path().trim_end_matches('/')
-        ));
+        let row: Option<(String, String)> = sqlx::query_as(
+            "SELECT received_at,items_json FROM received_library_inventory WHERE id=1",
+        )
+        .fetch_optional(&state.db)
+        .await
+        .map_err(db_error)?;
+        let (received, encoded) =
+            row.ok_or_else(|| err(StatusCode::CONFLICT, "cinetta_inventory_not_received"))?;
+        let saved: BTreeMap<String, Vec<Value>> = serde_json::from_str(&encoded)
+            .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "invalid_inventory"))?;
+        let inventory = Inventory {
+            items: saved.into_values().flatten().collect(),
+            generated: json!(received),
+            version: Value::Null,
+            warnings: BTreeSet::new(),
+            complete: false,
+        };
         let tmdb_key = settings::get_value(&state.db, "tmdb.api_key")
             .await
             .map_err(db_error)?
@@ -430,8 +417,7 @@ impl Sources {
             .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "http_client_error"))?;
         Ok(Self {
             client,
-            inventory_url: base.into(),
-            inventory_key: key,
+            inventory,
             tmdb_base: "https://api.themoviedb.org/3".into(),
             tmdb_key,
         })
@@ -486,105 +472,13 @@ async fn bounded_json(mut response: reqwest::Response, limit: usize, code: &str)
         .map_err(|_| err(StatusCode::BAD_GATEWAY, "invalid_provider_response"))
 }
 
+#[derive(Clone)]
 struct Inventory {
     items: Vec<Value>,
     generated: Value,
     version: Value,
     warnings: BTreeSet<String>,
     complete: bool,
-}
-async fn inventory(s: &Sources, filters: &Filters) -> Result<Inventory> {
-    let mut result = Inventory {
-        items: Vec::new(),
-        generated: Value::Null,
-        version: Value::Null,
-        warnings: BTreeSet::new(),
-        complete: false,
-    };
-    let mut cursor: Option<String> = None;
-    let mut snapshot = Value::Null;
-    let mut seen = BTreeSet::new();
-    let mut bytes = 0;
-    for _ in 0..1500 {
-        let kind = if filters.scope.starts_with("series") {
-            "series"
-        } else if filters.scope.starts_with("collection") {
-            "movies"
-        } else {
-            "all"
-        };
-        let mut request = s
-            .client
-            .get(&s.inventory_url)
-            .bearer_auth(&s.inventory_key)
-            .query(&[("type", kind), ("limit", "1000")]);
-        if filters.scope == "series_one"
-            && let Some(id) = filters.tmdb_id
-        {
-            request = request.query(&[("series_tmdb_id", id)]);
-        }
-        if let Some(cursor) = &cursor {
-            request = request.query(&[("cursor", cursor)]);
-        }
-        let response = request
-            .send()
-            .await
-            .map_err(|_| err(StatusCode::BAD_GATEWAY, "cinetta_unavailable"))?;
-        let code = match response.status().as_u16() {
-            401 | 403 => "cinetta_access_denied",
-            404 | 405 | 501 => "cinetta_inventory_unsupported",
-            410 => "cinetta_snapshot_expired",
-            429 => "cinetta_snapshot_capacity",
-            _ => "cinetta_unavailable",
-        };
-        let page = bounded_json(response, 4 * 1024 * 1024, code).await?;
-        if page["contract_version"] != 1
-            || !page["items"].is_array()
-            || !page["snapshot_id"].is_string()
-            || !page["inventory_version"].is_string()
-        {
-            return Err(err(StatusCode::BAD_GATEWAY, "invalid_inventory"));
-        }
-        if cursor.is_none() {
-            snapshot = page["snapshot_id"].clone();
-            result.generated = page["generated_at"].clone();
-            result.version = page["inventory_version"].clone();
-            result.complete = page["complete"] == true;
-        } else if page["snapshot_id"] != snapshot || page["inventory_version"] != result.version {
-            return Err(err(StatusCode::BAD_GATEWAY, "inventory_snapshot_changed"));
-        }
-        for warning in page["warnings"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|v| v.as_str())
-        {
-            if warning.len() <= 80 && warning.bytes().all(|b| b.is_ascii_lowercase() || b == b'_') {
-                result.warnings.insert(warning.into());
-            }
-        }
-        bytes += page["items"].to_string().len();
-        if bytes > 32 * 1024 * 1024
-            || result.items.len() + page["items"].as_array().unwrap().len() > 500_000
-        {
-            return Err(err(StatusCode::BAD_GATEWAY, "inventory_too_large"));
-        }
-        result
-            .items
-            .extend(page["items"].as_array().unwrap().iter().cloned());
-        cursor = match &page["next_cursor"] {
-            Value::Null => None,
-            Value::String(v) if v.len() <= 160 && !v.is_empty() => Some(v.clone()),
-            _ => return Err(err(StatusCode::BAD_GATEWAY, "invalid_inventory_cursor")),
-        };
-        if cursor.is_none() {
-            return Ok(result);
-        }
-        if !seen.insert(cursor.clone().unwrap()) {
-            return Err(err(StatusCode::BAD_GATEWAY, "inventory_cursor_loop"));
-        }
-    }
-    Err(err(StatusCode::BAD_GATEWAY, "inventory_page_limit"))
 }
 fn positive(value: &Value) -> Option<i64> {
     value.as_i64().filter(|n| *n > 0)
@@ -632,7 +526,7 @@ fn released(value: &Value, today: &str) -> bool {
 }
 
 async fn calculate(s: &Sources, f: &Filters, today: &str, report: &mut Value) -> Result<()> {
-    let inv = inventory(s, f).await?;
+    let inv = s.inventory.clone();
     report["inventory_generated_at"] = inv.generated;
     report["inventory_version"] = inv.version;
     let mut warnings = inv.warnings;

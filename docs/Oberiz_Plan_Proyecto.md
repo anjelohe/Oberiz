@@ -1,5 +1,14 @@
 # Oberiz — Product plan
 
+## v1.0.4 rebuild: reuse received inventory
+
+Missing reports use the last Cinetta inventory already submitted through the
+existing Oberiz API/key. Remove the second connection from Settings. Migration
+0024 retains unmanaged identities independently, with additive/offline safeguards.
+Refresh recalculates, not synchronizes Cinetta. Await a normal inventory report
+after upgrade before first use. The user authorized republishing as v1.0.4 and
+rebuilding all packages; no installed-service deployment is requested.
+
 ## v1.0.4 — code uploaded, October 16, 2026
 
 Main and tag `v1.0.4` were pushed to GitHub at commit `ca0d1d3`.

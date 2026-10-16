@@ -16,8 +16,6 @@ pub(crate) fn hash_api_key(key: &str) -> String {
 
 #[derive(Debug, Serialize)]
 pub struct SettingsResponse {
-    pub cinetta_url: String,
-    pub cinetta_inventory_key_set: bool,
     pub missing_reports_enabled: bool,
     pub library_source: String,
     pub pause_on_stale_inventory: bool,
@@ -68,8 +66,6 @@ pub struct SettingsResponse {
 
 #[derive(Debug, Deserialize, Default)]
 pub struct UpdateSettingsRequest {
-    pub cinetta_url: Option<String>,
-    pub cinetta_inventory_key: Option<String>,
     pub missing_reports_enabled: Option<bool>,
     pub library_source: Option<String>,
     pub pause_on_stale_inventory: Option<bool>,
@@ -367,10 +363,6 @@ pub async fn get_settings(
     let overseerr_compat_enabled = boolean(&state.db, "overseerr.compat_enabled", false).await?;
 
     Ok(Json(SettingsResponse {
-        cinetta_url: text(&state.db, "cinetta.url", "").await?,
-        cinetta_inventory_key_set: !text(&state.db, "cinetta.inventory_key", "")
-            .await?
-            .is_empty(),
         missing_reports_enabled: boolean(&state.db, "api.missing_reports_enabled", false).await?,
         library_source,
         pause_on_stale_inventory: boolean(&state.db, "library.pause_on_stale_inventory", false)
@@ -435,18 +427,6 @@ pub async fn update_settings(
         None
     };
     // Reject invalid new library settings before persisting any other form field.
-    if let Some(url) = &payload.cinetta_url
-        && !url.is_empty()
-    {
-        crate::missing::validate_base(url).map_err(|e| e.0)?;
-    }
-    if payload
-        .cinetta_inventory_key
-        .as_ref()
-        .is_some_and(|s| s.len() > 255 || s.contains(['\r', '\n']))
-    {
-        return Err(StatusCode::BAD_REQUEST);
-    }
     if payload
         .library_source
         .as_deref()
@@ -627,8 +607,6 @@ pub async fn update_settings(
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     }
     set_text!(payload.library_source, "library.source");
-    set_text!(payload.cinetta_url, "cinetta.url");
-    set_text!(payload.cinetta_inventory_key, "cinetta.inventory_key");
     set_bool!(
         payload.missing_reports_enabled,
         "api.missing_reports_enabled"

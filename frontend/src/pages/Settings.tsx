@@ -35,7 +35,6 @@ function LibraryRootsEditor({title,paths,onChange}:{title:string;paths:string[];
 export function Settings(){
   useTranslation()
   const [data,setData]=useState<SettingsType|null>(null)
-  const [inventoryKey,setInventoryKey]=useState('')
   const [tmdb,setTmdb]=useState(''),[tvdb,setTvdb]=useState(''),[password,setPassword]=useState(''),[apiKey,setApiKey]=useState('')
   const [message,setMessage]=useState(''),[qbMessage,setQbMessage]=useState(''),[autoMessage,setAutoMessage]=useState(''),[rssMessage,setRssMessage]=useState('')
   const [autoRunning,setAutoRunning]=useState(false)
@@ -91,8 +90,6 @@ export function Settings(){
         movie_library_paths:data!.movie_library_paths,
         series_library_paths:data!.series_library_paths,
         library_source:data!.library_source,
-        cinetta_url:data!.cinetta_url,
-        cinetta_inventory_key:inventoryKey||null,
         missing_reports_enabled:data!.missing_reports_enabled,
         pause_on_stale_inventory:data!.pause_on_stale_inventory,
         library_scan_enabled:data!.library_scan_enabled,
@@ -121,7 +118,7 @@ export function Settings(){
       setPortalLanguage(data!.ui_language)
       document.documentElement.dataset.theme=data!.ui_theme
       window.dispatchEvent(new CustomEvent('oberiz-theme-changed',{detail:data!.ui_theme}))
-      setTmdb('');setTvdb('');setPassword('');setInventoryKey('');
+      setTmdb('');setTvdb('');setPassword('');
       const savedKey=apiKey!==''
       const saved=await getSettings()
       setData(saved);setMessage(t("Saved"))
@@ -410,9 +407,7 @@ export function Settings(){
         <div className="settings-row settings-row-full" data-settings-row="5">
         <section className="settings-section card settings-full">
           <div className="settings-title"><div><h3>{t('Missing content reports')}</h3><span>{t('Read-only reports from Cinetta, separate from the managed library.')}</span></div></div>
-          <label>{t('Cinetta URL')}<input type="url" value={data.cinetta_url??''} placeholder="http://localhost:3000" onChange={e=>setData({...data,cinetta_url:e.target.value})}/></label>
-          <label>{t('Cinetta inventory read key')}<input type="password" autoComplete="new-password" value={inventoryKey} onChange={e=>setInventoryKey(e.target.value)} placeholder={data.cinetta_inventory_key_set?t('Keep current if blank'):t('Not configured')}/></label>
-          <p className="settings-help">{t('Create a library:read key in Cinetta and enable inventory reading there. This is independent of inventory reporting to Oberiz.')}</p>
+          <p className="settings-help">{t('Reports use the last inventory Cinetta sent to Oberiz. Updating a report does not request a new sync or require another API key.')}</p>
           <label className="toggle-row"><input type="checkbox" checked={data.missing_reports_enabled??false} onChange={e=>setData({...data,missing_reports_enabled:e.target.checked})}/>{t('Allow integrations to read and refresh missing reports')}</label>
           <p className="settings-help">{t('Disabled by default. Uses the existing Oberiz API key; local report buttons do not need this external permission.')}</p>
         </section>
