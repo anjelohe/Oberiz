@@ -6,7 +6,6 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    fs::File,
     io::{Cursor, Read, Write},
     path::{Path as FsPath, PathBuf},
 };
@@ -26,6 +25,14 @@ pub struct ImportDefinitionRequest {
 }
 
 fn validate_import(content: &str) -> Result<String, (StatusCode, String)> {
+    validate_definition(content, true)
+}
+
+/// `import_id` applies the strict id rule needed when the id becomes the file
+/// name (manual imports). Catalogue entries already have their own file name,
+/// and upstream ids are not always lowercase (e.g. `Bittorrentfiles`); the
+/// loader matches any id, so rejecting them would only drop working indexers.
+fn validate_definition(content: &str, import_id: bool) -> Result<String, (StatusCode, String)> {
     let invalid = |message: &str| (StatusCode::BAD_REQUEST, message.to_owned());
     if content.len() > 512 * 1024 {
         return Err(invalid("Definition exceeds 512 KiB"));
@@ -33,7 +40,11 @@ fn validate_import(content: &str) -> Result<String, (StatusCode, String)> {
     let yaml: Value =
         serde_yaml::from_str(content).map_err(|_| invalid("Invalid YAML definition"))?;
     let id = yaml_string(&yaml, "id").ok_or_else(|| invalid("Definition requires an id"))?;
-    if id.is_empty()
+    if !import_id {
+        if id.trim().is_empty() || id.len() > 200 || id.chars().any(char::is_control) {
+            return Err(invalid("Definition requires a valid id"));
+        }
+    } else if id.is_empty()
         || id.len() > 100
         || matches!(id.as_str(), "con" | "prn" | "aux" | "nul")
         || (id.len() == 4
@@ -170,6 +181,60 @@ pub async fn import_definition(
 mod import_tests {
     use super::*;
     const DEFINITION: &str = "id: fixture\nname: Fixture\nlinks: [https://example.org/]\ncaps: {}\nsearch: {paths: []}\n";
+    #[test]
+    fn compressed_oversized_definition_is_rejected_before_any_write() {
+        let mut archive = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        archive
+            .start_file(
+                "repo/definitions/v11/oversized.yml",
+                zip::write::FileOptions::default()
+                    .compression_method(zip::CompressionMethod::Deflated),
+            )
+            .unwrap();
+        archive.write_all(&vec![b'x'; 600 * 1024]).unwrap();
+        let bytes = archive.finish().unwrap().into_inner();
+        let target = std::env::temp_dir().join("oberiz-uncreated-oversized-archive-fixture");
+        let (installed, skipped) = extract_v11(bytes, &target).unwrap();
+        assert_eq!(installed, 0);
+        assert!(skipped[0].contains("512 KiB"));
+        assert!(!target.exists());
+    }
+    #[test]
+    fn one_unusual_catalogue_entry_is_skipped_and_the_rest_installed() {
+        let mut archive = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        for (name, content) in [
+            ("repo/definitions/v11/good.yml", DEFINITION.to_string()),
+            // Real upstream ids are not always lowercase (Bittorrentfiles).
+            (
+                "repo/definitions/v11/Bittorrentfiles.yml",
+                DEFINITION.replace("id: fixture", "id: Bittorrentfiles"),
+            ),
+            ("repo/definitions/v11/broken.yml", "invalid: [".to_string()),
+        ] {
+            archive
+                .start_file(name, zip::write::FileOptions::default())
+                .unwrap();
+            archive.write_all(content.as_bytes()).unwrap();
+        }
+        let bytes = archive.finish().unwrap().into_inner();
+        let target = std::env::temp_dir().join(format!(
+            "oberiz-mixed-catalogue-fixture-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&target).unwrap();
+        let (installed, skipped) = extract_v11(bytes, &target).unwrap();
+        let mut files: Vec<_> = std::fs::read_dir(&target)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        files.sort();
+        let _ = std::fs::remove_dir_all(&target);
+        assert_eq!(installed, 2);
+        assert_eq!(skipped.len(), 1);
+        assert!(skipped[0].starts_with("broken.yml"));
+        // No temporary file is left behind.
+        assert_eq!(files, vec!["Bittorrentfiles.yml", "good.yml"]);
+    }
     #[test]
     fn accepts_valid_definition_and_rejects_unsafe_or_incomplete_input() {
         assert_eq!(validate_import(DEFINITION).unwrap(), "fixture");
@@ -310,6 +375,8 @@ pub struct IndexerListResponse {
 pub struct SyncResponse {
     pub status: &'static str,
     pub installed: usize,
+    /// Catalogue entries that could not be installed; see the history entry.
+    pub skipped: usize,
     pub folder: String,
 }
 
@@ -458,6 +525,13 @@ pub async fn list_indexers(
 pub async fn sync_upstream(
     State(state): State<AppState>,
 ) -> Result<Json<SyncResponse>, (StatusCode, String)> {
+    static SYNC_SLOT: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+    let _permit = SYNC_SLOT.try_acquire().map_err(|_| {
+        (
+            StatusCode::TOO_MANY_REQUESTS,
+            "Indexer synchronization already running".to_string(),
+        )
+    })?;
     let target = upstream_folder(&state).await?;
     tokio::fs::create_dir_all(&target).await.map_err(|e| {
         (
@@ -480,29 +554,41 @@ pub async fn sync_upstream(
         ));
     }
 
-    let bytes = response.bytes().await.map_err(|e| {
-        (
-            StatusCode::BAD_GATEWAY,
-            format!("No se pudo leer el ZIP: {e}"),
-        )
-    })?;
+    let bytes = crate::cardigann::read_capped_bytes(response, 32 * 1024 * 1024, "Indexer archive")
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, e))?;
 
     let target_clone = target.clone();
-    let installed = tokio::task::spawn_blocking(move || extract_v11(bytes.to_vec(), &target_clone))
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Error en extracción: {e}"),
-            )
-        })?
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let (installed, skipped) =
+        tokio::task::spawn_blocking(move || extract_v11(bytes.to_vec(), &target_clone))
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Error en extracción: {e}"),
+                )
+            })?
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
+    let detail = if skipped.is_empty() {
+        format!("{installed} definiciones v11 instaladas")
+    } else {
+        format!(
+            "{installed} definiciones v11 instaladas · {} omitidas: {}",
+            skipped.len(),
+            skipped
+                .iter()
+                .take(10)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("; ")
+        )
+    };
     history::record(
         &state.db,
         "indexers.synced",
         "Prowlarr/Indexers sincronizado",
-        Some(&format!("{installed} definiciones v11 instaladas")),
+        Some(&detail),
         "info",
     )
     .await;
@@ -510,6 +596,7 @@ pub async fn sync_upstream(
     Ok(Json(SyncResponse {
         status: "ok",
         installed,
+        skipped: skipped.len(),
         folder: target.display().to_string(),
     }))
 }
@@ -1079,13 +1166,24 @@ async fn scan_folder(
     Ok(())
 }
 
-fn extract_v11(bytes: Vec<u8>, target: &FsPath) -> Result<usize, String> {
+/// Installs every acceptable v11 definition from the catalogue archive.
+/// A single unusual entry (unsafe name, oversized, invalid) is skipped and
+/// reported instead of aborting: otherwise one upstream file would block every
+/// later synchronization and leave the catalogue half-updated. Only problems
+/// with the archive itself (corrupt ZIP, entry count, total expanded size,
+/// filesystem errors) abort the whole sync.
+fn extract_v11(bytes: Vec<u8>, target: &FsPath) -> Result<(usize, Vec<String>), String> {
     let reader = Cursor::new(bytes);
     let mut archive = ZipArchive::new(reader).map_err(|e| e.to_string())?;
     let mut installed = 0usize;
+    let mut skipped = Vec::new();
+    if archive.len() > 20_000 {
+        return Err("Archive has too many entries".into());
+    }
+    let mut expanded = 0u64;
 
     for i in 0..archive.len() {
-        let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
+        let entry = archive.by_index(i).map_err(|e| e.to_string())?;
         let name = entry.name().replace('\\', "/");
 
         if !name.contains("/definitions/v11/") {
@@ -1095,23 +1193,81 @@ fn extract_v11(bytes: Vec<u8>, target: &FsPath) -> Result<usize, String> {
             continue;
         }
 
-        let filename = name.rsplit('/').next().unwrap_or("");
+        let filename = name.rsplit('/').next().unwrap_or("").to_string();
         if filename.is_empty() {
             continue;
         }
+        // A basename such as C:escape.yml is drive-relative on Windows and
+        // Path::join would discard the intended directory. Never accept a
+        // prefix, alternate stream or separator in a catalog filename.
+        if !filename
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+        {
+            skipped.push(format!("{}: unsafe file name", filename.escape_debug()));
+            continue;
+        }
 
+        const MAX_DEFINITION: u64 = 512 * 1024;
+        if entry.size() > MAX_DEFINITION {
+            skipped.push(format!("{filename}: definition exceeds 512 KiB"));
+            continue;
+        }
         let mut contents = Vec::new();
         entry
+            .take(MAX_DEFINITION + 1)
             .read_to_end(&mut contents)
             .map_err(|e| e.to_string())?;
+        expanded += contents.len() as u64;
+        if expanded > 128 * 1024 * 1024 {
+            return Err("Expanded archive exceeds quota".into());
+        }
+        if contents.len() as u64 > MAX_DEFINITION {
+            skipped.push(format!("{filename}: definition exceeds 512 KiB"));
+            continue;
+        }
+        let Ok(text) = std::str::from_utf8(&contents) else {
+            skipped.push(format!("{filename}: invalid encoding"));
+            continue;
+        };
+        if let Err((_, message)) = validate_definition(text, false) {
+            skipped.push(format!("{filename}: {message}"));
+            continue;
+        }
 
-        let path = target.join(filename);
-        let mut file = File::create(&path).map_err(|e| e.to_string())?;
-        file.write_all(&contents).map_err(|e| e.to_string())?;
+        let path = target.join(&filename);
+        if let Ok(metadata) = std::fs::symlink_metadata(&path)
+            && (!metadata.is_file() || metadata.file_type().is_symlink())
+        {
+            skipped.push(format!("{filename}: destination is not an ordinary file"));
+            continue;
+        }
+        write_atomically(target, &path, &contents)?;
         installed += 1;
     }
 
-    Ok(installed)
+    Ok((installed, skipped))
+}
+
+/// Writes through a uniquely named temporary file and renames it into place.
+/// The temporary file is removed on any failure, so an interrupted sync never
+/// leaves a leftover that a later one could collide with.
+fn write_atomically(directory: &FsPath, path: &FsPath, contents: &[u8]) -> Result<(), String> {
+    use rand_core::{OsRng, RngCore};
+    let temporary = directory.join(format!(".oberiz-{:016x}.tmp", OsRng.next_u64()));
+    let result = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        file.write_all(contents)?;
+        drop(file);
+        std::fs::rename(&temporary, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result.map_err(|e| e.to_string())
 }
 
 async fn upstream_folder(state: &AppState) -> Result<PathBuf, (StatusCode, String)> {

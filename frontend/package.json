@@ -1,7 +1,7 @@
 {
   "name": "oberiz-frontend",
   "private": true,
-  "version": "1.0.3",
+  "version": "1.0.4",
   "license": "AGPL-3.0-or-later",
   "type": "module",
   "scripts": {
@@ -11,6 +11,7 @@
     "test:filters": "node tests/download-filters.cjs",
     "test:storage": "node tests/storage-settings.cjs",
     "test:imports": "node tests/imports-external.cjs",
+    "test:missing": "node tests/missing-reports.cjs",
     "preview": "vite preview"
   },
   "dependencies": {

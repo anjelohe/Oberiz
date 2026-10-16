@@ -1,5 +1,43 @@
 // Interface copy only: media titles, paths, tracker definitions and protocol values are untouched.
 export const spanish: Record<string, string> = Object.fromEntries(String.raw`
+Missing content reports|Informes de contenido faltante
+Read-only reports from Cinetta, separate from the managed library.|Informes de solo lectura desde Cinetta, separados de la biblioteca gestionada.
+Cinetta URL|Dirección de Cinetta
+Cinetta inventory read key|Clave de lectura del inventario de Cinetta
+Create a library:read key in Cinetta and enable inventory reading there. This is independent of inventory reporting to Oberiz.|Crea una clave library:read en Cinetta y permite allí la lectura del inventario. Es independiente del envío de inventario a Oberiz.
+Allow integrations to read and refresh missing reports|Permitir a las integraciones consultar y actualizar informes de faltantes
+Disabled by default. Uses the existing Oberiz API key; local report buttons do not need this external permission.|Desactivado por defecto. Usa la clave API de Oberiz; los botones locales no necesitan este permiso externo.
+Check missing content|Comprobar faltantes
+Check collection|Comprobar colección
+Incomplete collections|Colecciones incompletas
+Read-only report. No requests, monitoring or downloads are created.|Informe de solo lectura. No crea peticiones, monitorización ni descargas.
+Scope|Alcance
+One series|Una serie concreta
+One collection|Una colección concreta
+Entire library|Toda la biblioteca
+Last saved report|Último informe guardado
+Stop waiting|Dejar de esperar
+Updating will check the entire inventory and may take several minutes.|Actualizar comprobará todo el inventario y puede tardar varios minutos.
+Checking inventory and release metadata…|Comprobando inventario y fechas de estreno…
+Provisional report|Informe provisional
+No missing content found|No se ha encontrado contenido faltante
+Report complete|Informe completo
+Report date|Fecha del informe
+Inventory date|Fecha del inventario
+Not listed in Cinetta. Missing files are not physically confirmed; offline indexed items are not marked missing.|No consta en Cinetta. La ausencia física no está confirmada; los elementos indexados en discos desconectados no se consideran faltantes.
+Groups|Grupos
+Warnings|Advertencias
+Configure Cinetta inventory access in Settings first.|Configura primero el acceso al inventario de Cinetta en Ajustes.
+No saved report. Use Update to start a check.|No hay informe guardado. Pulsa Actualizar para comprobarlo.
+Cinetta rejected the inventory key.|Cinetta ha rechazado la clave de inventario.
+Cinetta does not support inventory queries.|Cinetta no admite consultas de inventario.
+Cinetta is unavailable.|Cinetta no está disponible.
+This movie does not belong to a TMDB collection.|Esta película no pertenece a una colección de TMDB.
+Choose a valid series or collection ID.|Elige un identificador válido de serie o colección.
+Other checks are running. Try again later.|Hay otras comprobaciones en curso. Inténtalo más tarde.
+Could not check missing content.|No se pudo comprobar el contenido faltante.
+The check is still running. Consult the saved report later.|La comprobación sigue en curso. Consulta el informe guardado más tarde.
+The check failed. The previous report is unchanged.|La comprobación ha fallado. Se conserva el informe anterior.
 Dashboard|Inicio
 Library inventory|Inventario de la biblioteca
 Pause new acquisitions if Cinetta inventory is missing or older than 24 hours|Pausar nuevas adquisiciones si no hay inventario de Cinetta o tiene más de 24 horas
@@ -31,6 +69,7 @@ SMB / CIFS servers|Servidores SMB / CIFS
 Server|Servidor
 Open|Abrir
 Forget saved connection|Olvidar conexión guardada
+{0} catalogue definitions could not be installed; the rest were updated. Details in History.|{0} definiciones del catálogo no se pudieron instalar; el resto se ha actualizado. Detalles en Historial.
 No mapping needed: Oberiz already opens every folder qBittorrent uses, or no matching shared folder was found.|No hace falta ninguna correspondencia: Oberiz ya abre todas las carpetas que usa qBittorrent, o no se encontró ninguna carpeta compartida que coincida.
 {0} mappings added. Save Settings to apply them.|{0} correspondencias añadidas. Guarda los ajustes para aplicarlas.
 Files and storage|Archivos y almacenamiento
@@ -214,7 +253,7 @@ Remove {0}|Eliminar {0}
 Remove {0} obsolete Oberiz record{1}? qBittorrent torrents and media files will not be changed.|¿Eliminar {0} registros obsoletos de Oberiz? No se modificarán los torrents de qBittorrent ni los archivos multimedia.
 Removed {0}|Eliminado {0}
 Reseed started in {0}|Reseed iniciado en {0}
-Restore {0}? This replaces the current Oberiz database with that backup. Current media, requests, settings and history will be reverted.|¿Restaurar {0}? Reemplaza la base de datos actual por esa copia. Se restaurarán el contenido, peticiones, ajustes e historial.
+Restore {0}? Library data, requests, preferences and history will be restored. Current security credentials and connections are preserved.|¿Restaurar {0}? Se restaurarán el contenido, peticiones, preferencias e historial. Se conservan la contraseña, claves y conexiones actuales.
 Running · {0}/{1} · {2}|En ejecución · {0}/{1} · {2}
 Search {0}...|Buscar {0}...
 Season {0}|Temporada {0}

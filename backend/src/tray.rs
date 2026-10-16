@@ -255,9 +255,14 @@ unsafe fn open_oberiz() {
 /// install time (see `service::install`) to allow Authenticated Users to
 /// start/stop the Oberiz service without an elevation prompt.
 fn control_service(action: &str) {
-    let _ = std::process::Command::new("sc")
-        .args([action, crate::service::SERVICE_NAME])
-        .output();
+    let _ = std::process::Command::new(
+        std::path::PathBuf::from(
+            std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into()),
+        )
+        .join("System32/sc.exe"),
+    )
+    .args([action, crate::service::SERVICE_NAME])
+    .output();
 }
 
 unsafe fn load_icon(path: &Path) -> *mut std::ffi::c_void {

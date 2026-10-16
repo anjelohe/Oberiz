@@ -220,6 +220,13 @@ fn reserve_login_attempt(client: &str) -> bool {
     let mut attempts = attempts()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    attempts.retain(|_, attempt| {
+        now.duration_since(attempt.last_failure) <= LOGIN_RESET_AFTER
+            || attempt.blocked_until.is_some_and(|until| now < until)
+    });
+    if !attempts.contains_key(client) && attempts.len() >= 4096 {
+        return false;
+    }
     if let Some(attempt) = attempts.get(client)
         && attempt.blocked_until.is_some_and(|until| now < until)
     {
@@ -482,6 +489,43 @@ pub async fn set_password(
 #[cfg(test)]
 mod rate_limit_key_tests {
     use super::rate_limit_key;
+
+    #[test]
+    fn expired_login_identities_are_evicted_and_registry_is_bounded() {
+        let mut map = super::attempts().lock().unwrap();
+        let old = std::time::Instant::now() - std::time::Duration::from_secs(7200);
+        for i in 0..4200 {
+            map.insert(
+                format!("expired-fixture-{i}"),
+                super::LoginAttempt {
+                    failures: 1,
+                    last_failure: old,
+                    blocked_until: None,
+                },
+            );
+        }
+        drop(map);
+        assert!(super::reserve_login_attempt("fresh-fixture"));
+        let mut map = super::attempts().lock().unwrap();
+        assert!(!map.keys().any(|key| key.starts_with("expired-fixture-")));
+        let now = std::time::Instant::now();
+        for i in 0..4096 {
+            map.insert(
+                format!("bounded-fixture-{i}"),
+                super::LoginAttempt {
+                    failures: 1,
+                    last_failure: now,
+                    blocked_until: None,
+                },
+            );
+        }
+        drop(map);
+        assert!(!super::reserve_login_attempt("additional-fixture"));
+        super::attempts()
+            .lock()
+            .unwrap()
+            .retain(|key, _| !key.contains("fixture"));
+    }
 
     #[tokio::test]
     async fn setup_is_not_tied_to_client_address_and_changes_require_current_password() {

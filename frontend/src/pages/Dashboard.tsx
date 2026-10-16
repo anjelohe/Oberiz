@@ -1,5 +1,5 @@
 import { t, useTranslation, tf, portalLocale } from '../lib/i18n'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Icon } from '../components/Icon'
 import {
   getAutomationStatus, getDownloadsLive, getLibrarySummary, getMovies, getSeries, getSettings,
@@ -77,6 +77,7 @@ function episodeCode(episode:CalendarEpisode){return `S${String(episode.season_n
 
 export function Dashboard(){
   useTranslation()
+  const downloadsBusy=useRef(false)
   const [movies,setMovies]=useState<Movie[]>([])
   const [series,setSeries]=useState<Series[]>([])
   const [downloads,setDownloads]=useState<TorrentLive[]>([])
@@ -96,11 +97,20 @@ export function Dashboard(){
   const [downloadsFailed,setDownloadsFailed]=useState(false)
   const [indexersFailed,setIndexersFailed]=useState(false)
 
+  async function refreshDownloads(){
+    if(downloadsBusy.current) return
+    downloadsBusy.current=true
+    try {
+      const result=await getDownloadsLive()
+      setDownloads(result.torrents??[]);setDownloadsFailed(false)
+    } catch {setDownloadsFailed(true)}
+    finally {downloadsBusy.current=false}
+  }
   async function load(){
     await Promise.all([
       getMovies().then(setMovies).catch(()=>{}),
       getSeries().then(setSeries).catch(()=>{}),
-      getDownloadsLive().then(x=>{setDownloads(x.torrents??[]);setDownloadsFailed(false)}).catch(()=>setDownloadsFailed(true)),
+      refreshDownloads(),
       fetch('/api/indexers').then(r=>r.ok?r.json():Promise.reject()).then(x=>{setIndexers(x);setIndexersFailed(false)}).catch(()=>setIndexersFailed(true)),
       fetch('/api/history?limit=12').then(r=>r.ok?r.json():Promise.reject()).then(setHistory).catch(()=>{}),
       getCalendar(30,true).then(setCalendar).catch(()=>{}),
@@ -114,7 +124,7 @@ export function Dashboard(){
 
   useEffect(()=>{
     void load()
-    const timer=setInterval(()=>void getDownloadsLive().then(x=>{setDownloads(x.torrents??[]);setDownloadsFailed(false)}).catch(()=>setDownloadsFailed(true)),5000)
+    const timer=setInterval(()=>void refreshDownloads(),5000)
     return()=>clearInterval(timer)
   },[])
 
@@ -156,7 +166,7 @@ export function Dashboard(){
         <section className="dashboard-ref-card dashboard-ref-downloads">
           <header><div><Icon name="downloads"/><h3>{t("Recent Downloads")}</h3></div><button onClick={()=>window.location.hash='/downloads'}>{t("View All")}</button></header>
           <div className="dashboard-ref-download-list">
-            {downloads.slice(0,3).map((d,i)=>{
+            {downloads.slice(0,4).map((d,i)=>{
               const poster=posterFor(d.name,movies,series)
               return <article key={d.hash}>
                 <div className="rd-poster">{poster?<img src={poster} alt=""/>:<span>{d.name.charAt(0).toUpperCase()}</span>}</div>

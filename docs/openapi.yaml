@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Oberiz Public API v1
-  version: "1.0.3"
+  version: "1.0.4"
   license:
     name: AGPL-3.0-or-later
     url: https://www.gnu.org/licenses/agpl-3.0.html
@@ -31,6 +31,66 @@ security:
   - ApiKeyAuth: []
 
 paths:
+  /library/missing:
+    get:
+      operationId: getMissingReport
+      summary: Read a saved report without initiating a check
+      description: |
+        Requires api.missing_reports_enabled=true in addition to the API key.
+        Preserve scope, IDs and job_id when paginating. Current Cinetta inventory
+        yields partial provisional results, even with zero candidates.
+        See Oberiz_Faltantes_Contrato.md for the JSON contract and limits.
+      parameters:
+        - {in: query, name: scope, schema: {type: string, enum: [series, collections, series_one, collection_one, all], default: series}}
+        - {in: query, name: tmdb_id, schema: {type: integer, minimum: 1}}
+        - {in: query, name: tvdb_id, schema: {type: integer, minimum: 1}}
+        - {in: query, name: page, schema: {type: integer, minimum: 1}}
+        - {in: query, name: job_id, schema: {type: string, maxLength: 100}}
+      responses:
+        "200":
+          description: Immutable report page or queued/running job status
+          content:
+            application/json:
+              schema: {type: object}
+        "400": {description: Invalid or incompatible filters}
+        "401": {description: Invalid API key}
+        "403": {description: Public API or explicit reports permission disabled}
+        "404": {description: Explicit job_id not found for these filters}
+        "409": {description: No saved report yet; use refresh to create one}
+  /library/missing/refresh:
+    post:
+      operationId: refreshMissingReport
+      summary: Explicitly start or reuse a read-only comparison job
+      description: |
+        Requires explicit reports permission. Writes reports and idempotency only,
+        never managed media, requests or downloads. Same action key and filters
+        return the same job; different filters with that key return 409.
+        Maximum two active jobs; same active scope is coalesced.
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema: {type: string, minLength: 16, maxLength: 100, pattern: '^[a-zA-Z0-9_-]+$'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                scope: {type: string, enum: [series, collections, series_one, collection_one, all], default: series}
+                tmdb_id: {type: integer, minimum: 1}
+                tvdb_id: {type: integer, minimum: 1}
+      responses:
+        "200": {description: Previous idempotent action returned}
+        "202": {description: Queued or running job; poll GET with job_id and same filters}
+        "400": {description: Invalid filters or missing idempotency key}
+        "401": {description: Invalid API key}
+        "403": {description: Public API or reports permission disabled}
+        "409": {description: Cinetta not configured or conflicting idempotency key}
+        "428": {description: TMDB not configured}
+        "429": {description: Too many concurrent jobs}
   /library:
     put:
       operationId: reportExternalLibrary

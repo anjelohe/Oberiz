@@ -39,7 +39,7 @@ function pageFromHash(): Page {
 type Theme = 'dark'|'middle'|'light'
 
 function normalizeTheme(value:string|null|undefined):Theme{
-  return value==='light'||value==='middle'?value:'dark'
+  return value==='light'||value==='dark'?value:'middle'
 }
 
 function initialTheme():Theme{

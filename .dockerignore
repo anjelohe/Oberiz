@@ -1,5 +1,12 @@
 .git
 .gitignore
+.codex-remote-attachments
+.env
+.env.*
+*.sqlite3
+config/secrets*
+config/indexers/custom/*
+backend/config
 backend/target
 backend/data
 backend/backups

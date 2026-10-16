@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { deleteMovie, getDownloadsLive, getImports, getMovies, getQualityProfiles, ImportJob, Movie, QualityProfile, TorrentLive, updateMovie } from '../lib/api'
 import { Icon } from '../components/Icon'
 import { ReleaseSearch } from '../components/ReleaseSearch'
+import { MissingReports, MissingTarget, collectionForMovie } from '../components/MissingReports'
 
 type ViewMode='grid'|'list'
 type StatusFilter='all'|'available'|'downloading'|'missing'|'upgrade'
@@ -31,6 +32,7 @@ export function Movies(){
   const [error,setError]=useState('')
   const [downloadsError,setDownloadsError]=useState('')
   const [releaseMovie,setReleaseMovie]=useState<Movie|null>(null)
+  const [missingTarget,setMissingTarget]=useState<MissingTarget|null>(null)
 
   async function reload(){
     const [m,j,d]=await Promise.allSettled([getMovies(),getImports(),getDownloadsLive()])
@@ -98,6 +100,7 @@ export function Movies(){
   }
 
   return <div className="lib-page movie-lib-page">
+    {missingTarget&&<MissingReports key={`${missingTarget.scope}-${missingTarget.tmdb_id??''}`} target={missingTarget} onClose={()=>setMissingTarget(null)}/>}
     <section className="lib-hero">
       <div className="lib-title"><div className="lib-title-icon"><Icon name="movies" size={31}/></div><div><h1>{t("Movies Library")}</h1><p>{t("Manage your movie collection, downloads and monitoring")}</p></div></div>
     </section>
@@ -120,6 +123,7 @@ export function Movies(){
       <select value={quality} onChange={e=>setQuality(e.target.value)}><option value="all">{t("All Quality")}</option>{profiles.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select>
       <select value={sort} onChange={e=>setSort(e.target.value)}><option value="added">{t("Sort by: Date Added")}</option><option value="title">{t("Sort by: Title")}</option><option value="year">{t("Sort by: Year")}</option></select>
       <div className="lib-view"><button className={view==='grid'?'active':''} onClick={()=>setView('grid')}>▦</button><button className={view==='list'?'active':''} onClick={()=>setView('list')}>☷</button></div>
+      <button type="button" className="library-report-action" onClick={()=>setMissingTarget({scope:'collections'})}><span className="library-report-icon"><Icon name="imports" size={17}/></span><span>{t('Incomplete collections')}</span><span className="library-report-arrow"><Icon name="chevronDown" size={13}/></span></button>
     </section>
 
     <div className="movie-lib-layout">
@@ -153,6 +157,7 @@ export function Movies(){
               </div>
               {torrent&&state==='downloading'&&<><div className="media-live-progress"><i style={{width:`${liveProgress}%`}}/></div><div className="media-live-meta"><span>{fmtSpeed(torrent.dlspeed)}</span><span>{torrent.num_seeds} {t("seeds")}</span></div></>}
               <div className="poster-actions">
+                <button title={t('Check collection')} aria-label={t('Check collection')} onClick={()=>void collectionForMovie(movie.tmdb_id).then(setMissingTarget).catch(e=>setError(e.message))}><Icon name="imports" size={16}/></button>
                 <button title={t("Search releases")} onClick={()=>setReleaseMovie(movie)}>▶</button>
                 <button title={movie.monitored?t("Unmonitor"):t("Monitor")} onClick={()=>void toggleMonitored(movie)}>{movie.monitored?'♡':'○'}</button>
                 <button title={t("Details/profile")} onClick={()=>setReleaseMovie(movie)}>ⓘ</button>

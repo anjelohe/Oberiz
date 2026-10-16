@@ -267,6 +267,7 @@ export function Downloads() {
     Array.from({ length: 30 }, () => ({ down: 0, up: 0 })),
   )
   const mounted = useRef(true)
+  const downloadRequest = useRef<AbortController|null>(null)
 
   const totals = useMemo(() => {
     const result = {
@@ -306,12 +307,16 @@ export function Downloads() {
   }, [torrents])
 
   const loadDownloads = useCallback(async (silent = false) => {
+    if(downloadRequest.current) return
+    const controller = new AbortController()
+    downloadRequest.current = controller
     if (silent) setRefreshing(true)
     else setLoading(true)
 
     try {
       const response = await fetch('/api/downloads', {
         headers: { Accept: 'application/json' },
+        signal: controller.signal,
       })
 
       if (!response.ok) {
@@ -333,10 +338,12 @@ export function Downloads() {
 
       setSpeedHistory((history) => [...history.slice(-29), { down, up }])
     } catch (err) {
+      if(controller.signal.aborted) return
       if (mounted.current) {
         setError(err instanceof Error ? err.message : t("Could not load downloads"))
       }
     } finally {
+      if(downloadRequest.current===controller) downloadRequest.current=null
       if (mounted.current) {
         setLoading(false)
         setRefreshing(false)
@@ -403,6 +410,8 @@ export function Downloads() {
 
     return () => {
       mounted.current = false
+      downloadRequest.current?.abort()
+      downloadRequest.current=null
       document.removeEventListener('visibilitychange', handleVisibility)
       window.clearInterval(timer)
     }

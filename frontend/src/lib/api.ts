@@ -177,6 +177,9 @@ export type AutomationStatus = {
 export type RssStatus = { enabled:boolean; interval_minutes:number; configured_feeds:number; states:Array<{indexer_id:string;last_synced_at:string|null;last_status:string;last_new_items:number;last_matched_items:number;last_grabbed_items:number;last_error:string|null;updated_at:string}> }
 
 export type Settings = {
+  cinetta_url:string;
+  cinetta_inventory_key_set:boolean;
+  missing_reports_enabled:boolean;
   library_source: 'local'|'cinetta';
   last_external_report: string|null;
   pause_on_stale_inventory: boolean;

@@ -36,6 +36,7 @@ for(const mode of ['local','cinetta']){
   assert.equal(Boolean(pause),mode==='cinetta')
   assert.equal(Boolean(find(tree,node=>node.props.role==='alert')),false)
   if(pause){
+    assert.ok(find(tree,node=>node.type==='label'&&node.props.className==='toggle-row'&&node.props.children.includes(pause)))
     assert.equal(pause.props.checked,false)
     pause.props.onChange({target:{checked:true}})
     assert.equal(changes.at(-1).pause_on_stale_inventory,true)

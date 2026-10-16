@@ -1,5 +1,9 @@
 # Documentación de Oberiz
 
+- [Versión 1.0.4](releases/v1.0.4.md): informes de faltantes de solo lectura y nueva interfaz adaptable.
+
+- [Informes de faltantes, implementacion local](Oberiz_Faltantes_Contrato.md): conexion Cinetta, permisos, criterios y prueba aislada.
+
 - [Versión 1.0.3](releases/v1.0.3.md): configuración remota, borrado manual confirmado, pausa opcional y versión visible corregida.
 - [Almacenamiento simplificado](Oberiz_Almacenamiento_Simplificado.md): flujo de v1.0.2, renombrado por qBittorrent desactivado por defecto, inventario Cinetta/local y recuperación detenida.
 

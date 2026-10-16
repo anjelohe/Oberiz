@@ -8,6 +8,7 @@ import {
 } from '../lib/api'
 import { Icon } from '../components/Icon'
 import { ReleaseSearch } from '../components/ReleaseSearch'
+import { MissingReports, MissingTarget } from '../components/MissingReports'
 
 type StatusFilter='all'|'monitored'|'unmonitored'|'available'|'downloading'
 type SearchTarget={
@@ -53,6 +54,7 @@ function shortDate(value:string|null){if(!value)return '';const d=new Date(`${va
 export function Series(){
   useTranslation()
   const [items,setItems]=useState<SeriesType[]>([])
+  const [missingTarget,setMissingTarget]=useState<MissingTarget|null>(null)
   const [jobs,setJobs]=useState<ImportJob[]>([])
   const [torrents,setTorrents]=useState<TorrentLive[]>([])
   const [profiles,setProfiles]=useState<QualityProfile[]>([])
@@ -195,6 +197,7 @@ export function Series(){
   }
 
   return <div className="lib-page series-lib-page">
+    {missingTarget&&<MissingReports key={`${missingTarget.scope}-${missingTarget.tmdb_id??''}`} target={missingTarget} onClose={()=>setMissingTarget(null)}/>}
     <section className="lib-hero">
       <div className="lib-title"><div className="lib-title-icon"><Icon name="series" size={31}/></div><div><h1>{t("Series Library")}</h1><p>{t("Track seasons and episodes with inherited profiles and monitoring rules")}</p></div></div>
     </section>
@@ -220,6 +223,7 @@ export function Series(){
       </div>
       <select value={sort} onChange={e=>setSort(e.target.value)}><option value="added">{t("Sort by: Recently Added")}</option><option value="title">{t("Sort by: Title")}</option><option value="year">{t("Sort by: Year")}</option></select>
       <label className="lib-search"><Icon name="search" size={17}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder={t("Search series...")}/></label>
+      <button type="button" className="library-report-action" onClick={()=>setMissingTarget({scope:'series'})}><span className="library-report-icon"><Icon name="imports" size={17}/></span><span>{t('Missing episodes')}</span><span className="library-report-arrow"><Icon name="chevronDown" size={13}/></span></button>
     </section>
 
     <div className="series-layout">
@@ -261,6 +265,7 @@ export function Series(){
                 </div>
               </div>
               <div className="series-row-actions">
+                <button title={t('Check missing content')} aria-label={t('Check missing content')} onClick={()=>setMissingTarget({scope:'series_one',tmdb_id:item.tmdb_id,title:item.name})}><Icon name="imports" size={16}/></button>
                 <button title={t("Open seasons")} aria-label={t("Open seasons")} onClick={()=>void toggleExpanded(item)}><Icon name={expanded===item.id?'chevronUp':'chevronDown'} size={18}/></button>
                 <button title={t("Series release search")} aria-label={t("Series release search")} onClick={()=>setSearchTarget({mediaId:item.id,tmdbId:item.tmdb_id,title:item.name,query:`${item.name}${item.year?` ${item.year}`:''}`,profileId:item.quality_profile_id??null,seasonNumber:null,episodeNumber:null,isSeasonPack:false})}><Icon name="play" size={16}/></button>
                 <button title={t("More")} aria-label={t("More series options")} onClick={()=>void toggleExpanded(item)}><Icon name="more" size={18}/></button>

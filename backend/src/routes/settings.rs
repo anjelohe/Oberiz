@@ -30,7 +30,7 @@ pub fn router() -> Router<AppState> {
         )
         .route(
             "/api/backups/upload",
-            post(backups::upload_backup).layer(DefaultBodyLimit::max(1024 * 1024 * 1024)),
+            post(backups::upload_backup).layer(DefaultBodyLimit::disable()),
         )
         .route(
             "/api/backups/{filename}/download",

@@ -301,6 +301,99 @@ struct AuthenticatedResponse {
     auth_method: &'static str,
 }
 
+#[cfg(test)]
+#[path = "qbittorrent_session_tests.rs"]
+mod session_tests;
+
+struct SharedSession {
+    client: reqwest::Client,
+    base_url: String,
+    generation: std::sync::atomic::AtomicU64,
+    login: tokio::sync::Mutex<()>,
+    last_login_failure: tokio::sync::Mutex<Option<Instant>>,
+}
+
+impl SharedSession {
+    async fn authenticate(
+        &self,
+        config: &QBittorrentConfig,
+        observed: u64,
+    ) -> Result<(), (StatusCode, String)> {
+        let _guard = self.login.lock().await;
+        if self.generation.load(std::sync::atomic::Ordering::Acquire) == observed {
+            let mut failure = self.last_login_failure.lock().await;
+            if failure.is_some_and(|at| at.elapsed() < Duration::from_secs(30)) {
+                return Err((
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "Download client authentication cooling down; check credentials".into(),
+                ));
+            }
+            if let Err(error) = login_cookie(&self.client, config).await {
+                *failure = Some(Instant::now());
+                return Err(error);
+            }
+            *failure = None;
+            self.generation
+                .fetch_add(1, std::sync::atomic::Ordering::Release);
+        }
+        Ok(())
+    }
+}
+
+async fn shared_session(
+    config: &QBittorrentConfig,
+) -> Result<std::sync::Arc<SharedSession>, (StatusCode, String)> {
+    use sha2::{Digest, Sha256};
+    type Sessions = tokio::sync::Mutex<Vec<([u8; 32], std::sync::Arc<SharedSession>)>>;
+    static SESSIONS: std::sync::OnceLock<Sessions> = std::sync::OnceLock::new();
+    // A structured digest avoids retaining another plaintext credential copy.
+    let key: [u8; 32] = Sha256::digest(
+        serde_json::to_vec(&(config.base_url(), &config.username, &config.password)).map_err(
+            |_| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Invalid client configuration".into(),
+                )
+            },
+        )?,
+    )
+    .into();
+    let mut sessions = SESSIONS
+        .get_or_init(|| tokio::sync::Mutex::new(Vec::new()))
+        .lock()
+        .await;
+    if let Some(index) = sessions.iter().position(|(stored, _)| *stored == key) {
+        let entry = sessions.remove(index);
+        let result = entry.1.clone();
+        sessions.push(entry);
+        return Ok(result);
+    }
+    if sessions.len() >= 8 {
+        let index = sessions
+            .iter()
+            .position(|(_, s)| std::sync::Arc::strong_count(s) == 1)
+            .ok_or((StatusCode::TOO_MANY_REQUESTS, "Download client busy".into()))?;
+        let (_, old) = sessions.remove(index);
+        // End only the session owned by this client, never other integrations.
+        // CookieJar selects the cookie's own host; no credentials are logged.
+        let _ = old
+            .client
+            .post(format!("{}/api/v2/auth/logout", old.base_url))
+            .timeout(Duration::from_secs(1))
+            .send()
+            .await;
+    }
+    let session = std::sync::Arc::new(SharedSession {
+        client: build_client()?,
+        base_url: config.base_url(),
+        generation: std::sync::atomic::AtomicU64::new(0),
+        login: tokio::sync::Mutex::new(()),
+        last_login_failure: tokio::sync::Mutex::new(None),
+    });
+    sessions.push((key, session.clone()));
+    Ok(session)
+}
+
 pub async fn test_connection(
     State(state): State<AppState>,
 ) -> Result<Json<QBittorrentTestResponse>, (StatusCode, String)> {
@@ -644,7 +737,11 @@ async fn authenticated_get(
     path: &str,
 ) -> Result<AuthenticatedResponse, (StatusCode, String)> {
     let base_url = config.base_url();
-    let client = build_client()?;
+    let session = shared_session(config).await?;
+    let client = &session.client;
+    let generation = session
+        .generation
+        .load(std::sync::atomic::Ordering::Acquire);
     let url = format!("{base_url}{path}");
 
     let basic_response = client
@@ -668,7 +765,7 @@ async fn authenticated_get(
         return Err(qb_status_error(basic_response.status(), "acceder a la API"));
     }
 
-    login_cookie(&client, config).await?;
+    session.authenticate(config, generation).await?;
 
     let response = client
         .get(&url)
@@ -695,7 +792,11 @@ async fn authenticated_form_post(
     fields: &[(&str, String)],
 ) -> Result<(), (StatusCode, String)> {
     let base_url = config.base_url();
-    let client = build_client()?;
+    let session = shared_session(config).await?;
+    let client = &session.client;
+    let generation = session
+        .generation
+        .load(std::sync::atomic::Ordering::Acquire);
     let url = format!("{base_url}{path}");
 
     let basic_response = client
@@ -720,7 +821,7 @@ async fn authenticated_form_post(
         ));
     }
 
-    login_cookie(&client, config).await?;
+    session.authenticate(config, generation).await?;
 
     let response = client
         .post(&url)
@@ -745,7 +846,11 @@ async fn authenticated_multipart_post(
     fields: &[(&str, String)],
 ) -> Result<(), (StatusCode, String)> {
     let base_url = config.base_url();
-    let client = build_client()?;
+    let session = shared_session(config).await?;
+    let client = &session.client;
+    let generation = session
+        .generation
+        .load(std::sync::atomic::Ordering::Acquire);
     let url = format!("{base_url}{path}");
 
     let boundary = "----OberizBoundary7MA4YWxkTrZu0gW";
@@ -767,7 +872,7 @@ async fn authenticated_multipart_post(
         return Ok(());
     }
 
-    login_cookie(&client, config).await?;
+    session.authenticate(config, generation).await?;
 
     let response = client
         .post(&url)
@@ -891,6 +996,7 @@ async fn login_cookie(
 fn build_client() -> Result<reqwest::Client, (StatusCode, String)> {
     reqwest::Client::builder()
         .cookie_store(true)
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(10))
         .user_agent(concat!("Oberiz/", env!("CARGO_PKG_VERSION")))
         .build()
@@ -1117,8 +1223,16 @@ async fn torrent_by_hash(
     state: &AppState,
     hash: &str,
 ) -> Result<Option<QBittorrentTorrent>, (StatusCode, String)> {
-    Ok(list_torrents_fresh(state)
-        .await?
+    validate_hash(hash)?;
+    let config = load_config(state).await?;
+    let response =
+        authenticated_get(&config, &format!("/api/v2/torrents/info?hashes={hash}")).await?;
+    let torrents: Vec<QBittorrentTorrent> = response
+        .response
+        .json()
+        .await
+        .map_err(|_| (StatusCode::BAD_GATEWAY, "Invalid torrent response".into()))?;
+    Ok(torrents
         .into_iter()
         .find(|t| t.hash.eq_ignore_ascii_case(hash)))
 }
@@ -1139,7 +1253,11 @@ async fn wait_for_new_torrent(
 ) -> Result<QBittorrentTorrent, (StatusCode, String)> {
     let wanted_title = normalize_title(title);
     for _ in 0..40 {
-        let torrents = list_torrents_fresh(state).await?;
+        let torrents = if let Some(hash) = expected_hash {
+            torrent_by_hash(state, hash).await?.into_iter().collect()
+        } else {
+            list_torrents_fresh(state).await?
+        };
         if let Some(expected) = expected_hash {
             // A known hash is the only acceptable identity here: if it hasn't
             // appeared yet, keep waiting for it specifically instead of
@@ -1268,11 +1386,7 @@ async fn apply_and_verify_metadata(
     }
 
     for _ in 0..20 {
-        let torrents = list_torrents_fresh(state).await?;
-        if let Some(torrent) = torrents
-            .into_iter()
-            .find(|t| t.hash.eq_ignore_ascii_case(hash))
-        {
+        if let Some(torrent) = torrent_by_hash(state, hash).await? {
             let category_ok = torrent.category.trim() == category.trim();
             let wanted = tag_set(tags);
             let actual = tag_set(&torrent.tags);
@@ -1408,7 +1522,11 @@ pub(crate) async fn add_url(
         let torrent = apply_and_verify_metadata(state, hash, category, &tags, None).await?;
         return Ok(torrent.hash);
     }
-    let before = snapshot_hashes(state).await?;
+    let before = if expected.is_none() {
+        snapshot_hashes(state).await?
+    } else {
+        HashSet::new()
+    };
     let config = load_config(state).await?;
     let tags = oberiz_tags(user_tags, job_id, false);
     let mut fields = vec![("urls", url.to_string())];
@@ -1449,8 +1567,9 @@ pub(crate) async fn add_torrent_bytes_with_options(
     // qBittorrent answers `Fails.` for an already-known torrent file. Detect
     // v1/hybrid torrents by their metainfo hash first so a duplicate can be
     // treated like the magnet path rather than a failed upload.
-    if let Some(info_hash) = crate::cardigann::torrent_v1_info_hash(&bytes)
-        && torrent_by_hash(state, &info_hash).await?.is_some()
+    let expected = crate::cardigann::torrent_v1_info_hash(&bytes);
+    if let Some(info_hash) = expected.as_deref()
+        && torrent_by_hash(state, info_hash).await?.is_some()
     {
         if reseed {
             return Err((
@@ -1460,14 +1579,22 @@ pub(crate) async fn add_torrent_bytes_with_options(
         }
         let tags = oberiz_tags(user_tags, job_id, reseed);
         let torrent =
-            apply_and_verify_metadata(state, &info_hash, category, &tags, save_path).await?;
+            apply_and_verify_metadata(state, info_hash, category, &tags, save_path).await?;
         return Ok(torrent.hash);
     }
 
-    let before = snapshot_hashes(state).await?;
+    let before = if expected.is_none() {
+        snapshot_hashes(state).await?
+    } else {
+        HashSet::new()
+    };
     let config = load_config(state).await?;
     let base_url = config.base_url();
-    let client = build_client()?;
+    let session = shared_session(&config).await?;
+    let client = &session.client;
+    let generation = session
+        .generation
+        .load(std::sync::atomic::Ordering::Acquire);
     let url = format!("{base_url}/api/v2/torrents/add");
     let tags = oberiz_tags(user_tags, job_id, reseed);
 
@@ -1522,7 +1649,7 @@ pub(crate) async fn add_torrent_bytes_with_options(
     }
 
     let response = send(
-        &client,
+        client,
         &url,
         &config,
         bytes.clone(),
@@ -1539,9 +1666,9 @@ pub(crate) async fn add_torrent_bytes_with_options(
     let added = if multipart_add_accepted(response, "añadir el .torrent").await? {
         true
     } else {
-        login_cookie(&client, &config).await?;
+        session.authenticate(&config, generation).await?;
         let response = send(
-            &client, &url, &config, bytes, category, title, &tags, save_path, reseed, false,
+            client, &url, &config, bytes, category, title, &tags, save_path, reseed, false,
         )
         .await
         .map_err(|e| connection_error(&base_url, e))?;
@@ -1555,7 +1682,7 @@ pub(crate) async fn add_torrent_bytes_with_options(
     };
 
     if added {
-        let torrent = wait_for_new_torrent(state, &before, title, None).await?;
+        let torrent = wait_for_new_torrent(state, &before, title, expected.as_deref()).await?;
         let torrent =
             apply_and_verify_metadata(state, &torrent.hash, category, &tags, None).await?;
         return Ok(torrent.hash);
@@ -1656,7 +1783,7 @@ mod tests {
         use tokio::sync::Mutex;
         let present = Arc::new(AtomicBool::new(false));
         let uploaded = Arc::new(Mutex::new(String::new()));
-        let hash = "1111111111111111111111111111111111111111";
+        let hash = "a7d08790ec2477b019b8f776cec65af31e4fd64e";
         let app=axum::Router::new()
             .route("/api/v2/torrents/info",axum::routing::get({let present=present.clone();move||{let present=present.clone();async move{
                 axum::Json(if present.load(Ordering::SeqCst){serde_json::json!([{"hash":hash,"name":"Fixture","category":"","tags":"","save_path":"/opaque-nas/library","state":"stoppedDL"}])}else{serde_json::json!([])})
@@ -1690,7 +1817,7 @@ mod tests {
         };
         let added = super::add_torrent_bytes_with_options(
             &state,
-            b"d4:infodee".to_vec(),
+            b"d4:infod4:name7:Fixtureee".to_vec(),
             "",
             "Fixture",
             "",

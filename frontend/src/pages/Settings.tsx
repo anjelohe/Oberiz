@@ -35,6 +35,7 @@ function LibraryRootsEditor({title,paths,onChange}:{title:string;paths:string[];
 export function Settings(){
   useTranslation()
   const [data,setData]=useState<SettingsType|null>(null)
+  const [inventoryKey,setInventoryKey]=useState('')
   const [tmdb,setTmdb]=useState(''),[tvdb,setTvdb]=useState(''),[password,setPassword]=useState(''),[apiKey,setApiKey]=useState('')
   const [message,setMessage]=useState(''),[qbMessage,setQbMessage]=useState(''),[autoMessage,setAutoMessage]=useState(''),[rssMessage,setRssMessage]=useState('')
   const [autoRunning,setAutoRunning]=useState(false)
@@ -90,6 +91,9 @@ export function Settings(){
         movie_library_paths:data!.movie_library_paths,
         series_library_paths:data!.series_library_paths,
         library_source:data!.library_source,
+        cinetta_url:data!.cinetta_url,
+        cinetta_inventory_key:inventoryKey||null,
+        missing_reports_enabled:data!.missing_reports_enabled,
         pause_on_stale_inventory:data!.pause_on_stale_inventory,
         library_scan_enabled:data!.library_scan_enabled,
         library_scan_interval_minutes:data!.library_scan_interval_minutes,
@@ -117,7 +121,7 @@ export function Settings(){
       setPortalLanguage(data!.ui_language)
       document.documentElement.dataset.theme=data!.ui_theme
       window.dispatchEvent(new CustomEvent('oberiz-theme-changed',{detail:data!.ui_theme}))
-      setTmdb('');setTvdb('');setPassword('');
+      setTmdb('');setTvdb('');setPassword('');setInventoryKey('');
       const savedKey=apiKey!==''
       const saved=await getSettings()
       setData(saved);setMessage(t("Saved"))
@@ -234,7 +238,7 @@ export function Settings(){
   }
 
   async function restore(filename:string){
-    if(!window.confirm(tf("Restore {0}? This replaces the current Oberiz database with that backup. Current media, requests, settings and history will be reverted.", filename))) return
+    if(!window.confirm(tf("Restore {0}? Library data, requests, preferences and history will be restored. Current security credentials and connections are preserved.", filename))) return
     try { setBackupMessage(t("Restoring backup…")); const result=await restoreBackup(filename); setBackups(await getBackups()); setBackupMessage(tf("{0} Reloading…", t(result.message))); window.setTimeout(()=>window.location.reload(),700) }
     catch(e) { setBackupMessage(e instanceof Error?e.message:String(e)) }
   }
@@ -404,6 +408,14 @@ export function Settings(){
         </div>
 
         <div className="settings-row settings-row-full" data-settings-row="5">
+        <section className="settings-section card settings-full">
+          <div className="settings-title"><div><h3>{t('Missing content reports')}</h3><span>{t('Read-only reports from Cinetta, separate from the managed library.')}</span></div></div>
+          <label>{t('Cinetta URL')}<input type="url" value={data.cinetta_url??''} placeholder="http://localhost:3000" onChange={e=>setData({...data,cinetta_url:e.target.value})}/></label>
+          <label>{t('Cinetta inventory read key')}<input type="password" autoComplete="new-password" value={inventoryKey} onChange={e=>setInventoryKey(e.target.value)} placeholder={data.cinetta_inventory_key_set?t('Keep current if blank'):t('Not configured')}/></label>
+          <p className="settings-help">{t('Create a library:read key in Cinetta and enable inventory reading there. This is independent of inventory reporting to Oberiz.')}</p>
+          <label className="toggle-row"><input type="checkbox" checked={data.missing_reports_enabled??false} onChange={e=>setData({...data,missing_reports_enabled:e.target.checked})}/>{t('Allow integrations to read and refresh missing reports')}</label>
+          <p className="settings-help">{t('Disabled by default. Uses the existing Oberiz API key; local report buttons do not need this external permission.')}</p>
+        </section>
         <StorageSettings data={data} setData={setData}
           existingLibrary={<div className="storage-existing-library">
           <div className="settings-path-grid">

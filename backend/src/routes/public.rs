@@ -24,6 +24,11 @@ async fn authorize_before_body(
     if let Err(error) = authorization {
         return error.into_response();
     }
+    if request.uri().path().starts_with("/api/v1/library/missing")
+        && let Err(error) = crate::missing::authorize_external(&state).await
+    {
+        return error.into_response();
+    }
     static IN_FLIGHT: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
     let Ok(_permit) = IN_FLIGHT.try_acquire() else {
         return (
@@ -39,6 +44,11 @@ async fn authorize_before_body(
 pub fn router(state: AppState) -> Router<AppState> {
     Router::new()
         .route("/api/v1/status", get(public_api::status))
+        .route("/api/v1/library/missing", get(crate::missing::read))
+        .route(
+            "/api/v1/library/missing/refresh",
+            axum::routing::post(crate::missing::refresh).layer(DefaultBodyLimit::max(4096)),
+        )
         .route(
             "/api/v1/quality-profiles",
             get(public_api::list_quality_profiles),

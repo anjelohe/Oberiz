@@ -1,6 +1,15 @@
 # Oberiz — Plan de producto
 
-## Base v1.0.3
+## v1.0.4 — publicación autorizada, 2026-10-16
+
+Informes de faltantes y rediseño de interfaz aprobados visualmente. Correcciones
+de seguridad y reutilización de sesiones de qBittorrent verificadas en local:
+Pruebas unitarias y dos de migración, frontend y Clippy verificadas de nuevo tras
+corregir DNS/login, memoria de metadatos, caché de informes y rangos de episodios.
+El usuario autoriza subir a GitHub. Pendiente comprobar consumo real de qBittorrent.
+Configuración inicial de contraseña por red se mantiene. Ver memoria y auditoría.
+
+## Base publicada v1.0.3
 
 Incluye configuración inicial remota, borrado manual confirmado con archivos
 opcional, pausa Cinetta optativa desactivada por defecto y versión visible dinámica.

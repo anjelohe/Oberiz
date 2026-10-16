@@ -49,7 +49,7 @@ export function Indexers(){
   const load=useCallback(async()=>{const r=await fetch('/api/indexers');if(!r.ok)throw new Error(await r.text());setData(await r.json())},[])
   useEffect(()=>{void load().catch(e=>setError(String(e)))},[load])
 
-  async function sync(){setBusy(true);setError('');try{const r=await fetch('/api/indexers/sync',{method:'POST'});if(!r.ok)throw new Error(await r.text());await load()}catch(e){setError(e instanceof Error?e.message:String(e))}finally{setBusy(false)}}
+  async function sync(){setBusy(true);setError('');try{const r=await fetch('/api/indexers/sync',{method:'POST'});if(!r.ok)throw new Error(await r.text());const result=await r.json() as {skipped?:number};await load();if(result.skipped)setError(tf('{0} catalogue definitions could not be installed; the rest were updated. Details in History.',result.skipped))}catch(e){setError(e instanceof Error?e.message:String(e))}finally{setBusy(false)}}
   async function upload(file:File){
     setBusy(true);setError('')
     try{

@@ -35,9 +35,7 @@ fn data_directory() -> PathBuf {
 /// the service's own account/ACLs, set up separately in service.rs.
 #[cfg(unix)]
 fn restrict_data_directory_permissions(path: &std::path::Path) -> anyhow::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
-    Ok(())
+    crate::storage_security::protect_directory(path)
 }
 #[cfg(not(unix))]
 fn restrict_data_directory_permissions(path: &std::path::Path) -> anyhow::Result<()> {
@@ -99,8 +97,21 @@ pub async fn connect() -> anyhow::Result<SqlitePool> {
     }
 
     run_migrations_with_legacy_checksum_repair(&pool, &database_path).await?;
+    // The historical migration seeds dark. Override it only for a new database;
+    // changing old migrations or overwriting an existing preference is unsafe.
+    initialize_default_theme(&pool, tracked).await?;
 
     Ok(pool)
+}
+
+async fn initialize_default_theme(
+    pool: &SqlitePool,
+    existing_database: bool,
+) -> Result<(), sqlx::Error> {
+    if !existing_database {
+        crate::settings::set_value(pool, "ui.theme", "middle").await?;
+    }
+    Ok(())
 }
 
 async fn run_migrations_with_legacy_checksum_repair(
@@ -184,4 +195,38 @@ async fn repair_legacy_migration_checksum(
         .execute(pool)
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod default_theme_tests {
+    #[tokio::test]
+    async fn new_installation_uses_middle_and_existing_choices_are_preserved() {
+        let db = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&db).await.unwrap();
+        super::initialize_default_theme(&db, false).await.unwrap();
+        assert_eq!(
+            crate::settings::get_value(&db, "ui.theme")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("middle")
+        );
+        for theme in ["dark", "light", "middle"] {
+            crate::settings::set_value(&db, "ui.theme", theme)
+                .await
+                .unwrap();
+            super::initialize_default_theme(&db, true).await.unwrap();
+            assert_eq!(
+                crate::settings::get_value(&db, "ui.theme")
+                    .await
+                    .unwrap()
+                    .as_deref(),
+                Some(theme)
+            );
+        }
+    }
 }

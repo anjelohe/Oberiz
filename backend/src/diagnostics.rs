@@ -47,7 +47,7 @@ pub async fn get_diagnostics(
         .fetch_one(&state.db)
         .await
         .map_err(internal)?;
-    let recent_errors = sqlx::query_as::<_, DiagnosticError>(
+    let mut recent_errors = sqlx::query_as::<_, DiagnosticError>(
         r#"
         SELECT event_type AS source, COALESCE(detail,title) AS message, created_at AS occurred_at
         FROM history WHERE level='error' ORDER BY created_at DESC LIMIT 20
@@ -56,6 +56,9 @@ pub async fn get_diagnostics(
     .fetch_all(&state.db)
     .await
     .map_err(internal)?;
+    for error in &mut recent_errors {
+        error.message = crate::cardigann::redact_message(&error.message);
+    }
     Ok(Json(Diagnostics {
         version: env!("CARGO_PKG_VERSION"),
         operating_system: std::env::consts::OS,

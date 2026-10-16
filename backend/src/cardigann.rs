@@ -198,6 +198,8 @@ fn redact_sensitive_query_params(url: &Url) -> Url {
         "passkey", "apikey", "api_key", "token", "auth", "key", "rsskey", "secret", "password",
     ];
     let mut redacted = url.clone();
+    let _ = redacted.set_password(None);
+    let _ = redacted.set_username("");
     let pairs: Vec<(String, String)> = redacted
         .query_pairs()
         .map(|(k, v)| {
@@ -212,6 +214,17 @@ fn redact_sensitive_query_params(url: &Url) -> Url {
         redacted.query_pairs_mut().clear().extend_pairs(&pairs);
     }
     redacted
+}
+
+pub(crate) fn redact_message(message: &str) -> String {
+    static URLS: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    URLS.get_or_init(|| Regex::new(r#"(?i)https?://[^\s<>"']+"#).expect("constant URL regex"))
+        .replace_all(message, |caps: &regex::Captures<'_>| {
+            Url::parse(&caps[0])
+                .map(|url| redact_sensitive_query_params(&url).to_string())
+                .unwrap_or_else(|_| "[invalid URL]".into())
+        })
+        .into_owned()
 }
 
 fn human_duration(seconds: u64) -> String {
@@ -901,48 +914,72 @@ async fn test_search_endpoint(
         }
         request.send().await
     }
-    .map_err(|error| format!("Error HTTP en {}: {error}", def.name))?;
+    .map_err(|error| {
+        format!(
+            "Error HTTP en {}: {}",
+            def.name,
+            sanitize_reqwest_error(&error)
+        )
+    })?;
 
     Ok(Some(response))
 }
 
-/// Whether `candidate_url`'s host is the indexer's own host, or a subdomain
-/// (or parent domain) of it. Some trackers legitimately serve downloads from
-/// a separate subdomain (`dl.tracker.com` vs `tracker.com`), so this isn't a
-/// strict equality check — but a genuinely unrelated host, whether from a
-/// compromised/malicious indexer definition or a hijacked details page, must
-/// not receive that indexer's login cookies and custom auth headers just
-/// because they happen to be sitting on the `reqwest::Client` used to fetch
-/// it.
-fn same_or_related_host(base_url: &str, candidate_url: &str) -> bool {
-    let host = |value: &str| {
-        Url::parse(value)
-            .ok()
-            .and_then(|u| u.host_str().map(str::to_lowercase))
-    };
-    match (host(base_url), host(candidate_url)) {
-        // Only "candidate is a subdomain of base" authorizes reusing
-        // credentials — a tracker's own CDN subdomain (dl.tracker.com under
-        // tracker.com) is the legitimate case this exists for. The reverse
-        // ("base is a subdomain of candidate") used to also pass, which
-        // accepted ANY ancestor of base as related, public suffix included:
-        // a base of tracker.co.uk made a bare "co.uk" link in a release
-        // count as related, authorizing our credentials for a domain that
-        // has nothing to do with this indexer.
-        (Some(base), Some(candidate)) => {
-            base == candidate || candidate.ends_with(&format!(".{base}"))
-        }
-        _ => false,
+/// Whether `candidate` belongs to the indexer's own site and may receive its
+/// session cookies and auth headers. Trackers legitimately redirect between
+/// `www.tracker.com` and `tracker.com`, and some serve downloads from a
+/// subdomain (`dl.tracker.com`); refusing those makes working indexers fail.
+/// A genuinely unrelated host — from a malicious definition or a hijacked
+/// page — never qualifies:
+/// - only the configured host, that host with or without `www.`, and (when
+///   `allow_subdomains`) subdomains of it; never a parent domain, so a base of
+///   tracker.co.uk can't make `co.uk` count;
+/// - never a downgrade from HTTPS to plain HTTP (credentials in clear text),
+///   unless the administrator configured the indexer itself over HTTP;
+/// - an IP-literal base has no related hosts.
+///
+/// Callers still apply the public-address check before using the result for
+/// anything other than the exact configured origin.
+fn same_site(base: &Url, candidate: &Url, allow_subdomains: bool) -> bool {
+    if base.origin() == candidate.origin() {
+        return true;
     }
+    if candidate.scheme() != "https" && !(candidate.scheme() == "http" && base.scheme() == "http") {
+        return false;
+    }
+    if candidate.port_or_known_default() != base.port_or_known_default()
+        && !(base.scheme() == "http"
+            && base.port_or_known_default() == Some(80)
+            && candidate.scheme() == "https"
+            && candidate.port_or_known_default() == Some(443))
+    {
+        return false;
+    }
+    let (Some(url::Host::Domain(base_host)), Some(url::Host::Domain(host))) =
+        (base.host(), candidate.host())
+    else {
+        return false;
+    };
+    let base_host = base_host.to_ascii_lowercase();
+    let host = host.to_ascii_lowercase();
+    let site = base_host.strip_prefix("www.").unwrap_or(&base_host);
+    if !site.contains('.') {
+        return false;
+    }
+    host == base_host
+        || host == site
+        || host == format!("www.{site}")
+        || (allow_subdomains && host.ends_with(&format!(".{site}")))
 }
 
 /// Whether every address a host resolves to is a public, routable address.
 /// A release or redirect can point anywhere — this is what keeps a
 /// compromised/malicious tracker from using Oberiz as a blind GET proxy
 /// into loopback, private, or link-local addresses on the server's own
-/// network. Only applied to hosts `same_or_related_host` already rejected as
-/// unrelated to the indexer's configured base_url, since that one is an
-/// explicit admin choice (including a deliberately configured LAN indexer).
+/// network. Applied to every host other than the exact configured origin
+/// (see `authorize_fetch`), including the tracker's own `same_site` hosts;
+/// the configured origin itself is exempt because it is an explicit admin
+/// choice (including a deliberately configured LAN indexer).
 ///
 /// This resolves the hostname once up front and does not pin that address
 /// for the connection reqwest then makes — a DNS answer that changes
@@ -970,22 +1007,34 @@ async fn resolve_pinned_public_address(host: &str, port: u16) -> Option<std::net
 fn is_public_ip(ip: std::net::IpAddr) -> bool {
     match ip {
         std::net::IpAddr::V4(v4) => {
+            let [a, b, c, _] = v4.octets();
             !(v4.is_loopback()
                 || v4.is_private()
                 || v4.is_link_local()
                 || v4.is_unspecified()
                 || v4.is_broadcast()
                 || v4.is_multicast()
-                || v4.is_documentation())
+                || v4.is_documentation()
+                || a == 0
+                || a >= 240
+                || (a == 100 && (64..=127).contains(&b))
+                || (a == 198 && (b == 18 || b == 19))
+                || (a == 192 && b == 0 && c == 0))
         }
         std::net::IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_public_ip(std::net::IpAddr::V4(v4));
+            }
             let is_unique_local = (v6.segments()[0] & 0xfe00) == 0xfc00;
             let is_unicast_link_local = (v6.segments()[0] & 0xffc0) == 0xfe80;
             !(v6.is_loopback()
                 || v6.is_unspecified()
                 || v6.is_multicast()
                 || is_unique_local
-                || is_unicast_link_local)
+                || is_unicast_link_local
+                || (v6.segments()[0] & 0xe000) != 0x2000
+                || (v6.segments()[0] == 0x2001 && v6.segments()[1] < 0x200)
+                || (v6.segments()[0] == 0x2001 && v6.segments()[1] == 0xdb8))
         }
     }
 }
@@ -995,14 +1044,37 @@ fn is_public_ip(ip: std::net::IpAddr) -> bool {
 /// internet (see `resolves_to_public_address`). Centralizing this means the
 /// SSRF check automatically covers every place a Cardigann-driven fetch
 /// picks between the authenticated client and the bare shared one.
+#[derive(Clone)]
+struct TrackerClient {
+    http: Client,
+    jar: std::sync::Arc<reqwest::cookie::Jar>,
+    headers: HeaderMap,
+}
+impl std::ops::Deref for TrackerClient {
+    type Target = Client;
+    fn deref(&self) -> &Client {
+        &self.http
+    }
+}
+
 async fn authorize_fetch(
     def: &Definition,
-    client: &Client,
+    client: &TrackerClient,
     url: &str,
 ) -> Result<(Client, bool), String> {
-    let related = same_or_related_host(&def.base_url, url);
-    if related {
-        return Ok((client.clone(), true));
+    let base = Url::parse(&def.base_url).map_err(|_| "Invalid indexer URL".to_string())?;
+    let destination = Url::parse(url).map_err(|_| "Invalid download URL".to_string())?;
+    if !matches!(destination.scheme(), "http" | "https")
+        || !destination.username().is_empty()
+        || destination.password().is_some()
+    {
+        return Err("Unsupported download URL".into());
+    }
+    // Only the administrator-configured origin itself may be a private
+    // address (a deliberately configured LAN indexer). Anything else must
+    // resolve publicly, even when it belongs to the same site.
+    if base.origin() == destination.origin() {
+        return Ok((client.http.clone(), true));
     }
     let parsed =
         Url::parse(url).map_err(|e| format!("{} proporcionó una URL inválida: {e}", def.name))?;
@@ -1019,28 +1091,60 @@ async fn authorize_fetch(
             def.name
         ));
     };
+    if same_site(&base, &destination, true) {
+        // Share cookies/headers, but never the original resolver or proxy.
+        return Ok((pinned_tracker_client(client, &host, addr)?, true));
+    }
     // A fresh, single-use client pinned to exactly the address just
     // validated — state.http would instead re-resolve `host` itself at
     // connect time, which is the DNS-rebinding window resolve_pinned_public_
     // address's own doc comment explains.
-    let pinned = Client::builder()
-        .resolve(&host, addr)
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|e| sanitize_reqwest_error(&e))?;
+    let pinned = public_fetch_client(&host, addr)?;
     Ok((pinned, false))
 }
 
+fn pinned_tracker_client(
+    client: &TrackerClient,
+    host: &str,
+    addr: std::net::SocketAddr,
+) -> Result<Client, String> {
+    Client::builder()
+        .cookie_provider(client.jar.clone())
+        .default_headers(client.headers.clone())
+        .resolve(host, addr)
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+        .user_agent(concat!("Oberiz/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|e| sanitize_reqwest_error(&e))
+}
+
+fn public_fetch_client(host: &str, addr: std::net::SocketAddr) -> Result<Client, String> {
+    Client::builder()
+        .resolve(host, addr)
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|e| sanitize_reqwest_error(&e))
+}
+
+#[cfg(test)]
+#[path = "cardigann_security_tests.rs"]
+mod security_tests;
+
 /// `client` is built with `redirect::Policy::none()`, so a 3xx response here
 /// means the caller still has to go get it. Re-validates the destination
-/// against `same_or_related_host` before deciding whether credentials go
+/// through `authorize_fetch` before deciding whether credentials go
 /// with it, exactly like the first request did — and only follows one hop:
 /// a destination that redirects again is refused rather than chased
 /// indefinitely.
 async fn follow_redirect_once(
     def: &Definition,
-    client: &Client,
+    client: &TrackerClient,
     download_headers: &[(String, String)],
     response: reqwest::Response,
 ) -> Result<reqwest::Response, String> {
@@ -1195,7 +1299,7 @@ const MAX_TORRENT_BYTES: usize = 15 * 1024 * 1024;
 /// Reads a response body up to `max_bytes`, rejecting both an oversized
 /// `Content-Length` up front and a chunked/unlabelled body that grows past
 /// the limit while streaming, instead of buffering the whole thing first.
-async fn read_capped_bytes(
+pub(crate) async fn read_capped_bytes(
     mut response: reqwest::Response,
     max_bytes: usize,
     context: &str,
@@ -1458,7 +1562,62 @@ async fn load_definition(state: &AppState, indexer_id: &str) -> Result<Definitio
     })
 }
 
-async fn build_authenticated_client(def: &Definition) -> Result<Client, String> {
+async fn login_send(
+    def: &Definition,
+    client: &TrackerClient,
+    builder: reqwest::RequestBuilder,
+) -> Result<reqwest::Response, String> {
+    let base = Url::parse(&def.base_url).map_err(|_| "Invalid login origin")?;
+    let mut request = builder.build().map_err(|e| sanitize_reqwest_error(&e))?;
+    for hop in 0..=5 {
+        if !same_site(&base, request.url(), false)
+            || !request.url().username().is_empty()
+            || request.url().password().is_some()
+        {
+            return Err("Cross-origin credential submission is blocked".into());
+        }
+        let (http, _) = authorize_fetch(def, client, request.url().as_str()).await?;
+        let mut replay = request
+            .try_clone()
+            .ok_or("Login request cannot be replayed safely")?;
+        let response = http
+            .execute(request)
+            .await
+            .map_err(|e| sanitize_reqwest_error(&e))?;
+        if !response.status().is_redirection() {
+            return Ok(response);
+        }
+        if hop == 5 {
+            return Err("Too many login redirects".into());
+        }
+        let target = response
+            .url()
+            .join(
+                response
+                    .headers()
+                    .get(reqwest::header::LOCATION)
+                    .and_then(|v| v.to_str().ok())
+                    .ok_or("Missing login redirect location")?,
+            )
+            .map_err(|_| "Invalid login redirect location")?;
+        if response.status() == reqwest::StatusCode::SEE_OTHER
+            || (matches!(
+                response.status(),
+                reqwest::StatusCode::MOVED_PERMANENTLY | reqwest::StatusCode::FOUND
+            ) && replay.method() == reqwest::Method::POST)
+        {
+            *replay.method_mut() = reqwest::Method::GET;
+            *replay.body_mut() = None;
+            replay.headers_mut().remove(reqwest::header::CONTENT_TYPE);
+            replay.headers_mut().remove(reqwest::header::CONTENT_LENGTH);
+        }
+        *replay.url_mut() = target;
+        request = replay;
+    }
+    Err("Too many login redirects".into())
+}
+
+async fn build_authenticated_client(def: &Definition) -> Result<TrackerClient, String> {
     if let Some(message) = cooldown_message(def) {
         return Err(message);
     }
@@ -1503,14 +1662,19 @@ async fn build_authenticated_client(def: &Definition) -> Result<Client, String> 
         env!("CARGO_PKG_VERSION"),
         ")"
     );
-    let client = Client::builder()
-        .cookie_provider(jar.clone())
-        .default_headers(default_headers.clone())
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(18))
-        .user_agent(user_agent)
-        .build()
-        .map_err(|e| sanitize_reqwest_error(&e))?;
+    let client = TrackerClient {
+        http: Client::builder()
+            .cookie_provider(jar.clone())
+            .default_headers(default_headers.clone())
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(18))
+            .user_agent(user_agent)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|e| sanitize_reqwest_error(&e))?,
+        jar,
+        headers: default_headers,
+    };
 
     if let Some(login) = map_get(&def.yaml, "login") {
         let method = yaml_string(map_get(login, "method"))
@@ -1537,11 +1701,7 @@ async fn build_authenticated_client(def: &Definition) -> Result<Client, String> 
                             &ctx,
                         ),
                     )?;
-                    let page = client
-                        .get(&form_url)
-                        .send()
-                        .await
-                        .map_err(|e| sanitize_reqwest_error(&e))?;
+                    let page = login_send(def, &client, client.get(&form_url)).await?;
                     if !page.status().is_success() {
                         return Err(response_error(def, &page, "login form"));
                     }
@@ -1578,7 +1738,7 @@ async fn build_authenticated_client(def: &Definition) -> Result<Client, String> 
                     for (key, value) in &api_headers {
                         request = request.header(key, value);
                     }
-                    request.send().await
+                    login_send(def, &client, request).await
                 } else {
                     let mut request = client.post(url).form(&inputs);
                     // Match the browser context of the page from which we
@@ -1594,9 +1754,8 @@ async fn build_authenticated_client(def: &Definition) -> Result<Client, String> 
                         }
                         request = request.header(reqwest::header::REFERER, referer);
                     }
-                    request.send().await
-                }
-                .map_err(|e| sanitize_reqwest_error(&e))?;
+                    login_send(def, &client, request).await
+                }?;
                 if !response.status().is_success() {
                     return Err(response_error(def, &response, "login"));
                 }
@@ -1619,24 +1778,7 @@ async fn build_authenticated_client(def: &Definition) -> Result<Client, String> 
         }
     }
 
-    // Reusing the same session (shared jar) but a client that never
-    // auto-follows a redirect: reqwest's `remove_sensitive_headers` only
-    // strips a small fixed set of standard headers (Authorization, Cookie,
-    // Proxy-Authorization, WWW-Authenticate) on a cross-host redirect, never
-    // a custom header a definition injected into `default_headers` here —
-    // an `X-Api-Key` would otherwise ride along automatically to wherever a
-    // malicious or misconfigured redirect points. `follow_redirect_once`
-    // below re-validates the destination before ever presenting credentials
-    // to it.
-    Client::builder()
-        .cookie_provider(jar)
-        .default_headers(default_headers)
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(18))
-        .user_agent(user_agent)
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|e| sanitize_reqwest_error(&e))
+    Ok(client)
 }
 
 /// Return the tracker-provided form error without retaining any submitted
@@ -2348,30 +2490,69 @@ fn is_yaml(path: &Path) -> bool {
 }
 
 #[cfg(test)]
-mod same_or_related_host_tests {
-    use super::same_or_related_host;
+mod same_site_tests {
+    use super::same_site;
+    use url::Url;
+
+    fn related(base: &str, candidate: &str, subdomains: bool) -> bool {
+        same_site(
+            &Url::parse(base).unwrap(),
+            &Url::parse(candidate).unwrap(),
+            subdomains,
+        )
+    }
 
     #[test]
-    fn accepts_the_same_host_and_a_subdomain() {
-        assert!(same_or_related_host(
+    fn accepts_the_same_host_its_www_variant_and_a_download_subdomain() {
+        assert!(related(
             "https://tracker.example",
-            "https://tracker.example/download/123"
+            "https://tracker.example/download/123",
+            false
         ));
-        assert!(same_or_related_host(
+        assert!(related(
+            "https://www.tracker.example",
+            "https://tracker.example/login",
+            false
+        ));
+        assert!(related(
             "https://tracker.example",
-            "https://dl.tracker.example/x.torrent"
+            "https://www.tracker.example/login",
+            false
+        ));
+        assert!(related(
+            "https://tracker.example",
+            "https://dl.tracker.example/x.torrent",
+            true
+        ));
+        assert!(related(
+            "https://www.tracker.example",
+            "https://dl.tracker.example/x.torrent",
+            true
+        ));
+        // Login redirects never follow arbitrary subdomains.
+        assert!(!related(
+            "https://tracker.example",
+            "https://dl.tracker.example/x",
+            false
         ));
     }
 
     #[test]
     fn rejects_an_unrelated_host() {
-        assert!(!same_or_related_host(
+        assert!(!related(
             "https://tracker.example",
-            "https://attacker.example/x.torrent"
+            "https://attacker.example/x.torrent",
+            true
         ));
-        assert!(!same_or_related_host(
+        assert!(!related(
             "https://tracker.example",
-            "https://nottracker.example/x.torrent"
+            "https://nottracker.example/x.torrent",
+            true
+        ));
+        assert!(!related(
+            "https://tracker.example",
+            "https://tracker.example.attacker.example/x",
+            true
         ));
     }
 
@@ -2381,13 +2562,50 @@ mod same_or_related_host_tests {
         // as related: that's an ancestor of the base, not a subdomain of it,
         // and authorizing credentials for it would hand them to an
         // unrelated registry-level domain.
-        assert!(!same_or_related_host(
+        assert!(!related(
             "https://tracker.co.uk",
-            "https://co.uk/evil"
+            "https://co.uk/evil",
+            true
         ));
-        assert!(!same_or_related_host(
+        assert!(!related(
             "https://cdn.tracker.example",
-            "https://tracker.example/x.torrent"
+            "https://tracker.example/x.torrent",
+            true
+        ));
+        assert!(!related(
+            "https://www.example",
+            "https://evil.example/",
+            true
+        ));
+    }
+
+    #[test]
+    fn never_downgrades_credentials_to_plain_http_or_matches_ip_literals() {
+        assert!(!related(
+            "https://tracker.example",
+            "http://tracker.example/x.torrent",
+            true
+        ));
+        assert!(!related(
+            "https://tracker.example",
+            "http://dl.tracker.example/x.torrent",
+            true
+        ));
+        // An HTTP-configured tracker keeps working over HTTP and may upgrade.
+        assert!(related(
+            "http://tracker.example",
+            "http://www.tracker.example/x",
+            false
+        ));
+        assert!(related(
+            "http://tracker.example",
+            "https://tracker.example/x",
+            false
+        ));
+        assert!(!related(
+            "http://192.168.1.10:9117",
+            "http://192.168.1.11:9117/x",
+            true
         ));
     }
 }

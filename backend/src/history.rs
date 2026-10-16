@@ -32,8 +32,8 @@ pub async fn record(
     let _ =
         sqlx::query("INSERT INTO history (event_type, title, detail, level) VALUES (?, ?, ?, ?)")
             .bind(event_type)
-            .bind(title)
-            .bind(detail)
+            .bind(crate::cardigann::redact_message(title))
+            .bind(detail.map(crate::cardigann::redact_message))
             .bind(level)
             .execute(db)
             .await;
@@ -45,7 +45,7 @@ pub async fn list_history(
 ) -> Result<Json<Vec<HistoryItem>>, (StatusCode, String)> {
     let limit = query.limit.unwrap_or(100).clamp(1, 500);
 
-    let rows = sqlx::query_as::<_, HistoryItem>(
+    let mut rows = sqlx::query_as::<_, HistoryItem>(
         r#"
         SELECT id, event_type, title, detail, level, created_at
         FROM history
@@ -58,5 +58,9 @@ pub async fn list_history(
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
+    for row in &mut rows {
+        row.title = crate::cardigann::redact_message(&row.title);
+        row.detail = row.detail.as_deref().map(crate::cardigann::redact_message);
+    }
     Ok(Json(rows))
 }

@@ -207,19 +207,24 @@ fn configure_service_environment() -> anyhow::Result<()> {
     let environment = format!(
         "OBERIZ_DATA_DIR={data_dir}\\0OBERIZ_CONFIG_DIR={config_dir}\\0OBERIZ_STATIC_DIR={static_dir}\\0"
     );
-    let output = std::process::Command::new("reg")
-        .args([
-            "add",
-            &format!(r"HKLM\SYSTEM\CurrentControlSet\Services\{SERVICE_NAME}"),
-            "/v",
-            "Environment",
-            "/t",
-            "REG_MULTI_SZ",
-            "/d",
-            &environment,
-            "/f",
-        ])
-        .output()?;
+    let output = std::process::Command::new(
+        std::path::PathBuf::from(
+            std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into()),
+        )
+        .join("System32/reg.exe"),
+    )
+    .args([
+        "add",
+        &format!(r"HKLM\SYSTEM\CurrentControlSet\Services\{SERVICE_NAME}"),
+        "/v",
+        "Environment",
+        "/t",
+        "REG_MULTI_SZ",
+        "/d",
+        &environment,
+        "/f",
+    ])
+    .output()?;
     if !output.status.success() {
         anyhow::bail!(
             "reg add failed: {}",
@@ -299,9 +304,14 @@ pub fn uninstall() -> anyhow::Result<()> {
 /// access, so the unprivileged tray helper can control it.
 fn grant_authenticated_users_start_stop() -> anyhow::Result<()> {
     const SDDL: &str = "D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRRC;;;BA)(A;;CCLCSWRPWP;;;AU)(A;;CCLCSWLOCRRC;;;IU)";
-    let output = std::process::Command::new("sc")
-        .args(["sdset", SERVICE_NAME, SDDL])
-        .output()?;
+    let output = std::process::Command::new(
+        std::path::PathBuf::from(
+            std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into()),
+        )
+        .join("System32/sc.exe"),
+    )
+    .args(["sdset", SERVICE_NAME, SDDL])
+    .output()?;
     if !output.status.success() {
         anyhow::bail!(
             "sc sdset failed: {}",

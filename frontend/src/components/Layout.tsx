@@ -1,6 +1,6 @@
 import { ReactNode, useEffect, useRef, useState } from 'react'
 import { version } from '../../package.json'
-import { Icon } from './Icon'
+import { Icon, HeaderIcon, SidebarIcon } from './Icon'
 import { AddMediaModal } from './AddMediaModal'
 import { useTranslation, t, tf } from '../lib/i18n'
 import { Diagnostics, Movie, Series, getDiagnostics, getMovies, getSeries } from '../lib/api'
@@ -24,7 +24,7 @@ export function Layout({
 }){
   const [open,setOpen]=useState(false)
   useTranslation()
-  const [collapsed,setCollapsed]=useState(()=>localStorage.getItem('oberiz.sidebar-collapsed')==='true')
+  const [collapsed,setCollapsed]=useState(()=>localStorage.getItem('oberiz.sidebar-collapsed')!=='false')
   const [addMediaOpen,setAddMediaOpen]=useState(false)
   const [query,setQuery]=useState('')
   const [movies,setMovies]=useState<Movie[]>([])
@@ -79,12 +79,13 @@ export function Layout({
   return <div className={`app-shell ${collapsed?'sidebar-collapsed':''}`}>
     {open&&<button className="mobile-backdrop" aria-label={t("Close menu")} onClick={()=>setOpen(false)}/>}
     <div className="topbar-brand">
-      <button className="sidebar-collapse" type="button" onClick={toggleSidebar} title={collapsed?t("Expand menu"):t("Collapse menu")} aria-label={collapsed?t("Expand menu"):t("Collapse menu")}>☰</button>
+      <button className="sidebar-collapse" type="button" onClick={toggleSidebar} title={collapsed?t("Expand menu"):t("Collapse menu")} aria-label={collapsed?t("Expand menu"):t("Collapse menu")}><HeaderIcon name="menu" size={21}/></button>
       <button className="topbar-logo" onClick={()=>navigate('dashboard')} aria-label={t("Go to dashboard")}><img src={theme==='middle'?'/oberiz-logo-middle.png':'/oberiz-logo.png'} alt="Oberiz"/></button>
     </div>
     <aside className={`sidebar ${open?'mobile-open':''}`}>
-      <nav>{items.map(item=><button key={item.id} className={`nav-item ${page===item.id?'active':''}`} onClick={()=>navigate(item.id)} aria-label={t(item.label)} aria-current={page===item.id?'page':undefined}><Icon name={item.icon}/><span>{t(item.label)}</span></button>)}</nav>
-      <div className="sidebar-spacer"/>
+      <button type="button" className="sidebar-mobile-close" onClick={()=>setOpen(false)} aria-label={t('Close menu')}><HeaderIcon name="menu" size={21}/></button>
+      <nav>{items.map(item=><button key={item.id} title={t(item.label)} className={`nav-item ${page===item.id?'active':''}`} onClick={()=>navigate(item.id)} aria-label={t(item.label)} aria-current={page===item.id?'page':undefined}><SidebarIcon name={item.icon}/><span>{t(item.label)}</span></button>)}</nav>
+      <div className="sidebar-footer">
       <label className="sidebar-theme">
         <span>{t('Theme')}</span>
         <select value={theme} onChange={e=>onTheme(e.target.value==='light'||e.target.value==='middle'?e.target.value:'dark')}>
@@ -95,20 +96,21 @@ export function Layout({
       </label>
       <div className="sidebar-theme-icons" role="group" aria-label={t("Theme")}><button className={theme==='dark'?'active':''} type="button" onClick={()=>onTheme('dark')} title={t("Dark theme")} aria-label={t("Dark theme")} aria-pressed={theme==='dark'}>◐</button><button className={theme==='middle'?'active':''} type="button" onClick={()=>onTheme('middle')} title={t("Middle theme")} aria-label={t("Middle theme")} aria-pressed={theme==='middle'}>●</button><button className={theme==='light'?'active':''} type="button" onClick={()=>onTheme('light')} title={t("Light theme")} aria-label={t("Light theme")} aria-pressed={theme==='light'}>☀</button></div>
       <button className={`system-ok ${systemStatus==='warn'?'warn':systemStatus==='unknown'?'unknown':''}`} onClick={()=>navigate('settings')} title={t("Open system diagnostics")}><span/> {t(systemLabel)}</button>
-      <div className="version"><b>v{version}</b><span>{t("Self-hosted Media Automation")}</span></div>
+      <div className="version"><b>v{version}</b></div>
+      </div>
     </aside>
 
     <main className="main">
       <header className="topbar">
-        <button className="mobile-menu" aria-label={t("Open menu")} onClick={()=>setOpen(true)}>☰</button>
-        <div className="global-search-wrap"><div className="global-search"><Icon name="search" size={20}/><input ref={searchRef} value={query} onChange={event=>setQuery(event.target.value)} onKeyDown={event=>{if(event.key==='Escape')setQuery('')}} placeholder={t('Search Oberiz...')}/><kbd>Ctrl K</kbd></div>{needle&&<div className="global-search-results">{results.map(result=><button key={`${result.type}-${result.title}`} onClick={()=>{navigate(result.type);setQuery('')}}><strong>{result.title}</strong><small>{result.meta}</small></button>)}{!results.length&&<p>{t("No movies or series in your library match “")}{query}”.</p>}</div>}</div>
+        <button className="mobile-menu" aria-label={t("Open menu")} onClick={()=>setOpen(true)}><HeaderIcon name="menu" size={21}/></button>
+        <div className="global-search-wrap"><div className="global-search"><HeaderIcon name="search"/><input ref={searchRef} value={query} onChange={event=>setQuery(event.target.value)} onKeyDown={event=>{if(event.key==='Escape')setQuery('')}} placeholder={t('Search Oberiz...')}/><kbd>Ctrl K</kbd></div>{needle&&<div className="global-search-results">{results.map(result=><button key={`${result.type}-${result.title}`} onClick={()=>{navigate(result.type);setQuery('')}}><strong>{result.title}</strong><small>{result.meta}</small></button>)}{!results.length&&<p>{t("No movies or series in your library match “")}{query}”.</p>}</div>}</div>
         <div className="top-actions">
-          <button className="primary-button top-add" onClick={()=>setAddMediaOpen(true)}><Icon name="plus" size={18}/>{t('Add Media')}</button>
-          <button className="top-icon-button" aria-label={t("Open imports")} title={t('Imports & Reseed')} onClick={()=>navigate('imports')}><Icon name="imports" size={19}/></button>
-          <button className="top-icon-button" aria-label={t("Open history")} title={t('History')} onClick={()=>navigate('history')}><Icon name="history" size={19}/></button>
-          <button className="top-icon-button" aria-label={t("Open calendar")} title={t('Calendar')} onClick={()=>navigate('calendar')}><Icon name="calendar" size={19}/></button>
-          <button className="top-icon-button" aria-label={t("Open notifications")} title={t('Notifications & activity')} onClick={()=>navigate('history')}><Icon name="bell" size={19}/></button>
-          <button className="top-icon-button" aria-label={t("Open settings")} title={t('Settings')} onClick={()=>navigate('settings')}><Icon name="settings" size={19}/></button>
+          <button className="primary-button top-add" onClick={()=>setAddMediaOpen(true)}><HeaderIcon name="plusCircle" size={20}/>{t('Add Media')}</button>
+          <button className="top-icon-button" aria-label={t("Open imports")} title={t('Imports & Reseed')} onClick={()=>navigate('imports')}><HeaderIcon name="imports"/></button>
+          <button className="top-icon-button" aria-label={t("Open history")} title={t('History')} onClick={()=>navigate('history')}><HeaderIcon name="history"/></button>
+          <button className="top-icon-button" aria-label={t("Open calendar")} title={t('Calendar')} onClick={()=>navigate('calendar')}><HeaderIcon name="calendar"/></button>
+          <button className="top-icon-button" aria-label={t("Open notifications")} title={t('Notifications & activity')} onClick={()=>navigate('history')}><HeaderIcon name="bell"/></button>
+          <button className="top-icon-button" aria-label={t("Open settings")} title={t('Settings')} onClick={()=>navigate('settings')}><HeaderIcon name="settings" size={20}/></button>
         </div>
       </header>
       <div className="content">{children}</div>

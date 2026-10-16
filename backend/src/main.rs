@@ -14,6 +14,7 @@ mod importer;
 mod indexers;
 mod library;
 mod library_roots;
+mod missing;
 mod movies;
 mod overseerr;
 mod profiles;
@@ -24,6 +25,8 @@ mod releases;
 mod routes;
 mod rss;
 mod search_api;
+#[cfg(test)]
+mod security_tests;
 mod series;
 #[cfg(windows)]
 mod service;
@@ -172,6 +175,9 @@ async fn frontend_shell() -> Response {
 async fn build_app_state() -> anyhow::Result<AppState> {
     storage_security::protect_directory(&settings::config_directory())?;
     let db = db::connect().await?;
+    missing::recover_interrupted(&db)
+        .await
+        .map_err(|(_, code)| anyhow::anyhow!("{code}"))?;
     settings::migrate_legacy_api_key(&db).await?;
     let http = reqwest::Client::builder()
         .user_agent(concat!("Oberiz/", env!("CARGO_PKG_VERSION")))
@@ -264,7 +270,7 @@ async fn run_server(
         // upload is bounded only by however much RAM the process can grab.
         // 512 MiB comfortably covers a real Oberiz database, which holds only
         // metadata and history, never media files.
-        .layer(DefaultBodyLimit::max(512 * 1024 * 1024))
+        .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
         .layer(axum::middleware::from_fn(security_headers))
         .with_state(state);
 

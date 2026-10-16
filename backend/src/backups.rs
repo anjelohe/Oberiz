@@ -1,6 +1,6 @@
 use axum::{
     Json,
-    body::Bytes,
+    body::HttpBody,
     extract::{Path, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
 };
@@ -194,18 +194,105 @@ pub async fn download_backup(
     Ok((headers, contents))
 }
 
-pub async fn upload_backup(
-    State(state): State<AppState>,
-    body: Bytes,
-) -> Result<Json<BackupResult>, (StatusCode, String)> {
-    if body.len() < 16 || &body[..16] != b"SQLite format 3\0" {
+pub(crate) async fn receive_backup(
+    request: axum::extract::Request,
+    directory: PathBuf,
+) -> Result<PathBuf, (StatusCode, String)> {
+    use tokio::io::AsyncWriteExt;
+    static UPLOAD: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+    let _permit = UPLOAD.try_acquire().map_err(|_| {
+        (
+            StatusCode::TOO_MANY_REQUESTS,
+            "Backup upload already running".into(),
+        )
+    })?;
+    let limit = 512 * 1024 * 1024usize;
+    if request
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.parse::<usize>().ok())
+        .is_some_and(|n| n > limit)
+    {
         return Err((
-            StatusCode::BAD_REQUEST,
-            "Upload a valid SQLite database backup.".to_owned(),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "Backup exceeds 512 MiB".into(),
         ));
     }
-    let path = backup_directory()?.join(format!("{PREFIX}{}{}", timestamp_millis()?, EXTENSION));
-    tokio::fs::write(&path, &body).await.map_err(internal)?;
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(internal)?
+        .as_nanos();
+    let path = directory.join(format!("{PREFIX}{stamp}{EXTENSION}"));
+    let temporary = path.with_extension("upload");
+    let result = async {
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .await
+            .map_err(internal)?;
+        let mut body = request.into_body();
+        let mut total = 0usize;
+        let mut signature: Vec<u8> = Vec::new();
+        while let Some(frame) =
+            std::future::poll_fn(|cx| std::pin::Pin::new(&mut body).poll_frame(cx)).await
+        {
+            let frame =
+                frame.map_err(|_| (StatusCode::BAD_REQUEST, "Invalid upload stream".into()))?;
+            if let Ok(bytes) = frame.into_data() {
+                total = total
+                    .checked_add(bytes.len())
+                    .ok_or((StatusCode::PAYLOAD_TOO_LARGE, "Backup too large".into()))?;
+                if total > limit {
+                    return Err((
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "Backup exceeds 512 MiB".into(),
+                    ));
+                }
+                signature.extend(bytes.iter().take(16 - signature.len()));
+                if signature.len() == 16 && signature != b"SQLite format 3\0" {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        "Upload a valid SQLite database backup.".into(),
+                    ));
+                }
+                file.write_all(&bytes).await.map_err(internal)?;
+            }
+        }
+        if signature.len() != 16 {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "Upload a valid SQLite database backup.".into(),
+            ));
+        }
+        file.flush().await.map_err(internal)?;
+        drop(file);
+        tokio::fs::rename(&temporary, &path)
+            .await
+            .map_err(internal)?;
+        Ok::<(), (StatusCode, String)>(())
+    };
+    let result = tokio::time::timeout(Duration::from_secs(300), result)
+        .await
+        .unwrap_or_else(|_| {
+            Err((
+                StatusCode::REQUEST_TIMEOUT,
+                "Backup upload timed out".into(),
+            ))
+        });
+    if result.is_err() {
+        let _ = tokio::fs::remove_file(&temporary).await;
+    }
+    result?;
+    Ok(path)
+}
+
+pub async fn upload_backup(
+    State(state): State<AppState>,
+    request: axum::extract::Request,
+) -> Result<Json<BackupResult>, (StatusCode, String)> {
+    let path = receive_backup(request, backup_directory()?).await?;
     let backup = backup_info(&path)?;
     history::record(
         &state.db,
@@ -302,6 +389,37 @@ fn quoted(identifier: &str) -> String {
     format!("\"{}\"", identifier.replace('"', "\"\""))
 }
 
+const SECURITY_FILTER: &str = "key LIKE 'auth.%' OR key LIKE 'api.%' OR key LIKE 'qbittorrent.%' OR key LIKE 'cinetta.%' OR key LIKE 'tmdb.%' OR key LIKE 'tvdb.%' OR key='overseerr.compat_enabled'";
+
+pub(crate) async fn security_snapshot(
+    connection: &mut sqlx::SqliteConnection,
+) -> Result<Vec<(String, String)>, (StatusCode, String)> {
+    sqlx::query_as(&format!(
+        "SELECT key,value FROM settings WHERE {SECURITY_FILTER}"
+    ))
+    .fetch_all(connection)
+    .await
+    .map_err(internal)
+}
+pub(crate) async fn preserve_security(
+    connection: &mut sqlx::SqliteConnection,
+    values: Vec<(String, String)>,
+) -> Result<(), (StatusCode, String)> {
+    sqlx::query(&format!("DELETE FROM settings WHERE {SECURITY_FILTER}"))
+        .execute(&mut *connection)
+        .await
+        .map_err(internal)?;
+    for (key, value) in values {
+        sqlx::query("INSERT INTO settings(key,value) VALUES(?,?)")
+            .bind(key)
+            .bind(value)
+            .execute(&mut *connection)
+            .await
+            .map_err(internal)?;
+    }
+    Ok(())
+}
+
 pub async fn restore_backup(
     State(state): State<AppState>,
     Path(filename): Path<String>,
@@ -335,9 +453,15 @@ pub async fn restore_backup(
         let current_tables = table_names(&mut connection, "main").await?;
         if current_tables != table_names(&mut connection, "restore").await? { return Err((StatusCode::CONFLICT, "This backup belongs to a different Oberiz database schema. Update Oberiz or choose a compatible backup.".to_owned())); }
         sqlx::query("BEGIN IMMEDIATE").execute(&mut *connection).await.map_err(internal)?;
-        for table in &current_tables { sqlx::query(&format!("DELETE FROM {}", quoted(table))).execute(&mut *connection).await.map_err(internal)?; }
+        let security_settings = security_snapshot(&mut connection).await?;
         for table in &current_tables {
-            if table == "auth_sessions" {
+            // Tracker credentials and connection configuration are security
+            // state too; keep the current table rather than restoring secrets.
+            if table == "indexer_configs" { continue; }
+            sqlx::query(&format!("DELETE FROM {}", quoted(table))).execute(&mut *connection).await.map_err(internal)?;
+        }
+        for table in &current_tables {
+            if table == "auth_sessions" || table == "indexer_configs" {
                 // Session state is security state, not restorable data: a
                 // backup can hold a session that was later revoked by logout
                 // or a password change, and bringing it back would silently
@@ -351,6 +475,10 @@ pub async fn restore_backup(
             }
             sqlx::query(&format!("INSERT INTO {} SELECT * FROM restore.{}", quoted(table), quoted(table))).execute(&mut *connection).await.map_err(internal)?;
         }
+        // Backups restore application data, never silently roll security back.
+        // Keep entire connection settings together to avoid sending a current
+        // password to an old destination from the backup.
+        preserve_security(&mut connection, security_settings).await?;
         let violation: Option<String> = sqlx::query_scalar("PRAGMA foreign_key_check").fetch_optional(&mut *connection).await.map_err(internal)?;
         if violation.is_some() { return Err((StatusCode::CONFLICT, "Backup failed the database integrity check; nothing was restored.".to_owned())); }
         sqlx::query("COMMIT").execute(&mut *connection).await.map_err(internal)?;
