@@ -1,75 +1,35 @@
-# Seguridad y puesta en servicio
+# Security and deployment
 
-## Primera contraseña
+## Initial password
 
-La primera contraseña puede configurarse desde el navegador de otro dispositivo,
-también mediante un proxy, sin acceder al escritorio del servidor. No se exige
-una dirección de loopback. Completar este paso en una red de confianza antes de
-publicar la instancia: mientras no hay contraseña, quien alcance el formulario
-puede establecerla. Los cambios se serializan y, una vez configurada, sustituirla
-requiere conocer la contraseña actual. Se mantienen los límites de longitud,
-el hash seguro y la revocación de sesiones al cambiarla.
+The initial password can be configured from another device's browser, including through a proxy, without accessing the server desktop. Loopback is not required. Complete setup on a trusted network before exposing the instance: while no password exists, anyone reaching the form can set it. Changes are serialized; after configuration, replacement requires the current password. Length limits, secure hashing, and session revocation on password changes remain in place.
 
-## Directorios privados
+## Private directories
 
-Datos, copias y configuración requieren permisos exclusivos del propietario,
-administradores y cuenta de servicio. Windows aplica ACL a archivos existentes
-y futuros; Linux utiliza directorios 0700. El helper solo debe apuntar a los
-directorios privados de Oberiz, nunca a una raíz de disco, carpeta personal,
-sistema operativo, enlace ni biblioteca multimedia.
+Data, backups, and configuration require access restricted to the owner, administrators, and service account. Windows applies ACLs to existing and future files; Linux uses 0700 directories. The helper must target only Oberiz private directories, never a disk root, home directory, operating system directory, link, or media library.
 
-La instalación existente en ProgramData requiere elevación de administrador
-para actualizar permisos de archivos creados por el servicio. Las ACL anteriores
-se han guardado localmente en `backend/backups/security-acl-20261014`.
-El helper preparado es `backend/backups/complete-private-acl.ps1`; ejecutar con
-Windows PowerShell como administrador si no aparece el aviso solicitado.
-Su resultado queda en `elevated-result.txt`. Verificar ACL de DB, WAL, SHM,
-respaldos y configuración antes de considerar cerrada la corrección.
+The existing ProgramData installation requires administrator elevation to update permissions on service-created files. Previous ACLs were saved locally in `backend/backups/security-acl-20261014`. The prepared helper is `backend/backups/complete-private-acl.ps1`; run it with Windows PowerShell as administrator if the requested prompt does not appear. Its result is stored in `elevated-result.txt`. Verify DB, WAL, SHM, backup, and configuration ACLs before considering the correction complete.
 
-Verificación realizada el 14 de octubre de 2026: helper `success`, sin reglas de
-acceso de Usuarios, Everyone o Authenticated Users en los archivos y directorios
-privados inspeccionados recursivamente. No se cambiaron permisos de bibliotecas.
+Verification on October 14, 2026: helper reported success; no Users, Everyone, or Authenticated Users access rules remained in recursively inspected private files/directories. Library permissions were not changed.
 
-## Cuenta y red
+## Account and network
 
-Servicios Windows nuevos usan LocalService, no LocalSystem. Una actualización
-mantiene la cuenta existente para evitar romper rutas que dependan de sus permisos.
-Cambiar esa cuenta requiere revisar primero el acceso necesario a los directorios.
-SMB sigue usando las credenciales explícitas configuradas por el usuario.
+New Windows services use LocalService rather than LocalSystem. An upgrade preserves the existing account to avoid breaking paths that depend on its permissions. Review required directory access before changing that account. Historically, SMB used explicitly configured credentials; Oberiz-managed SMB was removed in v1.0.2.
 
-`OBERIZ_BIND_ADDRESS=127.0.0.1:2032` limita la escucha a loopback cuando se usa un
-proxy local. El valor por defecto conserva la escucha de red por compatibilidad.
-Para acceso remoto: HTTPS, `OBERIZ_COOKIE_SECURE=true`, firewall y
-`OBERIZ_TRUSTED_PROXIES` con únicamente las direcciones de proxies reales.
-Estas opciones no instalan certificados ni modifican el firewall automáticamente.
+`OBERIZ_BIND_ADDRESS=127.0.0.1:2032` limits listening to loopback when using a local proxy. The default retains network listening for compatibility. Remote access requires HTTPS, `OBERIZ_COOKIE_SECURE=true`, a firewall, and `OBERIZ_TRUSTED_PROXIES` containing only actual proxy addresses. These options do not install certificates or modify the firewall automatically.
 
-## API y archivos
+## API and files
 
-La clave se comprueba antes de deserializar cuerpos, incluso con la API desactivada.
-La integración tiene límite de concurrencia. La clave actual conserva su contrato
-para no romper Cinetta/Overseerr: no se ha cambiado ni sustituido automáticamente.
-Debe mantenerse secreta; todavía no existen permisos separados por cliente/scope.
-Las políticas automáticas y el rechazo de releases conservan los archivos.
-En Descargas, el borrado manual pide confirmación y permite marcar «Borrar también
-los archivos descargados», desmarcado por defecto. Al marcarlo, qBittorrent ejecuta
-el borrado incluso si Oberiz no tiene acceso al NAS o usa inventario Cinetta.
-Un informe Cinetta solo actualiza datos de Oberiz.
-No utilizar `superseded` como instrucción de borrado sin validación independiente.
+The key is checked before deserializing bodies, including when the API is disabled. The integration has a concurrency limit. The existing key contract is preserved for Cinetta/Overseerr; the key was not automatically changed or replaced. Keep it secret; there are not yet separate per-client/scoped keys.
 
-## Credenciales y copias
+Automatic policies and release rejection preserve files. Manual deletion in Downloads requires confirmation and offers “Also delete downloaded files,” unchecked by default. If selected, qBittorrent deletes the files even without Oberiz NAS access or when using Cinetta inventory. A Cinetta report updates only Oberiz data. Do not interpret `superseded` as a deletion instruction without independent validation.
 
-Las credenciales de conexiones son reversibles porque Oberiz debe autenticarse
-con ellas. La base de datos y sus copias son confidenciales y se protegen mediante
-ACL/permisos; no se ha añadido cifrado integral con una nueva clave de recuperación.
-No publicar copias ni guardarlas en carpetas compartidas. Las copias antiguas o
-exportadas fuera de los directorios protegidos necesitan protección en su destino.
-Las contraseñas administrativas y claves de API se guardan como hash; SMB utiliza
-DPAPI de máquina, que también depende de las ACL para aislar usuarios locales.
+## Credentials and backups
 
-## Dependencias
+Connection credentials are reversible because Oberiz must authenticate with them. Databases and backups are confidential and protected by ACLs/permissions; no full-database encryption with a new recovery key has been added. Do not publish backups or store them in shared folders. Old backups and exports outside protected directories need protection at their destination.
 
-Ejecutar `pwsh -File scripts/audit-dependencies.ps1` desde la copia de código.
-Consulta OSV para versiones activas de Cargo (no entradas opcionales sin utilizar)
-y npm para el frontend. La comprobación también forma parte de CI y la publicación.
-No confundir un resultado limpio con una garantía frente a vulnerabilidades
-desconocidas ni con una auditoría del NAS o de Cinetta.
+Administrator passwords and API keys are hashed. Historical SMB storage used machine DPAPI, which also relies on ACLs to isolate local users.
+
+## Dependencies
+
+Run `pwsh -File scripts/audit-dependencies.ps1` from the source checkout. It queries OSV for active Cargo versions, excluding unused optional entries, and npm for the frontend. This check is also part of CI and releases. A clean result is not a guarantee against unknown vulnerabilities or an audit of the NAS or Cinetta.

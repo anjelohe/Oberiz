@@ -1,42 +1,36 @@
-# Oberiz — Plan de producto
+# Oberiz — Product plan
 
-## v1.0.4 — publicación autorizada, 2026-10-16
+## v1.0.4 — code uploaded, October 16, 2026
 
-Informes de faltantes y rediseño de interfaz aprobados visualmente. Correcciones
-de seguridad y reutilización de sesiones de qBittorrent verificadas en local:
-Pruebas unitarias y dos de migración, frontend y Clippy verificadas de nuevo tras
-corregir DNS/login, memoria de metadatos, caché de informes y rangos de episodios.
-El usuario autoriza subir a GitHub. Pendiente comprobar consumo real de qBittorrent.
-Configuración inicial de contraseña por red se mantiene. Ver memoria y auditoría.
+Main and tag `v1.0.4` were pushed to GitHub at commit `ca0d1d3`.
+CI `38929148251` and installer workflow `38929148331` were initially recorded as running. The v1.0.4 GitHub release subsequently became available with five assets; deployment to the local service was not performed.
 
-## Base publicada v1.0.3
+Missing content reports and the interface redesign were visually approved. Security and qBittorrent session-reuse changes passed local verification: 124 unit tests (one ignored), two migration tests, frontend checks, and Clippy after fixing DNS/login, metadata memory, report-cache retention, and episode ranges. The user authorized publication. Real qBittorrent memory consumption still needs observation. Initial password setup over the network remains supported. See project memory and audit.
 
-Incluye configuración inicial remota, borrado manual confirmado con archivos
-opcional, pausa Cinetta optativa desactivada por defecto y versión visible dinámica.
+## Published v1.0.3 foundation
 
-Biblioteca de películas y series, automatización/RSS, perfiles, qBittorrent,
-indexadores, API y seis idiomas. Inventario Cinetta o escaneo local de solo
-lectura, sin importaciones directas ni conexiones SMB gestionadas por Oberiz.
-Renombrado remoto opcional desactivado por defecto, diario persistente y
-recuperación detenida. Véanse la [memoria](Oberiz_Memoria_Actualizada.md) y la
-[guía de almacenamiento](Oberiz_Almacenamiento_Simplificado.md).
+Remote initial setup, confirmed manual deletion with optional files, an opt-in Cinetta pause disabled by default, and dynamic version display.
 
-## Principios
+Movie/series libraries, automation/RSS, profiles, qBittorrent, indexers, API, and six languages. Cinetta inventory or read-only local scanning, without direct imports or Oberiz-managed SMB connections. Optional remote renaming disabled by default, persistent journal, and stopped recovery. See [project memory](Oberiz_Memoria_Actualizada.md) and [storage guide](Oberiz_Almacenamiento_Simplificado.md).
 
-1. Automatización fiable y decisiones basadas en archivos realmente existentes.
-2. No borrar, pausar ni cancelar torrents por cambios externos implícitos.
-3. Proteger configuración, credenciales, datos y bibliotecas en actualizaciones.
-4. Separar inventario de operaciones: recibir rutas no concede acceso a los archivos.
-5. Mantener las credenciales fuera de Git y de respuestas de API.
+## Principles
 
-## Próximas verificaciones operativas
+1. Reliable automation and decisions based on files that actually exist.
+2. No torrent deletion, pausing, or cancellation through implicit external state changes.
+3. Protect configuration, credentials, data, and libraries during upgrades.
+4. Separate inventory from operations: receiving paths does not grant file access.
+5. Keep credentials out of Git and API responses.
+6. Public repository documentation, descriptions, and release notes are written in English. Preserve application localization and protocol identifiers.
 
-- Instalar conservando datos y comprobar la copia previa a la migración 0022.
-- Configurar el envío de inventario en la instancia instalada de Cinetta o las carpetas locales de solo lectura.
-- Verificar qBittorrent remoto y su consulta de directorios antes de activar renombrado; no usar organizadores concurrentes sobre los mismos destinos.
-- La prueba aislada con qBittorrent 5.2.3 ya verifica renombrado, exportación/hash, recuperación detenida, recheck y protección de un destino ocupado. No sustituye las comprobaciones de cada instalación.
-- Recuperación de registros de importación antiguos y torrents v2 puros: manual por ahora.
-- Seleccionar contenido y límites antes de pruebas reales de adquisición.
-- Validar paquetes Linux/Docker/Windows en instalaciones reales y mantener pruebas de recuperación y migración.
+## Next operational checks
 
-La publicación de código no configura automáticamente credenciales ni cambia permisos del NAS. Cambiar el número de versión del producto no justifica borrar datos del usuario.
+- Install while preserving data and verify the pre-migration-0022 backup.
+- Configure inventory sending in the installed Cinetta instance or read-only local folders.
+- Verify remote qBittorrent and directory queries before enabling renaming; avoid concurrent organizers on the same destinations.
+- The isolated qBittorrent 5.2.3 test already verifies renaming, export/hash, stopped recovery, recheck, and occupied-destination protection. It does not replace checks for each installation.
+- Recovery of old import records and pure v2 torrents remains manual.
+- Select content and limits before real acquisition tests.
+- Validate Linux/Docker/Windows packages in real installations and maintain recovery/migration tests.
+- Observe real qBittorrent memory consumption after the connection changes.
+
+Publishing code does not configure credentials or change NAS permissions automatically. Changing a product version does not justify deleting user data.

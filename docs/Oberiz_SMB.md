@@ -1,29 +1,27 @@
-# Conexiones SMB del servidor de Oberiz
+# Oberiz server SMB connections
 
-Documento histórico de v1.0.0/v1.0.1. Las conexiones y credenciales SMB de Oberiz
-se han retirado del flujo de trabajo nuevo. Véase
-[Almacenamiento simplificado](Oberiz_Almacenamiento_Simplificado.md).
+Historical v1.0.0/v1.0.1 document. Oberiz-managed SMB connections and credentials have been removed from the new workflow. See [Simplified storage](Oberiz_Almacenamiento_Simplificado.md).
 
-Incluido en v1.0.0 para instalaciones nativas de Windows. No depende de la marca del NAS, Cinetta ni de unidades de red conectadas en otra sesión de Windows.
+Included in v1.0.0 for native Windows installations. Independent of NAS brand, Cinetta, or network drives connected in another Windows session.
 
-## Uso opcional y compatibilidad
+## Optional use and compatibility
 
-Sin añadir conexiones SMB, Oberiz no solicita credenciales del NAS, no establece conexiones nuevas ni cambia cuentas, permisos o sesiones existentes. Sigue utilizando las rutas locales, UNC y montajes a los que ya tenga acceso su proceso, como antes. Por tanto, una unidad visible para el usuario pero no para LocalSystem seguirá sin estar accesible al servicio hasta configurar acceso adecuado.
+Without added SMB connections, Oberiz does not request NAS credentials, create connections, or change existing accounts, permissions, or sessions. It continues using local paths, UNC paths, and mounts already accessible to its process. A drive visible to a user but not LocalSystem remains inaccessible to the service until appropriate access is configured.
 
-El selector abre la vista de discos y recursos en lugar del perfil `systemprofile`, incluso sin configurar SMB. No traslada ni borra archivos ni modifica destinos de importación, categorías de qBittorrent o correspondencias ya guardadas. Publicar una versión no actualiza automáticamente las instalaciones existentes.
+The picker opens the disks/shares view rather than systemprofile, even without SMB configuration. It does not move/delete files or modify import destinations, qBittorrent categories, or saved mappings. Publishing a version does not automatically update existing installations.
 
-El requisito de una cuenta de solo lectura se retiró por decisión del usuario. Se utilizarán los permisos reales de la cuenta configurada; el escaneo sigue sin escribir en los archivos de la biblioteca, mientras que mover/importar requiere los permisos correspondientes sobre origen y destino.
+The read-only account requirement was removed at the user's request. The configured account's actual permissions apply. Scanning still does not write library files; moving/importing requires corresponding source and destination permissions.
 
-En Settings → Carpetas de la biblioteca → Servidores SMB / CIFS, introducir el nombre/IP del servidor, usuario y contraseña del NAS y pulsar **Conectar y guardar**. Usar HTTPS al configurar desde otro equipo. La contraseña nunca se devuelve por API; Windows DPAPI la cifra para esta máquina, permitiendo restaurarla desde la cuenta del servicio. La base de datos y las copias de seguridad siguen siendo privadas. Tras trasladar la configuración a otra máquina Windows se deben introducir nuevamente las credenciales.
+In Settings → Library folders → SMB / CIFS servers, enter the server name/IP and NAS username/password, then select **Connect and save**. Use HTTPS when configuring from another computer. The password is never returned through the API. Windows DPAPI encrypts it for this machine so the service account can restore it. Databases and backups remain private. Credentials must be entered again after moving configuration to another Windows machine.
 
-Windows conecta sin asignar letras de unidad y enumera los recursos compartidos de disco. Si el servidor impide enumerarlos, se puede indicar un nombre de recurso conocido; los recursos añadidos se conservan en el listado. Conexiones con credenciales incompatibles producen un error explícito: Oberiz no desconecta otras sesiones de Windows para resolverlo.
+Windows connects without assigning drive letters and enumerates disk shares. If enumeration is blocked, supply a known share name; added shares remain listed. Incompatible credentials produce an explicit error: Oberiz does not disconnect other Windows sessions to resolve it.
 
-El selector abre «Todos los discos y recursos»: unidades locales y recursos SMB guardados. Permite explorar rutas UNC, seleccionar varias carpetas y mantener ubicaciones guardadas cuando no responden; al intentar abrirlas muestra el error. Solo aparecen discos del NAS que estén compartidos por SMB, no dispositivos físicos que el NAS no exporte. Se respetan las restricciones `OBERIZ_FS_ALLOWED_ROOTS`.
+The picker opens “All disks and shares”: local drives and saved SMB shares. It supports browsing UNC paths, selecting several folders, and preserving saved locations while unavailable; attempting to open them shows the error. Only NAS disks exported through SMB appear, not physical devices the NAS does not share. `OBERIZ_FS_ALLOWED_ROOTS` restrictions are respected.
 
-Al iniciar la aplicación o el servicio se restablecen las conexiones guardadas en su propio contexto de Windows. Un NAS desconectado no bloquea indefinidamente el arranque: la restauración continúa en segundo plano después de diez segundos. Exploración, escaneo e importación utilizan rutas UNC y los permisos de esa cuenta SMB. No se cambian los permisos del NAS, ni se habilita SMB1/CIFS heredado; se utiliza la negociación del cliente SMB de Windows.
+At application/service startup, saved connections are restored in that process's Windows context. An offline NAS does not block startup indefinitely: restoration continues in the background after ten seconds. Browsing, scanning, and importing use UNC paths and that SMB account's permissions. NAS permissions are not changed, legacy SMB1/CIFS is not enabled, and Windows SMB client negotiation is used.
 
-«Olvidar conexión guardada» elimina sus credenciales y recursos de la configuración de Oberiz, pero no fuerza la desconexión de sesiones Windows existentes. Las correspondencias de rutas siguen siendo necesarias si qBittorrent comunica rutas distintas, por ejemplo rutas Linux.
+“Forget saved connection” removes credentials and shares from Oberiz configuration without forcibly disconnecting existing Windows sessions. Path mappings remain necessary when qBittorrent reports different paths, such as Linux paths.
 
-En Linux/Docker se utilizan recursos SMB montados por el sistema operativo y accesibles dentro del contenedor. El formulario de credenciales nativo de esta implementación no monta recursos Linux ni guarda contraseñas sin cifrar como alternativa.
+Linux/Docker uses OS-mounted SMB shares accessible inside the container. This implementation's native credentials form does not mount Linux shares or fall back to plaintext passwords.
 
-Verificado: compilación de frontend, seis idiomas, validación de servidores, cifrado DPAPI y detección de datos corruptos, respuesta API sin contraseñas ni ciphertext, listado de recursos guardados sin intentar acceder al NAS y eliminación de credenciales. La autenticación real con la cuenta del NAS desde el servicio requiere introducir las credenciales en la nueva sección; no se han recuperado de otras aplicaciones ni configurado automáticamente en la instalación existente.
+Verified: frontend compilation, six languages, server validation, DPAPI encryption and corruption detection, API responses without passwords/ciphertext, saved-share listing without NAS access, and credential removal. Actual NAS authentication from the service requires entering credentials in the section; credentials were not recovered from other applications or configured automatically in the existing installation.

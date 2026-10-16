@@ -1,391 +1,189 @@
-# Auditoría de seguridad previa a 1.0.4 — 2026-10-16
+# Security audit before 1.0.4 — October 16, 2026
 
-## Cierre de la revisión posterior — correcciones autorizadas
+## Delivery traceability
 
-Los cuatro hallazgos siguientes quedan corregidos para v1.0.4: los aliases
-permitidos comparten credenciales mediante un cliente sin proxy ni redirecciones
-automáticas y con la dirección pública validada fijada; el login valida cada
-salto, con máximo cinco y sin puertos arbitrarios. El origen local configurado
-explícitamente sigue permitido. Los metadatos se consumen secuencialmente, sin
-precargar todas las temporadas ni crear una tarea por recurso. La cuota global
-protege el último informe válido del alcance que se actualiza y se aplica solo
-después de validar la configuración. Los rangos de episodios usan suma comprobada
-y la expansión del inventario se limita a 500.000 episodios únicos.
+Fixes delivered to GitHub on `main`, commit `ca0d1d3`, tag `v1.0.4`, with an atomic push. CI `38929148251` and installers `38929148331` were recorded as running during the initial delivery check. The release was later confirmed available with five assets when its notes were translated. No service deployment or qBittorrent restart. Real memory consumption remains to be checked. Post-delivery documentation does not modify the release tag.
 
-Se añaden regresiones para conexiones fijadas con cookies/cabeceras, aliases de
-login privados, puertos, desbordamiento y conservación de informes con caché llena.
-La primera contraseña por red no se modifica. Esta auditoría no demuestra el
-consumo real de memoria de qBittorrent: queda pendiente observarlo en uso real.
-Las secciones anteriores al cierre se conservan como historial de la revisión.
+## Follow-up review closure — authorized corrections
 
-Verificación final: 124 pruebas unitarias correctas, una ignorada; dos migraciones;
-cinco suites frontend y compilación; formato y Clippy correctos. Consulta de
-dependencias: 252 versiones Rust activas sin avisos OSV y cero vulnerabilidades npm.
+The following four findings were fixed for v1.0.4. Allowed aliases share credentials through a client without proxies or automatic redirects, pinned to the validated public address. Login validates each hop, at most five, without arbitrary ports. The explicitly configured local origin remains allowed. Metadata is consumed sequentially without preloading all seasons or creating a task per resource. The global quota protects the refreshed scope's latest valid report and applies only after validating configuration. Episode ranges use checked addition; inventory expansion is limited to 500,000 unique episodes.
 
-## Revisión de cambios posteriores — hallazgos históricos corregidos
+Added regressions cover pinned connections with cookies/headers, private login aliases, ports, overflow, and report preservation with a full cache. Initial password setup over the network is unchanged. This audit does not establish real qBittorrent memory consumption; observation in real use remains pending. Historical review sections are retained below.
 
-El usuario aporta nuevos cambios sin preparar encima de los 57 archivos ya
-preparados y solicita revisión antes de subir. Se han revisado sin modificar el
-código. No se ha creado commit, etiqueta ni publicación. Los siguientes hallazgos
-sustituyen el cierre anterior en lo que afecta a los archivos modificados después.
+Final verification: 124 passing unit tests, one ignored; two migration tests; five frontend suites and build; formatting and Clippy passed. Dependencies: 252 active Rust versions without OSV advisories and zero npm vulnerabilities.
 
-1. **P1 — Política de credenciales/DNS:** en `cardigann.rs`, la nueva rama
-   `same_site` de `authorize_fetch` comprueba una resolución pública y después
-   devuelve el cliente autenticado original, que vuelve a resolver al conectar.
-   Reintroduce DNS rebinding para variantes www y subdominios. La política de
-   redirección de login también admite la variante www sin validar sus IP.
-   Hace falta conservar compatibilidad con los hosts legítimos pero fijar la IP
-   validada y el origen/puerto autorizado antes de mandar cookies o cabeceras.
-2. **P1 — Memoria de informes:** `metadata_many` crea una tarea por ruta y conserva
-   todos los resultados. `calculate` precarga todas las temporadas en un BTreeMap,
-   antes de aplicar el límite de 20.000 faltantes. Los máximos de entrada permiten
-   hasta 1.000 series por 200 temporadas. Cuatro peticiones simultáneas no limitan
-   la memoria retenida por todas sus respuestas. Procesar por lotes pequeños y
-   liberar cada resultado, con cuota total y parada anticipada. No se lanzó una
-   carga masiva contra proveedores ni una prueba de agotamiento de memoria.
-3. **P2 — Evicción del último informe válido:** el DELETE global por cuota no
-   excluye el informe válido del alcance que se está refrescando. Puede borrarlo
-   antes de validar la conexión o antes de que termine su reemplazo. Reproducido
-   en SQLite en memoria con la consulta actual y 200 informes: desaparece el único
-   informe válido del alcance actual. Proteger ese informe hasta tener reemplazo;
-   la expulsión de cachés antiguas de otros alcances puede conservarse.
-4. **P2 — Desbordamiento en rangos:** `(episode..=episode + 50)` desborda con
-   `episode_number=i64::MAX` y `episode_number_end` presente. La sonda aislada
-   reproduce panic en depuración; en release la suma puede envolver y validar
-   incorrectamente. Usar suma comprobada/saturada y un límite de numeración de
-   protocolo; un inventario defectuoso no debe dejar un trabajo en running.
+## Review of subsequent changes — historical findings, now corrected
 
-Verificación independiente de estos cambios: 120 pruebas unitarias correctas,
-una omitida; formato y Clippy estrictos correctos; las cinco suites frontend y
-compilación correctas. No se repitieron migraciones en este pase para no intentar
-sobrescribir el ejecutable de desarrollo en marcha. Las pruebas actuales no
-cubren los cuatro escenarios anteriores; que pasen no cierra los hallazgos.
-Catálogo con IDs mayúsculos, omisión de entradas inválidas, temporales únicos y
-aviso de omitidos: cambios coherentes con la compatibilidad y límites revisados.
-La implementación de sesiones reutilizadas de qBittorrent no ha cambiado en este
-diff posterior. Queda pendiente corregir los cuatro puntos y repetir verificación
-antes de publicar 1.0.4. La primera contraseña por red sigue fuera de los cambios.
+The user supplied new unstaged changes on top of 57 staged files and requested review before publication. At that review stage code was not modified and no commit, tag, or release had been created. These findings superseded the earlier closure for subsequently changed files.
 
-Estado posterior: el usuario autoriza publicar la versión corregida 1.0.4.
-Las menciones a publicación detenida de este informe documentan la secuencia de
-auditoría; no implican despliegue del servidor ni validación del RSS real de qBittorrent.
+1. **P1 — Credential/DNS policy:** in `cardigann.rs`, the new `same_site` branch of `authorize_fetch` checked a public DNS resolution but returned the original authenticated client, which resolved again on connection. This reintroduced DNS rebinding for www variants/subdomains. Login redirects also admitted the www variant without IP validation. Preserve legitimate-host compatibility but pin the validated IP and authorized origin/port before sending cookies or headers.
+2. **P1 — Report memory:** `metadata_many` created a task per path and retained all results. `calculate` preloaded all seasons into a BTreeMap before enforcing the 20,000-missing-item limit. Input limits allowed 1,000 series × 200 seasons. Four concurrent requests did not bound retained response memory. Process small batches/release results with total quotas and early stopping. No mass provider load or memory-exhaustion test was launched.
+3. **P2 — Last valid report eviction:** quota-driven global DELETE did not exclude the refreshed scope's valid report. It could delete that report before connection validation or completion of its replacement. Reproduced with current SQL, in-memory SQLite, and 200 reports: the current scope's sole valid report disappeared. Protect it until replacement; old-cache eviction from other scopes may remain.
+4. **P2 — Range overflow:** `(episode..=episode + 50)` overflowed with `episode_number=i64::MAX` and a present `episode_number_end`. An isolated probe reproduced a debug panic; release arithmetic could wrap and validate incorrectly. Use checked/saturating addition and protocol numbering limits; malformed inventory must not leave a job running indefinitely.
 
-## Correcciones posteriores solicitadas por el usuario — local, sin publicar
+Independent verification at that point: 120 unit tests passed, one skipped; strict formatting/Clippy and all five frontend suites/build passed. Migration tests were not repeated in that pass to avoid overwriting the running development executable. Existing tests did not cover these four scenarios, so passing them did not close the findings.
 
-Los hallazgos de abajo describen el estado ANTERIOR. Tras autorización se han
-corregido SEC-01 a SEC-08 y el saneado adicional de mensajes. La primera contraseña
-por red se conserva expresamente: no se ha reintroducido el requisito de loopback.
+Uppercase catalog IDs, skipped invalid entries, unique temporary files, and skipped-entry warnings were consistent with reviewed compatibility/limits. qBittorrent session-reuse implementation was unchanged by this later diff. The four issues required correction and revalidation before 1.0.4 publication. Initial password setup over the network remained out of scope.
 
-- SEC-01/02: cliente de descargas públicas sin proxy ambiental ni redirecciones
-  automáticas, destino fijado tras validar DNS, IPv4-mapped normalizada y rangos
-  especiales rechazados. Solo el origen configurado puede reutilizar credenciales
-  o ser privado; un subdominio no hereda esa excepción. Login limitado a cinco
-  saltos del mismo origen y formularios sin envío de credenciales a otro origen.
-- SEC-03: restaurar conserva settings de seguridad/conexiones y `indexer_configs`
-  actuales. No restaura sesiones. Confirmación traducida en seis idiomas actualizada.
-- SEC-04: carga en streaming al disco privado, un upload, máximo 512 MiB, plazo
-  de cinco minutos, cabecera SQLite validada y limpieza de temporales en error.
-  Límite general de JSON de 2 MiB; credenciales 4 KiB e inventario 128 MiB mantienen
-  sus límites específicos. Las copias exportadas siguen conteniendo secretos y
-  deben custodiarse como tales; no se ha añadido cifrado con una clave local ficticia.
-- SEC-05: limpieza de informes previos a tres terminales por alcance al solicitar
-  refresco, preservando los válidos frente a errores. Hasta 200 informes, admisión
-  limitada por 64 MiB ya almacenados, máximo 16 MiB por resultado y dos trabajos
-  activos. Esto permite hasta dos resultados en curso sobre la cuota de admisión,
-  no promete una cota exacta de 64 MiB en disco. Hasta 128 claves por trabajo activo;
-  claves terminales caducan a siete días. Al alcanzar el cupo de alcances se rechaza
-  trabajo nuevo, no se elimina silenciosamente el último informe válido.
-- SEC-06: entradas de login expiradas eliminadas y registro máximo de 4096
-  identidades; conserva el bloqueo creciente y agrupación IPv6 /64.
-- SEC-07: catálogo con máximo 32 MiB comprimido, 128 MiB expandido, 20.000 entradas
-  y 512 KiB por definición; YAML validado, enlace de destino rechazado y reemplazo
-  mediante temporal. Una sincronización simultánea.
-- SEC-08: `reg.exe`/`sc.exe` con ruta explícita System32, incluido tray. No se
-  modifican los derechos del servicio instalado ni su cuenta.
-- Secretos en URLs: limpieza al registrar y devolver historial/diagnósticos,
-  incluyendo mensajes antiguos, userinfo y parámetros sensibles conocidos.
-- Clippy corregido moviendo el módulo de pruebas de tema al final.
-- CI con permisos mínimos por trabajo; adjuntos excluidos de Git y Docker.
-  Datos privados Unix pasan por el mismo guard de rutas/enlaces que configuración.
+Subsequently the user authorized publishing corrected v1.0.4. References to publication being held describe the audit sequence, not server deployment or validation of actual qBittorrent resident memory.
 
-### qBittorrent: causa encontrada y corrección
+## User-requested follow-up fixes — originally local, unpublished
 
-Oberiz recreaba el cliente HTTP/cookie en cada operación. Con autenticación por
-cookie, cada sondeo podía iniciar otra sesión WebUI sin reutilizar la anterior;
-incluso un bypass de autenticación puede crear sesiones si se descartan cookies.
-Este patrón está documentado en la incidencia oficial:
-https://github.com/qbittorrent/qBittorrent/issues/24695
+The findings below describe the PREVIOUS state. After authorization, SEC-01 through SEC-08 and additional message sanitization were corrected. Network-based initial password setup was expressly retained; loopback was not required again.
 
-Ahora conserva un cliente/cookie por conexión (caché LRU máxima de ocho), agrupa
-logins simultáneos mediante generación y mutex, renueva tras rechazo y aplica
-espera de 30 segundos después de un login fallido. Al desalojar una conexión
-inactiva intenta cerrar solo su sesión, con un segundo de plazo. No cierra
-sesiones de otras aplicaciones. No cambia preferencias ni torrents de qBittorrent.
+- SEC-01/02: public-download client without environment proxies or automatic redirects, destination pinned after DNS validation, IPv4-mapped normalization, and special-range rejection. Initially only the configured origin could reuse credentials or be private; subdomains did not inherit the private exception. Login limited to five same-origin hops and forms prevented cross-origin credential submission. Later allowed aliases were added with the pinned validation described above.
+- SEC-03: restoration preserves current security/connection settings and `indexer_configs`. Sessions are not restored. Confirmation updated in six languages.
+- SEC-04: streaming upload to private disk, one upload, maximum 512 MiB, five-minute deadline, validated SQLite header, and temporary-file cleanup on error. General JSON limit 2 MiB; credentials retain 4 KiB and inventory 128 MiB limits. Exported backups still contain secrets and need protection; no encryption using a fictitious local key was added.
+- SEC-05: refresh retains three prior terminal reports per scope, favoring valid reports over errors. Admission thresholds: 200 reports and 64 MiB already stored; maximum 16 MiB per result and two active jobs. Up to two in-flight results can exceed the admission threshold: this is not an exact 64 MiB on-disk cap. Up to 128 keys per active job; terminal keys expire after seven days. The initial correction rejected new work at the scope cap instead of silently deleting the latest valid report; later safe cache eviction superseded that behavior.
+- SEC-06: expired login entries removed; maximum 4,096 identities, retaining increasing lockout and IPv6 /64 grouping.
+- SEC-07: catalog limits of 32 MiB compressed, 128 MiB expanded, 20,000 entries, and 512 KiB per definition; YAML validation, destination-link rejection, and temporary-file replacement. One synchronization at a time.
+- SEC-08: explicit System32 paths for `reg.exe`/`sc.exe`, including tray. Existing service rights/account unchanged.
+- URL secrets: sanitization when recording/returning history and diagnostics, including old messages, userinfo, and known sensitive parameters.
+- Clippy corrected by moving theme tests to the end.
+- Least-privilege CI permissions per job; attachments excluded from Git/Docker. Unix private data uses the same path/link guard as configuration.
 
-Consultas sobre torrents conocidos filtradas por hash, tanto espera tras añadir
-como comprobación de categoría/etiquetas. Solo se toma una lista completa cuando
-no se conoce la identidad. Caché compartida de ocho segundos conservada y sondeos
-del panel/Descargas sin solapamiento; al salir de Descargas se aborta su petición.
+### qBittorrent: identified cause and correction
 
-La prueba simulada verifica 25 consultas con UN login y 12 consultas concurrentes
-tras caducar con UNA renovación adicional. No es una medición del RSS real del NAS.
-Las sesiones antiguas ya creadas pueden seguir consumiendo memoria hasta caducar;
-no se reinicia ni se cambia qBittorrent para forzar su liberación.
+Oberiz recreated the HTTP client/cookie for each operation. Cookie-authenticated polling could create a new WebUI session instead of reusing the previous one; even authentication bypass can create sessions when cookies are discarded. This pattern is documented in the [official issue](https://github.com/qbittorrent/qBittorrent/issues/24695).
 
-### Límites del cierre
+It now retains a client/cookie per connection (LRU cache of at most eight), groups concurrent logins using a generation and mutex, renews after rejection, and waits 30 seconds after a failed login. Evicting an inactive connection attempts to close only its own session with a one-second deadline. It does not close other applications' sessions or change qBittorrent preferences/torrents.
 
-Verificación posterior: 117 pruebas unitarias de backend aprobadas, una opcional
-omitida; dos pruebas de migración aprobadas; Clippy estricto correcto. Las cinco
-pruebas de frontend (idiomas, filtros, almacenamiento, importaciones e informes)
-y la compilación pasan. Arranque local aislado 1.0.4: salud/base de datos `ok` y
-`/api/settings` devuelve 401 sin sesión. La vista previa se actualiza en 2033;
-no es un despliegue del servidor real ni una medición del consumo de qBittorrent.
+Known torrents are queried by hash, including post-add waiting and category/tag checks. A complete list is fetched only when identity is unknown. The shared eight-second cache remains; Dashboard/Downloads polling does not overlap, and leaving Downloads aborts its request.
 
-No se han cambiado automáticamente TLS, proxy, cortafuegos, cuenta del servicio,
-permisos efectivos de NAS o GitHub. Claves separadas por permiso, firma de
-artefactos y fijación de herramientas auxiliares siguen siendo mejoras de diseño,
-no vulnerabilidades explotadas demostradas. El estado real de memoria requiere
-observación posterior con la instancia corregida. Publicación detenida.
+A simulated test verifies 25 queries with ONE login and 12 concurrent queries after expiration with ONE additional renewal. This is not a measurement of real NAS resident memory. Previously created sessions may consume memory until expiration; qBittorrent is not restarted or changed to force cleanup.
 
-## Dictamen y alcance
+### Closure limitations at that stage
 
-Mantener la publicación detenida. Se identifican dos hallazgos de prioridad alta
-en las conexiones salientes y seis riesgos de prioridad media. No se han aplicado
-correcciones ni publicado commits, etiquetas, paquetes o releases.
+Follow-up verification: 117 backend unit tests passed, one optional test skipped; two migration tests passed; strict Clippy passed. Five frontend checks (languages, filters, storage, imports, reports) and build passed. Isolated local 1.0.4 startup reported health/database `ok`; `/api/settings` returned 401 without a session. Preview updated on port 2033. This was not real-server deployment or qBittorrent memory measurement.
 
-Revisión del código local de Oberiz: autenticación, rutas internas/públicas,
-inventario e informes Cinetta, qBittorrent, archivos, copias, permisos,
-dependencias, interfaz y distribución. Incluye pruebas automáticas y una sonda
-aislada de la función real de filtrado IP. No constituye certificación de ausencia
-de vulnerabilidades ni un pentest de infraestructura.
+No automatic TLS, proxy, firewall, service-account, effective NAS-permission, or GitHub-permission changes. Separate scoped keys, artifact signing, and auxiliary-tool pinning remain design improvements, not demonstrated exploited vulnerabilities. Real memory behavior requires later observation with the corrected instance. Publication was held at this historical stage.
 
-No se atacaron servicios reales ni se enviaron operaciones a Cinetta, NAS o
-qBittorrent reales. No se inspeccionaron contraseñas ni contenido de bases de
-datos privadas. No se verificaron ACL efectivas de la instalación, cortafuegos,
-proxy, TLS, NAS, Docker publicado, permisos reales de GitHub o artefactos remotos.
-La rama conserva los cambios de preparación de 1.0.4 anteriores a esta auditoría.
+## Original verdict and scope
 
-## Pruebas realizadas
+Original verdict: hold publication. Two high-priority outbound-connection findings and six medium risks were identified. At that point, no corrections, commits, tags, packages, or releases had been published.
 
-- Backend: `cargo test --manifest-path backend/Cargo.toml --locked --bin oberiz`:
-  **108 aprobadas, 0 fallidas, 1 omitida**. Se repitió fuera del aislamiento de red
-  porque el primer intento bloqueaba conexiones HTTP a fixtures de loopback y
-  operaciones sobre carpetas temporales. No se detuvo la instancia local.
-- Frontend: `test:i18n`, `test:filters`, `test:storage`, `test:imports`,
-  `test:missing` y compilación: correctos.
-- Dependencias: OSV consultado sobre **252 versiones activas Rust**, sin avisos;
-  `npm audit`, sin vulnerabilidades conocidas. Esto no cubre paquetes del sistema
-  operativo, imágenes finales, herramientas descargadas por CI ni fallos lógicos.
-- Formato Rust: correcto.
-- Clippy con todos los destinos/características y advertencias como errores:
-  **fallido** por `items_after_test_module` en `backend/src/db.rs:120`.
-- Búsqueda limitada de patrones de claves privadas, tokens GitHub y claves AWS
-  en 750 archivos versionados: sin coincidencias. No equivale a un escáner
-  universal de secretos ni a revisión completa del historial. Adjuntos locales
-  no versionados no se deben añadir a la publicación.
-- No se repitieron los tests de integración de migración en este pase: construir
-  todos los binarios podría intentar sobrescribir el ejecutable local en uso.
+Local Oberiz code review covered authentication, internal/public routes, Cinetta inventory/reports, qBittorrent, files, backups, permissions, dependencies, UI, and distribution. Included automated tests and an isolated probe of the real IP-filter function. This is not certification of vulnerability absence or an infrastructure penetration test.
 
-## Hallazgos altos
+No attacks on real services or operations against real Cinetta, NAS, or qBittorrent. No passwords/private database contents inspected. Effective installation ACLs, firewall, proxy, TLS, NAS, published Docker images, actual GitHub permissions, and remote artifacts were not verified. Existing pre-audit 1.0.4 preparation changes were preserved.
 
-### SEC-01 — Redirecciones automáticas eluden la comprobación de destino
+## Original tests performed
 
-Evidencia: `backend/src/cardigann.rs:1026`, `authorize_fetch`, y
-`follow_redirect_once` en la línea 1041.
+- Backend: `cargo test --manifest-path backend/Cargo.toml --locked --bin oberiz`: **108 passed, 0 failed, 1 skipped**. Repeated outside network isolation because the first attempt blocked loopback fixtures and temporary-folder operations. The local instance was not stopped.
+- Frontend: `test:i18n`, `test:filters`, `test:storage`, `test:imports`, `test:missing`, and build passed.
+- Dependencies: OSV queried for **252 active Rust versions**, no advisories; `npm audit`, no known vulnerabilities. Does not cover OS packages, final images, CI-downloaded tools, or logic flaws.
+- Rust formatting passed.
+- Clippy with all targets/features and warnings as errors **failed** on `items_after_test_module` in `backend/src/db.rs:120`.
+- Limited private-key/GitHub-token/AWS-key pattern scan across 750 tracked files: no matches. Not a universal secret scanner or full-history review. Untracked local attachments must not be published.
+- Migration integration tests not repeated in that pass: building all binaries might overwrite the running local executable.
 
-Para un host no relacionado se crea un cliente con dirección DNS fijada, pero
-sin `redirect(Policy::none())`. Reqwest 0.12.28 sigue redirecciones por defecto.
-Un servidor público al que apunte un resultado de un indexador puede redirigir
-a un servicio interno. Esa conexión sucede antes de que la aplicación reciba
-la respuesta y vuelva a validar su destino. La fijación DNS inicial no protege
-el siguiente host. El impacto concreto depende de los servicios internos
-accesibles y de lo que admitan mediante GET; no se demostró escritura o ejecución
-remota y no se probó contra infraestructura real.
+## High-priority findings
 
-Corrección: desactivar redirecciones automáticas en TODOS los clientes de esta
-ruta; validar y fijar dirección en cada salto permitido. Probar una cadena
-servidor público simulado → redirección a loopback, sin alcanzar el destino.
-Considerar proxies ambientales: la política debe seguir siendo válida si se usan.
+### SEC-01 — Automatic redirects bypass destination checks
 
-Fuente de la semántica por defecto:
-https://docs.rs/reqwest/0.12.28/reqwest/struct.ClientBuilder.html#method.redirect
+Evidence: `backend/src/cardigann.rs:1026`, `authorize_fetch`, and `follow_redirect_once` at line 1041.
 
-### SEC-02 — IPv4 representada como IPv6 supera el filtro de IP pública
+For an unrelated host, a DNS-pinned client was created without `redirect(Policy::none())`. Reqwest 0.12.28 follows redirects by default. A public server referenced by an indexer result could redirect to an internal service. That connection occurs before the application receives the response and revalidates the destination. Initial DNS pinning does not protect the next host. Impact depends on reachable internal services and their GET behavior; remote writing/execution was not demonstrated and real infrastructure was not tested.
 
-Evidencia: `backend/src/cardigann.rs:970`, `is_public_ip`.
+Correction: disable automatic redirects in ALL clients on this path; validate/pin each permitted hop. Test simulated public server → loopback redirect without reaching the destination. Account for environment proxies: policy must remain valid if proxies are used.
 
-Se compiló en un ejecutable temporal la función extraída del código actual:
+Default behavior reference: [Reqwest ClientBuilder redirect](https://docs.rs/reqwest/0.12.28/reqwest/struct.ClientBuilder.html#method.redirect).
 
-```
+### SEC-02 — IPv4 represented as IPv6 bypasses public-IP filtering
+
+Evidence: `backend/src/cardigann.rs:970`, `is_public_ip`.
+
+The extracted current function was compiled in a temporary executable:
+
+```text
 127.0.0.1                 allowed=false
 ::1                       allowed=false
 ::ffff:127.0.0.1           allowed=true
 ::ffff:192.168.1.1         allowed=true
 ```
 
-El clasificador permite estas dos últimas aunque representan destinos IPv4
-locales/privados. Es una reproducción del fallo de clasificación; la capacidad
-de completar una conexión depende de la plataforma y conectividad IPv6/IPv4.
-También falta una política completa para otros rangos especiales.
+The last two were accepted despite representing local/private IPv4 destinations. This reproduces classification failure; successful connection depends on platform and IPv6/IPv4 connectivity. A complete policy for other special ranges was also missing.
 
-Corrección: normalizar IPv4-mapped y aplicar el filtro IPv4, además de rechazar
-rangos no globales relevantes con pruebas. Revisar la excepción de hosts
-relacionados en `authorize_fetch`: actualmente retorna antes de comprobar DNS;
-confiar en un subdominio del tracker no demuestra que su IP sea pública. Mantener
-una excepción explícita para indexadores locales configurados, no una autorización
-implícita para cualquier subdominio de un indexador remoto.
+Correction: normalize IPv4-mapped addresses and apply IPv4 filtering; reject relevant nonglobal ranges with tests. Review the related-host exception in `authorize_fetch`, which returned before DNS checks. Trusting a tracker subdomain does not prove its IP is public. Keep an explicit configured-local-indexer exception, not implicit authorization for any remote-indexer subdomain.
 
-## Hallazgos medios
+## Medium-priority findings
 
-### SEC-03 — Las copias restauran contraseñas y claves antiguas
+### SEC-03 — Backups restore old passwords and keys
 
-Evidencia: `backend/src/backups.rs:338-352`.
+Evidence: `backend/src/backups.rs:338-352`.
 
-Se excluye correctamente `auth_sessions`, pero se restaura toda la tabla
-`settings`: vuelve el hash de contraseña anterior, las claves de integración y
-otras credenciales. Una copia anterior a la configuración de contraseña puede
-dejar el servicio nuevamente en configuración inicial remota. Requiere restauración
-por un administrador: no es un acceso anónimo directo. Las copias también contienen
-credenciales de terceros en claro y deben tratarse como secretos.
+`auth_sessions` was correctly excluded, but all `settings` were restored: the old password hash, integration keys, and other credentials returned. A backup predating password setup could reopen remote initial setup. This requires administrator restoration and is not direct anonymous access. Backups also contain plaintext third-party credentials and must be treated as secrets.
 
-Corrección propuesta: conservar por defecto la identidad de seguridad actual y
-pedir consentimiento separado para restaurarla; confirmar contraseña actual para
-restaurar y verificar que nunca se abre accidentalmente un bootstrap remoto.
-No cambiar silenciosamente la opción de configuración inicial remota aprobada.
+Proposed correction: preserve current security identity by default, obtain separate consent to restore it, verify the current password for restoration, and ensure remote bootstrap is not opened accidentally. Do not silently remove approved remote initial setup.
 
-### SEC-04 — Cargas de copias en memoria sin límite de concurrencia
+### SEC-04 — In-memory backup uploads without concurrency limits
 
-Evidencia: `backend/src/routes/settings.rs:33`, `backups.rs:197` y
-`main.rs`, límite global de cuerpos.
+Evidence: `backend/src/routes/settings.rs:33`, `backups.rs:197`, and the global body limit in `main.rs`.
 
-La ruta de subida admite 1 GiB y extrae `Bytes` completo; múltiples peticiones
-administrativas pueden mantener varios cuerpos en RAM. El límite general es
-512 MiB, demasiado amplio para gran parte de los formularios. La autenticación
-reduce exposición pero no limita consumo por un cliente válido o defectuoso.
+Upload accepted 1 GiB and extracted complete `Bytes`; multiple administrator requests could hold several bodies in RAM. The general 512 MiB limit was too broad for most forms. Authentication reduces exposure but does not bound consumption by a valid or defective client.
 
-Corrección: límites específicos pequeños salvo copias, subida en streaming con
-cuota/tamaño configurable y semáforo que se adquiera antes de leer el cuerpo.
-Aplicar capacidad y plazos de lectura a peticiones internas costosas.
+Correction: small endpoint-specific limits except backups, streaming uploads with size/quota limits, and a semaphore acquired before reading bodies. Apply capacity/read deadlines to expensive internal requests.
 
-### SEC-05 — Informes e idempotencia crecen sin retención
+### SEC-05 — Reports and idempotency grow without retention
 
-Evidencia: `backend/src/missing.rs:195-239`, migración 0023.
+Evidence: `backend/src/missing.rs:195-239`, migration 0023.
 
-Los dos trabajos simultáneos y límites por informe son útiles, pero no existe
-cuota total ni limpieza por antigüedad. Cada refresco completado puede guardar
-otro informe grande. Incluso con un trabajo activo, claves de idempotencia
-distintas añaden registros al reutilizarlo. Un poseedor de la clave API, cuando
-el permiso adicional está activo, puede hacer crecer la base y sus copias.
+Two concurrent jobs and per-report limits were useful, but no global quota or age cleanup existed. Each completed refresh could save another large report. Even while reusing an active job, distinct idempotency keys added records. An API-key holder with the additional permission enabled could grow the database/backups.
 
-Corrección: retención por alcance, cuota global, límite de acciones por trabajo y
-caducidad documentada de claves de idempotencia. Nunca borrar el último informe
-válido únicamente porque falle el nuevo.
+Correction: per-scope retention, global quota, per-job action cap, and documented idempotency-key expiration. Never delete the latest valid report merely because its replacement fails.
 
-### SEC-06 — El registro de intentos de login no expira sus entradas
+### SEC-06 — Login-attempt entries do not expire
 
-Evidencia: `backend/src/auth.rs:218-248`.
+Evidence: `backend/src/auth.rs:218-248`.
 
-La espera por IP y el semáforo Argon2 existen. Sin embargo, cada identidad fallida
-permanece en el HashMap hasta un login correcto de esa identidad; el tiempo de
-reinicio reinicia contadores, pero no elimina entradas. Ataques desde muchos
-orígenes pueden aumentar memoria durante toda la vida del proceso. Tras un proxy
-de confianza deben validarse también las identidades reenviadas.
+Per-IP waiting and an Argon2 semaphore existed. Failed identities remained in the HashMap until a successful login for that identity. Reset time reset counters but did not remove entries. Many-origin attacks could grow memory throughout process lifetime. Forwarded identities behind a trusted proxy also need validation.
 
-Corrección: caché acotada con TTL y limpieza; límite global de solicitudes de
-autenticación antes de encolar trabajo caro. Preservar agrupación IPv6 /64.
+Correction: bounded cache with TTL/cleanup; global authentication-request limits before expensive work is queued. Preserve IPv6 /64 grouping.
 
-### SEC-07 — Sin cuotas en descarga y extracción del catálogo de indexadores
+### SEC-07 — No indexer-catalog download/extraction quotas
 
-Evidencia: `backend/src/indexers.rs:483` y `extract_v11` en la línea 1082.
+Evidence: `backend/src/indexers.rs:483` and `extract_v11` at line 1082.
 
-El ZIP se descarga con `bytes()` y las entradas se descomprimen con `read_to_end`
-sin máximos por archivo, acumulado o cantidad. El origen HTTPS es fijo y requiere
-acción administrativa; no es una carga ZIP anónima. Un upstream comprometido o
-un crecimiento descontrolado puede agotar RAM/disco. Usar solo el nombre final
-evita el traversal clásico, pero no resuelve cuotas ni enlaces preexistentes.
+ZIP download used `bytes()`; entries used `read_to_end` without per-file, cumulative, or count limits. Fixed HTTPS upstream and administrator action were required; this was not anonymous ZIP upload. A compromised upstream or uncontrolled growth could exhaust RAM/disk. Using basenames avoids classic traversal but not quotas or preexisting links.
 
-Corrección: lectura acotada en streaming, límites comprimidos/descomprimidos,
-validación de YAML antes de instalar, rechazo de enlaces y escritura temporal
-atómica. Probar archivos sobredimensionados y ZIP de alta expansión.
+Correction: bounded streaming, compressed/decompressed limits, YAML validation before installation, link rejection, and atomic temporary writes. Test oversized files and high-expansion ZIPs.
 
-### SEC-08 — Herramientas Windows se buscan por nombre
+### SEC-08 — Windows tools resolved by name
 
-Evidencia: `backend/src/service.rs:210` (`reg`) y línea 302 (`sc`).
+Evidence: `backend/src/service.rs:210` (`reg`) and line 302 (`sc`).
 
-Instalar/configurar el servicio ejecuta herramientas sin ruta absoluta. Si un
-directorio consultado por la búsqueda de ejecutables está bajo control de otro
-usuario, puede ejecutarse un binario impostor con los permisos del instalador.
-La explotación requiere control local de una ubicación de búsqueda y el arranque
-de ese flujo; no se demostró una elevación real en esta máquina.
+Service installation/configuration executed tools without absolute paths. If another user controls an executable-search directory, an impostor binary could run with installer permissions. Exploitation requires local control and triggering that workflow; no actual elevation was demonstrated on this machine.
 
-Corrección: rutas absolutas de System32, siguiendo el patrón ya utilizado para
-PowerShell e icacls en la protección de almacenamiento. Revisar también tray y
-scripts. La concesión de iniciar/detener a todos los usuarios autenticados es
-otra decisión de disponibilidad que conviene limitar al grupo apropiado.
+Correction: absolute System32 paths, following existing PowerShell/icacls storage-protection patterns. Also review tray/scripts. Granting all authenticated users start/stop rights is a separate availability decision better limited to the appropriate group.
 
-## Riesgos de despliegue y endurecimiento adicional
+## Deployment risks and additional hardening
 
-- **HTTP y cookies:** servidor HTTP y escucha 0.0.0.0 por defecto;
-  `Secure` solo si se configura `OBERIZ_COOKIE_SECURE`. Fuera de loopback/red de
-  confianza, usar HTTPS y cookies Secure. No activar Secure a ciegas en HTTP.
-- **Primer administrador:** cualquier cliente con acceso puede establecer la
-  primera contraseña mientras no exista. Es una decisión aprobada, no una
-  regresión a corregir sin permiso. Preparar la instancia antes de exponerla;
-  un token de instalación permitiría mantener configuración remota con más seguridad.
-- **Permisos de API:** una misma clave pública permite operaciones distintas;
-  habilitar informes no convierte esa clave en una clave exclusivamente de lectura.
-  Valorar claves separadas por integración y permisos, rotación y límites.
-- **Errores:** revisar `cardigann.rs:903`, que conserva un error HTTP sin pasar
-  por el saneador común, y diagnósticos que presentan el historial de errores.
-  Una URL con credenciales en parámetros podría llegar a un informe de soporte.
-- **Almacenamiento:** credenciales salientes en SQLite sin cifrado. ACL Windows
-  y directorios privados son la barrera principal. El usuario de servicio debe
-  ser dedicado; LocalService comparte identidad con otros servicios de Windows.
-  En Unix la protección del directorio de datos usa chmod, no la misma comprobación
-  de enlaces/rutas amplias del protector de configuración: revisar coherencia.
-- **CI/suministro:** acciones y bases Docker fijadas, usuario Docker sin root,
-  pruebas previas a publicar y checksums son positivos. `cargo install
-  cargo-cyclonedx` y herramientas de empaquetado no fijan versión; reducir permisos
-  del token por job, fijar herramientas y estudiar firma de artefactos.
-- **Contexto Docker:** no incluir adjuntos remotos, secretos, copias o archivos
-  SQLite alternativos; revisar exclusiones antes de construir/publicar.
-- **Sesiones/CSRF:** cookie HttpOnly/SameSite Strict y ausencia de CORS interno
-  son defensas útiles. No se observó validación explícita Origin/Host: probar
-  escenarios de mismo sitio distinto puerto y DNS rebinding antes de declarar
-  cobertura completa. No se afirma un bypass CSRF demostrado.
+- **HTTP/cookies:** HTTP server and default 0.0.0.0 binding; `Secure` only with `OBERIZ_COOKIE_SECURE`. Outside loopback/trusted networks, use HTTPS and Secure cookies. Do not blindly enable Secure over HTTP.
+- **First administrator:** any reachable client can set the first password while absent. This is approved behavior, not a regression to fix without permission. Prepare the instance before exposure; an installation token could improve security while retaining remote setup.
+- **API permissions:** one public key permits different operations; enabling reports does not make the key read-only. Consider per-integration/scoped keys, rotation, and limits.
+- **Errors:** review `cardigann.rs:903`, which retained an HTTP error without common sanitization, and diagnostics displaying error history. URL query credentials could enter support reports.
+- **Storage:** outbound credentials in unencrypted SQLite. Windows ACLs/private directories are the main barrier. Prefer a dedicated service identity; LocalService is shared with other Windows services. Unix data protection used chmod rather than the configuration guard's link/broad-path checks; review consistency.
+- **CI/supply chain:** pinned Actions/Docker bases, nonroot Docker, prepublication tests, and checksums are positive. `cargo install cargo-cyclonedx` and packaging tools were not version-pinned. Reduce token permissions per job, pin tools, and consider artifact signing.
+- **Docker context:** exclude remote attachments, secrets, backups, and alternative SQLite files; review exclusions before building/publishing.
+- **Sessions/CSRF:** HttpOnly/SameSite Strict and no internal CORS are useful. No explicit Origin/Host validation was observed; test same-site/different-port and DNS-rebinding scenarios before claiming full coverage. No demonstrated CSRF bypass is asserted.
 
-## Protecciones comprobadas
+## Verified protections
 
-- Contraseñas Argon2 con sal aleatoria, sesiones opacas aleatorias almacenadas
-  como hash, expiración y revocación al cambiar contraseña; verificación de la
-  contraseña actual para cambiarla. Cuerpo de credenciales limitado a 4 KiB.
-- API interna protegida por sesión; API externa por clave, antes de JSON.
-  Informes externos exigen además permiso explícito desactivado por defecto.
-- Consultas parametrizadas en operaciones revisadas; identificadores dinámicos
-  de restauración entrecomillados. No se identificó inyección SQL explotable.
-- React sin usos encontrados de innerHTML/dangerouslySetInnerHTML/eval en el
-  código de interfaz revisado; CSP, nosniff y bloqueo de enmarcado presentes.
-- Informes con clientes sin redirecciones, tiempos máximos, respuesta acotada,
-  inventario paginado estable y límites por trabajo; GET no crea trabajos.
-- Informes no invocan operaciones de archivos ni qBittorrent. Escaneo local
-  separado de operaciones, sin movimientos directos del NAS.
-- Borrado manual de qBittorrent refleja la elección explícita de archivos;
-  automatismos mantienen el bloqueo de borrado. Renombrado opt-in, validación
-  de rutas relativas, comprobación de colisiones y recuperación detenida.
-  Sigue existiendo la carrera inherente entre comprobar y renombrar frente a
-  escritores externos: no prometer atomicidad que la API remota no ofrece.
+- Random-salt Argon2 passwords, random opaque sessions stored as hashes, expiration/revocation on password change, and current-password verification. Credentials body limited to 4 KiB.
+- Session-protected internal API; key-protected external API before JSON. External reports additionally require explicit opt-in permission.
+- Parameterized reviewed queries and quoted dynamic restoration identifiers. No exploitable SQL injection identified.
+- No innerHTML/dangerouslySetInnerHTML/eval usage found in reviewed React UI; CSP, nosniff, and framing protection present.
+- Reports use clients without redirects, deadlines, bounded responses, stable paginated inventory, and per-job limits. GET creates no jobs.
+- Reports invoke neither file operations nor qBittorrent. Local scanning is separate from operations, with no direct NAS moves.
+- Manual qBittorrent deletion reflects explicit file choice; automation retains deletion blocking. Renaming is opt-in with relative-path validation, collision checks, and stopped recovery. An inherent check/rename race against external writers remains: do not promise atomicity absent from the remote API.
 
-## Bloqueo adicional de publicación
+## Additional publication blocker (historical)
 
-Clippy falla en `backend/src/db.rs:120` porque hay funciones después del módulo
-de pruebas de tema. No es vulnerabilidad de ejecución, pero el workflow exige
-Clippy sin advertencias y no debería publicar 1.0.4 así. Mover el módulo al final
-y repetir las verificaciones, sin ocultar la advertencia.
+Clippy failed at `backend/src/db.rs:120` because functions followed the theme-test module. Not a runtime vulnerability, but the workflow requires warning-free Clippy. Move the module to the end and reverify without suppressing the warning.
 
-## Orden propuesto, pendiente de autorización de implementación
+## Original proposed order, awaiting implementation authorization
 
-1. SEC-01/02 y pruebas de regresión HTTP/IP que no cubre la batería actual.
-2. SEC-03/04/05: seguridad de restauración y cuotas de recursos persistentes/RAM.
-3. SEC-06/07/08: cotas, extracción y herramientas Windows.
-4. Endurecimiento de despliegue consensuado, no cambios funcionales silenciosos.
-5. Resolver Clippy, repetir pruebas y revisar el conjunto final antes de publicar.
+1. SEC-01/02 and missing HTTP/IP regression tests.
+2. SEC-03/04/05: restore security and persistent/RAM resource quotas.
+3. SEC-06/07/08: bounds, extraction, and Windows tools.
+4. Agreed deployment hardening, without silent functional changes.
+5. Fix Clippy, repeat tests, and review the final changes before publishing.

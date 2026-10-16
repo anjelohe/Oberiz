@@ -1,45 +1,43 @@
-# Bibliotecas en varios discos — desarrollo del 14 de octubre de 2026
+# Libraries across multiple disks — development on October 14, 2026
 
-Descripción histórica del flujo publicado en v1.0.0. El flujo de trabajo posterior
-a v1.0.1 se explica en [Almacenamiento simplificado](Oberiz_Almacenamiento_Simplificado.md):
-escaneo local de solo lectura o Cinetta por API, sin conexiones SMB gestionadas por Oberiz.
+Historical description of the workflow released in v1.0.0. The workflow after v1.0.1 is described in [Simplified storage](Oberiz_Almacenamiento_Simplificado.md): read-only local scanning or Cinetta inventory through the API, without Oberiz-managed SMB connections.
 
-## Configuración
+## Configuration
 
-En Settings → Library folders hay listas independientes de películas y series. Cada entrada permite escribir o explorar una carpeta, añadir otra y quitarla. «Cargar carpetas de categorías» consulta qBittorrent; seleccionar una categoría copia su ruta a la lista, aplicando los mapeos remotos configurados. No modifica la categoría ni su destino en qBittorrent.
+Settings → Library folders has independent movie and series lists. Each entry supports typing or browsing for a folder, adding another, and removing it. “Load category folders” queries qBittorrent; selecting a category copies its path into the list using the configured remote mappings. It does not modify the category or its qBittorrent destination.
 
-Las carpetas deben ser accesibles desde el servidor de Oberiz, no necesariamente desde el navegador. En Docker deben estar montadas; con qBittorrent remoto, configurar las correspondencias remoto → local. Los destinos de nuevas importaciones siguen siendo campos separados y únicos. Cambiar las carpetas de reconocimiento no mueve, renombra ni borra contenido.
+Folders must be accessible from the Oberiz server, not necessarily from the browser. Docker requires mounts; remote qBittorrent requires remote-to-local path mappings. New import destinations remain separate, single-value fields. Changing recognition folders does not move, rename, or delete content.
 
-Las rutas Movies/Series anteriores se conservan como raíces iniciales si todavía no se ha guardado una lista. Una lista vacía explícita no recupera la ruta antigua. Se eliminan entradas repetidas y se recorre una sola vez cada árbol solapado.
+Legacy Movies/Series paths remain initial roots until a list is saved. An explicitly empty list does not restore the old path. Duplicate entries are removed and overlapping trees are traversed only once.
 
-## Escaneo y descargas
+## Scanning and downloads
 
-- Escaneo manual y periódico configurable: 120 minutos inicialmente, desactivado hasta que se habilite y guarde.
-- Antes de la primera búsqueda automática de un título se escanean las raíces configuradas. RSS y automatización comprueban también torrents equivalentes en qBittorrent.
-- Los torrents externos completados se reconocen por sus rutas de contenido accesibles, aunque otros capítulos de esa serie ya estén indexados. Las consultas de esos torrents se reutilizan; sus rutas se revisan periódicamente o cuando se actualizan los metadatos.
-- Un torrent pendiente o pausado impide obtener una segunda copia del mismo episodio/película; no se reanuda automáticamente. Un torrent completado que no sea accesible protege igualmente frente a duplicados, sin inventar que su archivo está indexado.
-- Si un disco está desconectado, da error de lectura o aparece vacío tras haber contenido archivos registrados, se conserva su disponibilidad anterior. Se detiene la adquisición automática del tipo de contenido afectado hasta recuperar la ruta y realizar un escaneo correcto.
-- No se borran archivos ni asociaciones al quitar una carpeta de configuración. Las asociaciones conocidas se conservan al volver a escanear.
-- Las mejoras siguen sujetas a Allow upgrades, el cutoff y la calidad ya instalada. No se desactiva la monitorización al terminar una descarga.
+- Configurable manual and periodic scanning: initially 120 minutes, disabled until enabled and saved.
+- Configured roots are scanned before a title's first automatic search. RSS and automation also check equivalent qBittorrent torrents.
+- Completed external torrents are recognized through accessible content paths, even when other episodes of that series are already indexed. Queries are reused; paths are checked periodically or when metadata changes.
+- A pending or paused torrent prevents obtaining another copy of the same episode/movie; it is not resumed automatically. An inaccessible completed torrent still prevents duplicates without pretending that its file is indexed.
+- If a disk is disconnected, cannot be read, or appears empty after previously containing recorded files, previous availability is preserved. Automatic acquisition for the affected media type stops until the path recovers and a scan succeeds.
+- Removing a configured folder does not delete files or associations. Known associations are preserved during rescanning.
+- Upgrades remain subject to Allow upgrades, cutoff, and installed quality. Monitoring is not disabled when a download completes.
 
-## Series y estadísticas
+## Series and statistics
 
-Cada temporada distingue faltante, disponible parcialmente, al día y completa. La temporada más reciente de una serie en emisión no se considera completa solo porque estén todos los capítulos conocidos. Un estado desconocido se trata de forma conservadora.
+Each season distinguishes missing, partially available, up to date, and complete. The latest season of an ongoing series is not considered complete merely because every known episode is present. Unknown status is treated conservatively.
 
-«Seguir próximos episodios» es un control por temporada, independiente de seguir futuras temporadas. Guarda la fecha de inicio: los episodios que se emitan después siguen monitorizados cuando ya hayan pasado su fecha de emisión. Respeta las exclusiones manuales posteriores. No recupera los capítulos anteriores a esa fecha.
+“Follow upcoming episodes” is a per-season control, independent of following future seasons. It stores a start date: episodes airing afterward remain monitored after their air date passes. Later manual exclusions are respected. It does not recover episodes preceding that date.
 
-El Dashboard añade series monitorizadas y episodios disponibles, emitidos pendientes y futuros, agrupados en una tarjeta con dos columnas. La fila de tarjetas se adapta al espacio disponible. Almacenamiento indexado suma los archivos reconocidos, no la capacidad de los discos ni todos los torrents; configurar y escanear queda exclusivamente en Settings.
+The Dashboard adds monitored series and available, aired missing, and future episodes in a two-column card. Cards adapt to available space. Indexed storage totals recognized files, not disk capacity or every torrent; configuration and scanning remain exclusively in Settings.
 
-El explorador de carpetas y el listado de categorías admiten selección múltiple. En Windows se conserva correctamente el prefijo de red `\\servidor\recurso`; los borradores `UNC\servidor\recurso` emitidos por el explorador anterior se reparan al guardar. Las correspondencias completamente vacías se ignoran, no bloquean el guardado.
+The folder browser and category list support multiple selection. Windows network prefixes such as `\\server\share` are preserved correctly; drafts such as `UNC\server\share` produced by the older browser are repaired on save. Entirely empty mappings are ignored rather than preventing saving.
 
-## Integraciones
+## Integrations
 
-La API pública devuelve `availability_status` y `seasons` con contadores y estados por temporada. Para seguir próximos episodios de una temporada ya parcialmente disponible: `requested_seasons: [2]`, `monitor_mode: "future"`, `monitor_future_seasons: false`. Los clientes externos deben utilizar estos datos para no deshabilitar una temporada en emisión por tener algunos episodios disponibles. La interfaz del portal externo no está en este repositorio y no se ha modificado aquí.
+The public API returns `availability_status` and `seasons` with per-season counts and states. To follow upcoming episodes in an already partially available season, use `requested_seasons: [2]`, `monitor_mode: "future"`, and `monitor_future_seasons: false`. External clients should use this information to avoid disabling an ongoing season because some episodes are available. The external portal UI is not part of this repository and was not changed here.
 
-Rutas internas añadidas: `GET /api/library/roots`. Settings admite `movie_library_paths`, `series_library_paths`, `qbittorrent_path_mappings`, `library_scan_enabled` y `library_scan_interval_minutes`. Los estados de raíces incluyen accesibilidad, último escaneo y error.
+Added internal route: `GET /api/library/roots`. Settings accepts `movie_library_paths`, `series_library_paths`, `qbittorrent_path_mappings`, `library_scan_enabled`, and `library_scan_interval_minutes`. Root states include accessibility, last scan, and error.
 
-## Verificación
+## Verification
 
-Pruebas con bases de datos y carpetas temporales: varios discos, solapamiento, desconexión, montaje vacío, detección de episodios externos con otra copia ya indexada, estados de torrents preservados y seguimiento futuro persistente. La migración conserva los datos de instalaciones previas. Compilación de frontend, cobertura de seis idiomas y análisis estático de backend también verificados.
+Tests use temporary databases and folders: multiple disks, overlapping roots, disconnection, empty mounts, external episode detection with another copy already indexed, preserved torrent states, and persistent future monitoring. Migration preserves existing installation data. Frontend compilation, six-language coverage, and backend static analysis were also verified.
 
-Copia previa: `C:\Users\anjelohe\Desktop\Oberiz-copia-20261014-053632.zip`. Incluye código, configuración, historial Git y snapshots SQLite coherentes. Contiene datos privados: no publicar este ZIP.
+A pre-change ZIP backup was saved privately on the maintainer's desktop, including code, configuration, Git history, and consistent SQLite snapshots. It contains private data and must not be published.

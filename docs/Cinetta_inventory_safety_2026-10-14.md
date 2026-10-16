@@ -1,51 +1,26 @@
-# Inventario Cinetta: correcciones de seguridad
+# Cinetta inventory: security fixes
 
-## Alcance
+## Scope
 
-Solo inventario informativo. Oberiz recibe rutas y metadatos para conocer la
-disponibilidad, sin ordenar a Cinetta que mueva, renombre o borre archivos.
-Seleccionar import.method=external en Almacenamiento; no se cambia ninguna
-configuracion existente automaticamente. Reiniciar/recompilar para aplicar
-las fuentes corregidas. No se despliega ni toca la base de datos real.
+Informational inventory only. Oberiz receives paths and metadata to determine availability, without instructing Cinetta to move, rename, or delete files. Select import.method=external in Storage; existing configuration is not changed automatically. Restart/rebuild to apply the corrected sources. This work does not deploy or touch the real database.
 
-## Correcciones
+## Fixes
 
-- Autorizacion de API antes de leer JSON. Dos informes simultaneos como maximo,
-  sin cola de cuerpos; 429 permite reintento. Cuerpo limitado a 128 MiB, un millon
-  de entradas y 1024 raices; validacion de rutas, rangos y medidas sin overflow.
-- External bloquea reseed tambien para trabajos antiguos, descubrimiento,
-  escaneos manuales/programados, comprobacion de carpetas y sugerencias NAS.
-  La UI no ofrece reseed cuando external o cuando no puede comprobar ajustes.
-- Importaciones, escaneos y reseed comparten una barrera con cambios de modo.
-  Cambiar a external espera a operaciones activas; no las cancela a medias.
-  La eliminacion destructiva de torrents usa tambien esa barrera; limpieza
-  de trabajos antiguos en external no solicita borrado de datos.
-- Los informes son aditivos por defecto. Una omision no declara ausencia.
-  allow_large_removal=true es confirmacion explicita para cualquier omision,
-  no solo grandes bajas, y requiere raiz disponible y no repentinamente vacia.
-  Sin raices, fuera de ellas o ante incertidumbre se conserva disponibilidad.
-- Reclasificar un episodio como pelicula limpia enlaces y recalcula episodios.
-  Declarar simultaneamente identidades incompatibles para una ruta se rechaza.
-- External devuelve superseded vacio y no infiere propietarios de descargas.
-  En modo gestionado, vinculacion requiere ruta fuente completa/mapeada, no
-  basename; reemplazo parcial no nomina archivos de episodios multiples.
+- API authorization before reading JSON. At most two simultaneous reports, without queued request bodies; 429 permits retrying. Body limited to 128 MiB, one million entries, and 1,024 roots; path, range, and size validation without overflow.
+- External mode blocks reseeding even for old jobs, discovery, manual/scheduled scans, folder checks, and NAS suggestions. The UI does not offer reseeding in external mode or when settings cannot be checked.
+- Imports, scans, and reseeding share a barrier with mode changes. Switching to external waits for active operations rather than interrupting them halfway. Destructive torrent deletion also uses the barrier; legacy-job cleanup in external mode does not request data deletion.
+- Reports are additive by default. Omission does not establish absence. allow_large_removal=true explicitly confirms any omission, not just large removals, and requires an available root that has not suddenly become empty. Without roots, outside them, or when uncertain, availability is preserved.
+- Reclassifying an episode as a movie clears links and recalculates episode availability. Simultaneously declaring incompatible identities for one path is rejected.
+- External mode returns an empty superseded list and does not infer download ownership. In managed mode, linking requires a complete/mapped source path rather than a basename; partial replacement does not nominate multi-episode files.
 
-## Validacion y limites
+## Validation and limitations
 
-Integracion con el snapshot final de la otra sesion: 111 pruebas unitarias y
-una de migracion correctas (112 en total), una prueba real omitida. Web compilada
-y cuatro comprobaciones frontend correctas. Se conserva la validacion estricta
-de episodios positivos y rangos sin overflow introducida por la otra sesion.
-Instaladores/binarios de v1.0.0 ya publicados no se modifican automaticamente.
+Integration with the other session's final snapshot: 111 unit tests and one migration test passed (112 total), with one live test skipped. Web build and four frontend checks passed. Strict validation of positive episodes and overflow-safe ranges from the other session is preserved. Already-published v1.0.0 installers/binaries are not changed automatically.
 
-Pruebas con SQLite en memoria, servidor HTTP loopback y archivos temporales
-sinteticos. Nunca ejecutar live_storage_move_probe en la validacion automatica.
-No NAS, proveedor, qBittorrent real ni biblioteca real. No habilitar limpieza
-ni confirmacion de bajas automaticamente. Un solo cliente emisor y envios
-serializados: no se implementa protocolo multi-cliente/versiones de snapshot.
-Pendiente prueba conjunta con Cinetta antes de activar envios en produccion.
+Tests use in-memory SQLite, a loopback HTTP server, and synthetic temporary files. Never run live_storage_move_probe during automated validation. No NAS, provider, real qBittorrent, or real library was used. Do not automatically enable cleanup or removal confirmation. One sending client with serialized submissions: no multi-client/snapshot-version protocol is implemented. Joint testing with Cinetta remains pending before enabling production submissions.
 
-Respaldo y manifiesto SHA-256 en el repositorio Cinetta:
-backups/oberiz-fixes-20261014-175230/baseline y MANIFEST.json.
-La transferencia de fuentes debe comprobar primero que el destino no ha
-cambiado desde el respaldo y comprobar despues los hashes de los archivos.
+Backup and SHA-256 manifest in the Cinetta repository:
+backups/oberiz-fixes-20261014-175230/baseline and MANIFEST.json.
+Source transfer must first verify that the destination has not changed since the backup and then verify file hashes.
+
+This document records the October 14 implementation; later storage behavior is documented in [Simplified storage](Oberiz_Almacenamiento_Simplificado.md).

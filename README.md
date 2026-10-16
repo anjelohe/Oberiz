@@ -184,6 +184,8 @@ From **Settings → Backup & Restore**, you can create and restore consistent SQ
 
 ## Documentation
 
+Public repository documentation, release notes, and project descriptions are maintained in English. Application translations, protocol fields, and upstream indexer definitions retain their original languages and identifiers. Historical document filenames are preserved so existing links continue to work.
+
 Product documentation is stored in [`docs/README.md`](docs/README.md): technical state, API integration, importing, roadmap, RSS and version history. The release-selection rules are documented in [`docs/Oberiz_Perfiles_y_Puntuacion.md`](docs/Oberiz_Perfiles_y_Puntuacion.md).
 
 See the [v1.0.4 release notes](docs/releases/v1.0.4.md), [project state](docs/Oberiz_Memoria_Actualizada.md) and [new storage flow](docs/Oberiz_Almacenamiento_Simplificado.md). NAS permissions and mounts are not managed by Oberiz.

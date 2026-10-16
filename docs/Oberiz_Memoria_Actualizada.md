@@ -1,139 +1,113 @@
-# Oberiz — Memoria del proyecto
+# Oberiz — Project memory
 
-## Cierre posterior autorizado — v1.0.4, 2026-10-16
+## English public documentation — October 16, 2026
 
-El usuario autoriza corregir los cuatro hallazgos y publicar. Corregidos: fijación
-DNS de aliases autenticados y validación manual de login; consumo incremental de
-metadatos; conservación del último informe válido del alcance durante evicción;
-rangos de episodios sin desbordamiento y expansión limitada. Las notas de bloqueo
-inferiores son históricas. Primera contraseña por red sin cambios. No se despliega
-el servicio ni se reinicia qBittorrent; falta observar su memoria en uso real.
+The user requests English throughout the public GitHub repository. Translate documentation, repository metadata, and release notes without changing application localization, protocol identifiers, release tags, or installers. Retain historical filenames to preserve links. The v1.0.4 release notes were already translated in commit `5bcef71`; this pass covers the remaining documentation and older releases.
 
-Verificación final: 124 pruebas unitarias correctas (una ignorada), dos de migración,
-cinco suites frontend y compilación, formato y Clippy correctos. OSV: 252 versiones
-activas sin avisos; npm: cero vulnerabilidades. Publicación autorizada en main con
-etiqueta v1.0.4; los instaladores los genera GitHub Actions, no el equipo local.
+Repository description and all five release bodies were updated in English,
+preserving each release's five assets and existing changelog links. Twenty Markdown
+documents were checked for local links and balanced code fences. No issues/PRs
+were returned by the repository issue listing; the wiki remote was not available.
+The package-list API returned 403 because the credential lacks read:packages;
+package-page descriptions were therefore not verified or changed. No code,
+application language, upstream indexer definition, old commit, or release tag is
+rewritten by this documentation pass.
 
-## Revisión posterior a seguridad — 2026-10-16
+## Confirmed delivery — October 16, 2026
 
-Nuevos cambios recibidos y revisados sin modificar su código. Publicación 1.0.4
-retenida: regresión de fijación DNS/validación de aliases de login, precarga de
-metadatos sin cota acumulada, evicción del último informe válido del alcance
-actual y desbordamiento de rangos de episodios. Ver hallazgos al inicio de la
-auditoría. 120 pruebas unitarias, frontend, formato y Clippy pasan, pero no cubren
-estos casos. No se ha creado commit/etiqueta ni enviado cambios a GitHub.
+- Code and documentation uploaded to `anjelohe/Oberiz`, branch `main`, commit `ca0d1d3` (`Release v1.0.4: missing reports, interface refresh and security hardening`).
+- Annotated tag `v1.0.4` pushed atomically with main.
+- GitHub confirmed CI and installer-build startup. The original delivery check recorded both as running: [CI](https://github.com/anjelohe/Oberiz/actions/runs/38929148251) and [installers](https://github.com/anjelohe/Oberiz/actions/runs/38929148331). The release was later confirmed available with five assets when its notes were translated.
+- Local verification: 124 unit tests passed, one ignored; two migration tests; five frontend suites, frontend build, formatting, and Clippy. OSV checked 252 active versions without advisories; npm reported no vulnerabilities.
+- Includes subsequent indexer-catalog changes and the final review's four corrections, in addition to missing content reports, visual changes, and security hardening documented below.
+- No local installation update or qBittorrent restart. Measuring real memory consumption is pending: tests do not establish that this symptom has been resolved. Initial password setup over the network is unchanged.
+- Post-delivery annotations were initially local and were not part of the tagged commit. Later documentation-only commits do not move or overwrite v1.0.4.
 
-## Seguridad y qBittorrent — publicación autorizada 2026-10-16
+## Authorized follow-up closure — v1.0.4, October 16, 2026
 
-Tras detener la publicación y completar la auditoría, el usuario autoriza subir
-la versión 1.0.4 a GitHub. Correcciones solicitadas: sesiones HTTP
-de qBittorrent reutilizadas, renovación serializada y consultas por hash; sondeos
-de interfaz sin solapamiento. No cambia torrents ni preferencias de qBittorrent.
-Filtro de IP y redirecciones reforzado; cuotas de memoria/archivo/informes e
-intentos de login; herramientas Windows con rutas absolutas; saneado de errores.
-Restaurar conserva identidad de seguridad y conexiones actuales, revocando las
-sesiones como antes. Confirmación de interfaz actualizada en seis idiomas.
-La PRIMERA CONTRASEÑA sigue configurable POR RED, explícitamente solicitado.
-Subir código y etiqueta 1.0.4 para recompilar en GitHub. No actualizar el servicio
-instalado ni reiniciar qBittorrent; esas acciones no forman parte de la publicación.
-Ver [auditoría y cierre local](Oberiz_Auditoria_Seguridad_2026-10-16.md).
-El consumo real de qBittorrent queda pendiente de medir; las sesiones antiguas
-pueden persistir hasta caducar. No reiniciar qBittorrent automáticamente.
+The user authorized correcting four findings and publishing. Fixed: DNS pinning for authenticated aliases and manual login validation; incremental metadata consumption; retention of the current scope's latest valid report during eviction; overflow-safe episode ranges with bounded expansion. Blocking notes below are historical. Initial password setup over the network is unchanged. No service deployment or qBittorrent restart; real memory behavior remains to be observed.
 
-## Versión 1.0.4 — 2026-10-16
+Final verification: 124 passing unit tests (one ignored), two migration tests, five frontend suites and compilation, formatting, and Clippy. OSV: 252 active versions without advisories; npm: zero vulnerabilities. Main and v1.0.4 publication authorized; installers are built by GitHub Actions, not the local machine.
 
-El usuario aprueba publicar los informes de faltantes y los ajustes visuales
-probados en local. Versiones sincronizadas en frontend, backend, OpenAPI, Compose
-y workflow. Ver [notas de versión](releases/v1.0.4.md).
-Diseño aprobado: tarjetas sin borde en todos los temas, navegación SVG,
-intermedio por defecto solo en nuevas instalaciones, favicon propio, cabecera
-alineada y contenido 20 px más alto que el diseño previo. Panel con tres descargas
-hasta 1920 px y cuatro por encima; columnas alineadas, botones homogéneos y suma
-circular blanca en Añadir contenido. No reiniciar el servicio local ni modificar
-datos privados para publicar. Adjuntos, copias y credenciales quedan fuera de Git.
+## Post-security review — October 16, 2026 (historical)
 
-## Faltantes — implementación incluida en 1.0.4, 2026-10-16
+New changes were reviewed without modifying their code. Publication was held for four regressions: DNS pinning/login-alias validation, metadata preloading without a cumulative bound, eviction of the current scope's last valid report, and episode-range overflow. See the audit findings. At that stage, 120 unit tests, frontend, formatting, and Clippy passed but did not cover these cases. No commit, tag, or push had yet been created. This state was superseded by the closure above.
 
-Motor, trabajos y endpoints implementados, separados de biblioteca/peticiones/
-descargas. Inventario Cinetta library:read y metadatos TMDB, fechas <= hoy UTC.
-Accesos en Peliculas, Series y cada titulo; conexion y permiso externo opt-in en
-Ajustes. Ver [contrato y prueba local](Oberiz_Faltantes_Contrato.md).
-Incluido en la publicación 1.0.4; la instalación local no se despliega automáticamente.
+## Security and qBittorrent — publication authorized October 16, 2026
 
-## Ajustes acordados — 2026-10-15 · v1.0.3
+After stopping publication and completing the audit, the user authorized v1.0.4 publication. Requested fixes: reused qBittorrent HTTP sessions, serialized renewal and hash-filtered queries, and non-overlapping UI polling. Torrent contents and qBittorrent preferences are unchanged. Stronger IP/redirect filtering; memory/file/report/login-attempt quotas; absolute Windows-tool paths; sanitized errors. Restore preserves current security identity and connections, revoking sessions as before. UI confirmation updated in six languages.
 
-Primera contraseña configurable remotamente, sin exigir loopback; configurar en
-red de confianza. Borrado manual de torrent con casilla de archivos desmarcada y
-aviso permanente; automatismos conservan datos. Pausa por inventario Cinetta
-ausente/antiguo opcional y desactivada por defecto, también al actualizar.
-Barra lateral usa la versión de package.json en lugar de un literal obsoleto.
-Estos ajustes sustituyen las restricciones de v1.0.2 descritas debajo.
+INITIAL PASSWORD SETUP remains available OVER THE NETWORK, as explicitly requested. Push code and v1.0.4 to rebuild on GitHub; do not update the installed service or restart qBittorrent. See [audit and local closure](Oberiz_Auditoria_Seguridad_2026-10-16.md). Real memory consumption remains unmeasured, and old sessions may persist until expiration. Do not restart qBittorrent automatically.
 
-## Cambio de arquitectura — 2026-10-15 · v1.0.2
+## Version 1.0.4 — October 16, 2026
 
-La arquitectura de v1.0.2 está documentada en
-[Almacenamiento simplificado](Oberiz_Almacenamiento_Simplificado.md).
-Se retiran importación directa, copias/hardlinks/movimientos y conexiones SMB.
-Inventario seleccionable: Cinetta por API o escaneo local de solo lectura, sin
-cambio automático por desconexión. Fecha del último informe y retención de nuevas
-adquisiciones si falta un inventario Cinetta de menos de 24 horas.
-Renombrado opcional exclusivamente mediante qBittorrent, desactivado por defecto
-y con consentimiento nuevo independiente del antiguo ajuste de importación.
-Archivo `.torrent`/hash/destino/diario en SQLite, recuperación detenida y recheck,
-sin arranque automático. Historial antiguo preservado; recuperación antigua manual.
-No se cambian NAS, torrents reales, la instalación activa ni el repositorio Cinetta.
-El emisor sí existe en `cinetta/src/services/oberizInventory*.js`; la revisión previa
-limitada a Rust fue incompleta. Sus 11 pruebas sintéticas han pasado.
-Prueba con qBittorrent 5.2.3 real en perfil aislado: renombrado, exportación/hash,
-recuperación detenida y recheck correctos. Se detectó que su API puede sobrescribir
-archivos ajenos; se añadió y probó una comprobación remota del directorio mediante
-la API de qBittorrent, que bloquea destinos ocupados y falla de forma segura cuando
-la consulta no está disponible. No hay garantía atómica frente a otros escritores.
-Los apartados siguientes describen el estado publicado anterior, no el flujo nuevo.
+The user approved publishing the locally tested missing reports and visual changes. Versions are synchronized across frontend, backend, OpenAPI, Compose, and workflow. See [release notes](releases/v1.0.4.md).
 
-Versión de producto: **1.0.3**. La descripción histórica de abajo parte de la primera versión **1.0.0**; los cambios del 15 de octubre están resumidos arriba. La publicación no actualiza automáticamente las instalaciones existentes.
+Approved design: borderless cards in all themes, SVG navigation, Middle as the default only for new installations, custom favicon, aligned header, and content 20 px higher than the previous design. Dashboard shows three downloads up to 1920 px and four above, aligned columns, uniform buttons, and a white circled plus in Add content. Publication does not require restarting the local service or modifying private data. Attachments, backups, and credentials stay out of Git.
 
-## Propósito y arquitectura
+## Missing reports — included in 1.0.4, October 16, 2026
 
-Servidor autoalojado de automatización de películas y series: metadatos TMDB/TVDB, indexadores Cardigann, perfiles de calidad e idioma, búsqueda, RSS, qBittorrent, importación, biblioteca real, calendario, historial y API de peticiones.
+Engine, jobs, and endpoints are implemented separately from library, requests, and downloads. Cinetta library:read inventory and TMDB metadata, with dates on or before today UTC. Entry points in Movies, Series, and individual titles; connection and opt-in external permission in Settings. See [contract and local test](Oberiz_Faltantes_Contrato.md). Included in 1.0.4; the local installation is not deployed automatically.
 
-Backend Rust/Axum/SQLite y frontend React/TypeScript. Distribución Windows (portable e instalador con servicio), Linux y Docker. Las migraciones SQLite se conservan para proteger datos existentes; reiniciar el historial del repositorio no implica reiniciar bases de datos o bibliotecas del usuario.
+## Agreed adjustments — October 15, 2026 · v1.0.3
 
-## Funciones incluidas
+Initial password configurable remotely without requiring loopback; configure on a trusted network. Manual torrent deletion has an unchecked file-deletion checkbox and persistent warning; automatic actions preserve data. Pausing for absent/stale Cinetta inventory is optional and disabled by default, including upgrades. Sidebar uses package.json version rather than a stale literal. These adjustments supersede the v1.0.2 restrictions below.
 
-- Películas, series, temporadas y episodios con monitorización y perfiles heredados.
-- Biblioteca en varios discos: carpetas independientes, selección múltiple, categorías de qBittorrent y correspondencias de rutas.
-- Escaneo previo, manual y periódico configurable. No modifica archivos existentes; conserva disponibilidad cuando un disco no está accesible y evita descargas duplicadas.
-- Estados de temporadas incompleta, al día y completa; seguimiento persistente de próximos episodios independiente de futuras temporadas. La API devuelve disponibilidad y contadores.
-- Dashboard adaptable con películas, series y episodios, descargas, indexadores y cola. Middle utiliza naranja en controles y azul en indicadores de monitorización.
-- Ajustes organizados en nueve filas: apariencia/apoyo/diagnóstico; RSS/qBittorrent/políticas de compartición; TMDB/TVDB/automatización; importación y nombres; rutas; biblioteca; mantenimiento/API; copias; contraseña.
-- Filtros combinables de descargas por tracker, categoría, etiqueta, estado y texto.
-- Importación web de YAML: validación, límite de 512 KiB, escritura segura, reemplazo confirmado y credenciales existentes preservadas. Nuevas definiciones no se activan automáticamente.
-- Cardigann `:contains` aplica condiciones de texto; selectores inválidos no se amplían eliminando restricciones. Escapes CSS numéricos y combinaciones relativas de `:has` con `:contains` no se interpretan.
-- Puntuación coherente de películas descubiertas e importadas, cutoff y margen de mejora respetados en RSS.
-- Importación hardlink/copia/mover, renombrado, registro de transferencias, reseed y políticas de seeding. No se debe mover un archivo todavía compartido sin considerar las consecuencias para el torrent.
-- Seis idiomas: español, inglés, francés, alemán, italiano y portugués de Portugal.
+## Architecture change — October 15, 2026 · v1.0.2
 
-## SMB y permisos
+The architecture is documented in [Simplified storage](Oberiz_Almacenamiento_Simplificado.md). Removed direct importing, copying/hardlinks/moving, and SMB connections. Selectable inventory: Cinetta API or read-only local scans, without automatic switching after disconnection. Last-report date and a hold on new acquisitions without Cinetta inventory less than 24 hours old were introduced in this version.
 
-Conexiones opcionales SMB nativas de Windows: credenciales DPAPI de máquina, recursos compartidos en el selector, rutas UNC y restauración al iniciar la aplicación o servicio. Independiente de la marca del NAS y de Cinetta. No asigna letras, no fuerza desconexiones y no habilita SMB1.
+Optional renaming exclusively through qBittorrent, disabled by default with new consent independent of legacy import settings. SQLite stores the `.torrent`, hash, destination, and journal; recovery starts stopped with recheck and no automatic start. Legacy history preserved; legacy recovery remains manual. No changes to the NAS, real torrents, active installation, or Cinetta repository.
 
-Sin configurar SMB se mantienen accesos, permisos y rutas existentes; el selector sí abre una vista de discos y recursos. El servicio no hereda las unidades conectadas en otra sesión de Windows. La cuenta del NAS conserva sus permisos: no se exige ni se configura automáticamente una cuenta de solo lectura. Linux/Docker utiliza montajes SMB del sistema operativo.
+The sender exists in `cinetta/src/services/oberizInventory*.js`; the earlier Rust-only review was incomplete. Its 11 synthetic tests passed.
 
-Los recursos guardados siguen visibles sin conexión; abrirlos puede devolver un error. Un NAS desconectado no bloquea indefinidamente el arranque. Cambiar de máquina requiere reintroducir las credenciales. La API no devuelve contraseñas ni sus blobs cifrados. Véase [SMB](Oberiz_SMB.md).
+Real qBittorrent 5.2.3 with an isolated profile passed renaming, export/hash, stopped recovery, and recheck. Testing discovered that its API can overwrite unrelated files; a remote directory check through qBittorrent was added and tested, blocking occupied destinations and failing safely when unavailable. There is no atomic guarantee against other writers.
 
-## Integraciones
+The following sections describe the earlier published state, not the new workflow.
 
-Public API v1 con claves de API, idempotencia, perfiles, temporadas seleccionadas y monitorización. Cinetta debe consumir disponibilidad real y separar próximos episodios de futuras temporadas; los cambios de su interfaz pertenecen a su repositorio, no al paquete de Oberiz. Compatibilidad Overseerr opcional.
+Historical product version at this point: **1.0.3**. The description below starts with the first **1.0.0** release; October 15 changes are summarized above. Publication does not automatically update existing installations.
 
-qBittorrent mantiene categorías y estados existentes durante el escaneo. Las correspondencias siguen siendo necesarias cuando comunica rutas distintas a las accesibles por Oberiz.
+## Purpose and architecture
 
-## Verificación y límites
+Self-hosted movie/series automation server: TMDB/TVDB metadata, Cardigann indexers, quality/language profiles, search, RSS, qBittorrent, importing, real library, calendar, history, and request API.
 
-87 pruebas unitarias y una prueba de migración correctas; prueba real de almacenamiento optativa excluida de CI. Clippy, formato, compilación frontend, filtros y cobertura de idiomas verificados.
+Rust/Axum/SQLite backend and React/TypeScript frontend. Windows distribution (portable and service installer), Linux, and Docker. SQLite migrations are retained to protect existing data; resetting repository history does not reset user databases or libraries.
 
-El ciclo RSS → descarga simulada → importación → reescaneo → mejora se prueba con SQLite temporal, RSS HTTP local y cliente simulado, incluyendo errores y recuperación. Se verificaron cifrado DPAPI, rechazo de datos corruptos, respuestas sin secretos, listado sin abrir el NAS y eliminación de credenciales guardadas.
+## Included features in the historical foundation
 
-Una prueba optativa del código real de mover entre dos recursos SMB verificó el contenido y eliminó los archivos temporales sin modificar contenido existente. Se ejecutó desde una sesión interactiva: no prueba los permisos de LocalSystem. La autenticación real del NAS desde el servicio necesita configuración de credenciales y verificación operativa. No se han realizado descargas reales de contenido como parte de las pruebas automatizadas.
+- Movies, series, seasons, and episodes with monitoring and inherited profiles.
+- Multi-disk library: independent folders, multiple selection, qBittorrent categories, and path mappings.
+- Configurable pre-search, manual, and periodic scanning. Existing files are unchanged; availability survives inaccessible disks and duplicate downloads are avoided.
+- Incomplete/up-to-date/complete season states; persistent upcoming-episode tracking independent of future seasons. API availability and counts.
+- Responsive Dashboard with movies, series/episodes, downloads, indexers, and queue. Middle uses orange controls and blue monitoring indicators.
+- Settings organized into nine rows: appearance/support/diagnostics; RSS/qBittorrent/sharing policies; TMDB/TVDB/automation; imports/naming; paths; library; maintenance/API; backups; password.
+- Combined download filters for tracker, category, tag, state, and text.
+- Web YAML import: validation, 512 KiB limit, safe writes, confirmed replacement, and preserved credentials. New definitions are not automatically enabled.
+- Cardigann `:contains` applies text conditions; invalid selectors are not broadened by stripping restrictions. Numeric CSS escapes and relative `:has` combined with `:contains` are not interpreted.
+- Consistent scoring for discovered/imported movies, with cutoff and improvement margin respected by RSS.
+- Hardlink/copy/move import, renaming, transfer records, reseeding, and seeding policies. Do not move a file still being seeded without considering torrent consequences.
+- Six languages: Spanish, English, French, German, Italian, and European Portuguese.
 
-Las dependencias necesarias para compilar permanecen bloqueadas en Cargo.lock/package-lock.json. Dependabot conserva su configuración, con PR de actualizaciones de versión pausadas; no se eliminan protecciones ni dependencias funcionales.
+## Historical SMB and permissions
+
+Optional native Windows SMB connections: machine DPAPI credentials, picker shares, UNC paths, and restoration at application/service startup. Independent of NAS brand and Cinetta. No drive-letter assignment, forced disconnections, or SMB1.
+
+Without SMB configuration, existing access, permissions, and paths remain; the picker still opens disks/shares. The service does not inherit drives connected in another Windows session. NAS accounts retain their actual permissions: no read-only account is required or automatically configured. Linux/Docker uses OS SMB mounts.
+
+Saved shares remain visible offline; opening them may fail. An offline NAS does not block startup indefinitely. Moving machines requires reentering credentials. The API does not return passwords or encrypted blobs. See [SMB](Oberiz_SMB.md).
+
+## Integrations
+
+Public API v1 with API keys, idempotency, profiles, selected seasons, and monitoring. Cinetta must consume real availability and distinguish upcoming episodes from future seasons. Its UI changes belong to its repository, not the Oberiz package. Optional Overseerr compatibility.
+
+qBittorrent categories and states are preserved during scanning. Mappings remain necessary in this historical workflow when reported paths differ from those accessible to Oberiz.
+
+## Historical verification and limitations
+
+87 unit tests and one migration test passed; optional live-storage test excluded from CI. Clippy, formatting, frontend build, filters, and language coverage verified.
+
+The RSS → simulated download → import → rescan → upgrade cycle uses temporary SQLite, local HTTP RSS, and a simulated client, including failure/recovery cases. DPAPI encryption, corrupt-data rejection, secret-free responses, listing without NAS access, and saved-credential removal were checked.
+
+An optional real-code move probe between two SMB shares verified content and removed temporary files without changing existing content. It ran interactively and does not prove LocalSystem permissions. NAS authentication from the service requires credential configuration and operational verification. No real content downloads were part of automated tests.
+
+Build dependencies remain locked in Cargo.lock/package-lock.json. Dependabot configuration is retained with version-update PRs paused; protections and functional dependencies are not removed.

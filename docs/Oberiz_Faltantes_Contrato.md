@@ -1,102 +1,54 @@
-# Informes de faltantes — contrato acordado, 2026-10-16
+# Missing content reports — agreed contract, October 16, 2026
 
-Referencia del productor: proyecto hermano Cinetta,
+Producer reference: sibling Cinetta project,
 `docs/cinetta-oberiz-missing-contract-2026-10-16.md`.
 
-Estado: implementacion local, no publicada ni instalada sobre produccion.
-Pendiente de prueba con credenciales y biblioteca reales de Cinetta.
+Status: included in v1.0.4. Publishing does not deploy it to production.
+Testing with real Cinetta credentials and libraries is still pending.
 
-## Acceso
+## Access
 
-- Cinetta ofrece `GET /api/v1/library/inventory` con Bearer exclusivo de lectura,
-  instantaneas, cursor y filtros. No acceso al NAS, escaneo ni mutacion por consulta.
-- Oberiz ofrece GET `/api/v1/library/missing` y POST
-  `/api/v1/library/missing/refresh`; GET nunca inicia trabajos.
-- La integracion requiere X-Api-Key y permiso explicito
-  `api.missing_reports_enabled=true`, desactivado por defecto incluso al actualizar.
-  Sin permiso: 403 antes de consultar proveedores o crear trabajos. No se modifica
-  la autorizacion de PUT de inventario ni de peticiones existentes.
-- El panel de Oberiz usa sesion administrativa; no necesita activar permiso externo.
-- Idempotencia duradera en POST y consultas por job_id opaco estable. Al paginar,
-  mantener todos los filtros y el job_id, nunca pasar al ultimo informe de otro trabajo.
-- GET sin informe previo devuelve 409 report_not_found (no 404, reservado a ruta
-  sin soporte o job_id inexistente). Cinetta lo presenta como «Actualizar para crearlo».
+- Cinetta provides `GET /api/v1/library/inventory` with a read-only Bearer token, snapshots, cursors, and filters. A query does not access the NAS, scan, or mutate data.
+- Oberiz provides GET `/api/v1/library/missing` and POST `/api/v1/library/missing/refresh`; GET never starts jobs.
+- External integration requires X-Api-Key and explicit `api.missing_reports_enabled=true`, disabled by default even on upgrade. Without permission, return 403 before querying providers or creating jobs. Existing inventory PUT and request authorization are unchanged.
+- The Oberiz panel uses an administrator session and does not require external permission.
+- POST has durable idempotency; queries use a stable opaque job_id. Pagination must retain all filters and job_id, never switch to another job's latest report.
+- GET without a previous report returns 409 report_not_found (not 404, reserved for an unsupported route or nonexistent job_id). Cinetta presents this as “Refresh to create a report.”
 
-## Semantica de resultados
+## Result semantics
 
-Solo episodios emitidos y peliculas estrenadas, nunca futuros o sin fecha confirmada.
-Metadatos TMDB en es-ES; numeracion de emision estandar y temporada 0 para especiales.
-TVDB ID se resuelve mediante /find solo con coincidencia unica, sin comparacion por
-titulo. Fechas air_date y release_date validas <= hoy UTC; sin filtro de pais ni
-garantia de disponibilidad digital. Una pelicula estrenada en cines puede figurar.
-Los informes se guardan aparte: ninguna alta de titulo, monitorizacion, solicitud,
-descarga, renombrado ni borrado de multimedia.
+Only aired episodes and released movies, never future titles or those without a confirmed date. TMDB metadata uses es-ES, standard aired numbering, and season 0 for specials. TVDB IDs are resolved through /find only when there is exactly one match, without title matching. Valid air_date and release_date values must be on or before today UTC. There is no country filter or guarantee of digital availability; a theatrically released movie may appear.
 
-El inventario actual de Cinetta siempre declara complete:false: los candidatos
-ausentes son provisionales, con state=partial, warning inventory_incomplete y
-availability=unknown, incluso si el resultado es cero. No afirmar «no falta nada».
-Contenido indexado offline o unknown cuenta como presente para evitar falsos faltantes.
-Un archivo con varios episodios (S01E01E02) puede declarar `episode_number_end`
-(opcional, como mucho 50 por encima de `episode_number`): cuenta todo el rango como
-presente. Sin ese campo, solo cuenta `episode_number` y el resto del rango aparece
-como faltante.
+Reports are stored separately: no title creation, monitoring, requests, downloads, renaming, or media deletion.
 
-Mientras un trabajo esta en cola o en curso, el GET sin job_id devuelve el ultimo
-informe terminado de ese filtro; el marcador vacio del trabajo solo se devuelve si
-no hay ninguno terminado. Los informes son una cache: con el almacen lleno se
-descartan los terminados mas antiguos en vez de rechazar nuevas comprobaciones.
-Completar correctamente la comparacion exige tratar tambien errores de metadatos,
-numeraciones incompatibles e identificadores desconocidos, sin coincidencias por titulo.
+The current Cinetta inventory always declares complete:false. Missing candidates are provisional: state=partial, warning inventory_incomplete, and availability=unknown, even when the result is zero. Do not claim “nothing is missing.” Offline or unknown indexed content counts as present to prevent false missing results.
 
-## Series grandes y paginacion
+A multi-episode file (S01E01E02) may declare optional `episode_number_end`, at most 50 above `episode_number`; the whole range counts as present. Without it, only `episode_number` counts and later episodes in the range appear missing. Arithmetic is overflow-safe and inventory expansion is limited to 500,000 unique episodes.
 
-Maximo 100 fragmentos/pagina, 500 items/fragmento y 1 MiB/respuesta. Respetar siempre
-el limite mas restrictivo. Dividir series por temporada y despues por fragmentos;
-repetir identificadores y titular con temporada/parte. Colecciones: ordenar por fecha
-e ID y fragmentar igual. Orden y paginas inmutables por job_id, sin omitir ni repetir
-items. Totales de todo el informe: grupos logicos distintos, episodios/peliculas unicos;
-no contar fragmentos como series diferentes. Exceso individual: partial y advertencia
-report_item_too_large, nunca truncamiento silencioso.
+While a job is queued or running, GET without job_id returns the latest finished report for that filter. The empty job placeholder is returned only if no finished report exists. Reports are a cache: when full, the oldest finished reports are evicted rather than permanently rejecting checks. The latest valid report for the scope being refreshed is protected; invalid connection configuration does not trigger global eviction.
 
-## Acceso y prueba local
+A correct comparison must also handle metadata failures, incompatible numbering, and unknown identifiers without title-based matching.
 
-Peliculas > Colecciones incompletas; Series > Episodios faltantes; accion individual
-en cada tarjeta. Se puede elegir serie/coleccion por ID o todo el inventario.
-Abrir no consulta. Ultimo informe hace GET; Actualizar hace POST con Idempotency-Key.
-Dejar de esperar cancela solo la espera del navegador, no el trabajo del servidor.
+## Large series and pagination
 
-Ajustes > Informes de contenido faltante: URL base de Cinetta, clave library:read
-creada en Cinetta y permiso externo opcional. Guardar y configurar TMDB. El panel
-interno no requiere activar API publica ni permiso externo; el boton de Cinetta si.
-La clave de Cinetta se guarda en la DB privada como las demas credenciales de
-conexiones; no se devuelve al navegador. Proteger DB/copias con ACL; no hay cifrado
-integral nuevo. Las rutas internas son /api/library/missing y /refresh; el lookup
-/api/library/missing/collection?movie_tmdb_id=ID resuelve colecciones sin altas.
+Maximum 100 fragments per page, 500 items per fragment, and 1 MiB per response. Always obey the most restrictive limit. Split series by season, then by fragment; repeat identifiers and include season/part in the title. Sort collections by date and ID and split similarly. Order and pages are immutable for each job_id, without omitted or duplicated items.
 
-Trabajos e idempotencia en missing_reports y missing_report_actions (migracion 0023).
-Dos trabajos activos maximo; mismo alcance activo se fusiona. Reinicio marca
-interrumpidos como error sin reiniciar consultas; conserva el ultimo informe no
-fallido. Timeout 15s/peticion y 20min/trabajo. Sin redirects ni desactivar TLS.
-Solo persiste el informe, no el inventario completo de Cinetta.
+Report totals count distinct logical groups and unique episodes/movies, not fragments as separate series. An oversized individual item produces partial and report_item_too_large, never silent truncation.
 
-Limites: 32 MiB de inventario, 500000 entradas, 1000 series, 200 temporadas/serie,
-2000 peliculas para descubrir colecciones y 20000 items/informe. Limites de
-titulos/temporadas/items generan partial con advertencia. Errores de metadatos por
-titulo/temporada conservan resultados parciales. No se usa ETag aun. Un cursor
-caducado o cambio de instantanea falla sin mezclar paginas.
+## Access and local testing
 
-Iniciar copia aislada: `./scripts/start-missing-preview.ps1 -Build` (PowerShell 7).
-Abrir http://127.0.0.1:2033. Datos/config independientes en
-backend/backups/missing-preview, ignorados por Git. No toca el servicio existente.
-Crear contrasena de prueba y configurar Cinetta/TMDB. No necesita importar titulos
-a Oberiz para consultar inventario. Detener solo el PID devuelto por el script.
+Movies > Incomplete collections; Series > Missing episodes; an individual action on each card. Select a series/collection by ID or the entire inventory. Opening the dialog makes no query. Latest report sends GET; Refresh sends POST with Idempotency-Key. Stop waiting cancels only browser waiting, not the server job.
 
-Pruebas automaticas: HTTP local simulado de inventario/TMDB y SQLite en memoria;
-fechas futuras/desconocidas, especiales, offline, series grandes, idempotencia,
-permisos y ausencia de mutaciones de biblioteca/solicitudes/descargas. Frontend:
-acciones explicitas, paginacion fija, errores conservan informe previo. No sustituyen
-la prueba conjunta con bibliotecas reales ni certifican numeraciones DVD/absolutas.
+Settings > Missing content reports: Cinetta base URL, a library:read key created in Cinetta, and optional external permission. Save and configure TMDB. The internal panel does not require enabling the public API or external permission; the Cinetta button does.
 
-Referencias TMDB: [temporadas](https://developer.themoviedb.org/reference/tv-season-details),
-[colecciones](https://developer.themoviedb.org/reference/collection-details) y
-[IDs externos](https://developer.themoviedb.org/reference/find-by-id).
+The Cinetta key is stored in the private DB like other connection credentials and is never returned to the browser. Protect the DB/backups with ACLs; no new full-database encryption is added. Internal routes are /api/library/missing and /refresh; lookup /api/library/missing/collection?movie_tmdb_id=ID resolves collections without creating titles.
+
+Jobs and idempotency use missing_reports and missing_report_actions (migration 0023). At most two jobs are active; matching active scopes are merged. Restart marks interrupted jobs as errors without restarting queries and preserves the latest nonfailed report. Timeouts: 15 seconds per request and 20 minutes per job. No redirects or TLS verification bypass. Only the report persists, not the full Cinetta inventory.
+
+Limits: 32 MiB inventory, 500,000 entries, 1,000 series, 200 seasons per series, 2,000 movies for collection discovery, and 20,000 report items. Title/season/item limits produce partial with a warning. Per-title/season metadata errors preserve partial results. Metadata responses are consumed incrementally rather than preloaded. ETag is not used yet. An expired cursor or changed snapshot fails without mixing pages.
+
+Start an isolated copy with `./scripts/start-missing-preview.ps1 -Build` (PowerShell 7). Open http://127.0.0.1:2033. Separate data/config lives in backend/backups/missing-preview, ignored by Git. It does not touch the existing service. Create a test password and configure Cinetta/TMDB. Titles do not need to be imported into Oberiz to query inventory. Stop only the PID returned by the script.
+
+Automated tests use simulated local inventory/TMDB HTTP and in-memory SQLite: future/unknown dates, specials, offline content, large series, idempotency, permissions, and absence of library/request/download mutations. Frontend tests cover explicit actions, fixed pagination, and errors preserving the previous report. These do not replace testing with real libraries or certify DVD/absolute numbering.
+
+TMDB references: [seasons](https://developer.themoviedb.org/reference/tv-season-details), [collections](https://developer.themoviedb.org/reference/collection-details), and [external IDs](https://developer.themoviedb.org/reference/find-by-id).

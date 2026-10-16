@@ -1,147 +1,69 @@
-# Biblioteca, renombrado y recuperación — 15 de octubre de 2026
+# Library, renaming, and recovery — October 15, 2026
 
-Incluido en v1.0.2. Publicar esta versión no actualiza automáticamente la instancia
-instalada ni modifica el NAS o los torrents existentes: hay que instalar la nueva versión.
+Included in v1.0.2. Publishing does not automatically update the installed instance or modify the NAS/existing torrents: install the new version explicitly.
 
-## Responsabilidades
+## Responsibilities
 
-- qBittorrent descarga en el destino de su categoría. Oberiz ya no importa,
-  copia, crea hardlinks, mueve archivos ni construye carpetas de reseed.
-- Cinetta envía su inventario a `PUT /api/v1/library`, con API pública y clave
-  habilitadas. Seleccionar Cinetta en Oberiz no activa el emisor de Cinetta.
-- Alternativamente se seleccionan carpetas accesibles localmente y se escanean
-  en solo lectura. No hay configuración de SMB, credenciales ni traducción de
-  rutas de descarga. Un montaje gestionado por el sistema operativo es externo
-  a Oberiz; sus permisos no se cambian.
-- El origen del inventario y el renombrado son ajustes independientes.
+- qBittorrent downloads to its category destination. Oberiz no longer imports, copies, creates hardlinks, moves files, or builds reseeding folders.
+- Cinetta sends inventory to `PUT /api/v1/library`, with the public API and key enabled. Selecting Cinetta in Oberiz does not activate Cinetta's sender.
+- Alternatively, choose locally accessible folders for read-only scans. There is no managed SMB configuration, credentials, or download path translation. OS-managed mounts are external to Oberiz; their permissions are unchanged.
+- Inventory source and renaming are independent settings.
 
-## Configuración
+## Configuration
 
-1. Configurar las categorías y destinos en qBittorrent.
-2. En **Inventario de la biblioteca**, elegir **Cinetta** o **Carpetas locales**.
-3. Con Cinetta: activar la API pública v1, generar una clave y guardar; configurar
-   URL/clave de Oberiz y activar el inventario en los ajustes de Cinetta.
-   Se muestra la fecha del último informe aceptado. Las adquisiciones continúan
-   aunque Cinetta no informe. La casilla opcional de pausa, desactivada por defecto
-   también al actualizar, permite retener nuevas adquisiciones si falta el informe
-   o tiene más de 24 horas. Se conserva el último inventario sin escanear rutas remotas.
-4. Con carpetas locales: añadir una o varias carpetas, guardar y ejecutar o
-   programar el escaneo. Escanear no mueve, renombra ni borra archivos.
-5. En **Renombrado mediante qBittorrent y recuperación**, el renombrado está
-   **desactivado por defecto**, también al actualizar una instalación antigua.
-   Su activación exige el nuevo campo `qbittorrent_rename_enabled`; el antiguo
-   `rename_enabled` enviado por clientes anteriores no activa operaciones remotas.
-   Afecta a los trabajos de descarga todavía pendientes de procesar: no renombra
-   retroactivamente toda la biblioteca ni los trabajos ya completados.
+1. Configure categories and destinations in qBittorrent.
+2. In **Library inventory**, choose **Cinetta** or **Local folders**.
+3. For Cinetta, enable public API v1, generate a key, and save. Configure the Oberiz URL/key and enable inventory in Cinetta settings. The last accepted report date is displayed. Acquisitions continue even when Cinetta does not report. The optional pause checkbox, disabled by default including on upgrade, holds new acquisitions if the report is absent or older than 24 hours. The last inventory is retained without scanning remote paths.
+4. For local folders, add one or more, save, and run or schedule a scan. Scanning does not move, rename, or delete files.
+5. In **qBittorrent renaming and recovery**, renaming is **disabled by default**, including upgrades from older installations. Activation requires the new `qbittorrent_rename_enabled` field; legacy `rename_enabled` sent by older clients does not activate remote operations. It affects download jobs still awaiting processing, not the entire library or already-completed jobs retroactively.
 
-## Renombrado opcional
+## Optional renaming
 
-Solo se procesan descargas asociadas a trabajos de Oberiz y terminadas. Se
-obtiene la lista por `GET /api/v2/torrents/files`, se calcula un plan completo y
-se guarda antes de cualquier cambio. Se conserva la extensión y el directorio
-actual: no se usa `setLocation`, ni se divide un torrent entre discos.
+Only completed downloads associated with Oberiz jobs are processed. The file list is retrieved through `GET /api/v2/torrents/files`; a complete plan is calculated and saved before any changes. The extension and current directory are preserved. `setLocation` is not used and a torrent is not split across disks.
 
-Se utiliza `POST /api/v2/torrents/renameFile` (no el nombre visible del torrent).
-Cada paso se verifica consultando otra vez sus archivos. Una respuesta HTTP 200
-no se considera suficiente. Los reintentos reconocen pasos ya aplicados tras
-una desconexión; no repiten el renombrado ni borran el diario.
+The operation uses `POST /api/v2/torrents/renameFile`, not the visible torrent name. Each step is verified by fetching files again; HTTP 200 alone is insufficient. Retries recognize steps already applied before a disconnection and do not repeat renames or delete the journal.
 
-Un torrent de película con varios vídeos, episodios no identificables, subtítulos
-externos, rutas inválidas o destinos duplicados necesita revisión manual. No se
-renombran parcialmente esos planes. Si falla un paso de un plan válido después
-de haber aplicado otros, se conservan el diario y los cambios confirmados; no se
-intenta un rollback de archivos a ciegas.
+Movie torrents containing several videos, unidentifiable episodes, external subtitles, invalid paths, or duplicate destinations require manual review. Such plans are not partially applied. If a valid plan fails after some steps, the journal and confirmed changes are preserved; no blind file rollback is attempted.
 
-Además de comprobar el inventario del torrent, Oberiz consulta el directorio de
-destino mediante `app/getDirectoryContent` en qBittorrent, antes del primer cambio
-y de nuevo antes de cada paso. Si la consulta falla o la versión no la admite,
-se bloquea el renombrado. No requiere SMB: la lectura de nombres la hace qBittorrent.
-Un archivo destino ocupado bloquea el cambio. En recuperación solo se admite
-reenlazar un destino ya existente cuando no existe a la vez el archivo origen.
+Besides checking torrent inventory, Oberiz queries the destination directory through qBittorrent `app/getDirectoryContent` before the first change and again before every step. A failed or unsupported query blocks renaming. SMB is unnecessary: qBittorrent reads the names. An occupied destination blocks the change. During recovery, relinking to an existing destination is allowed only when the source file does not also exist.
 
-La prueba real descubrió que `renameFile` de qBittorrent 5.2.3 puede sobrescribir
-un archivo ajeno sin devolver conflicto HTTP; por eso no basta con comprobar la
-lista interna del torrent ni con confiar en un 409. La protección añadida se ha
-verificado contra un archivo señuelo real y con el código Rust de Oberiz.
+Real testing found that qBittorrent 5.2.3 `renameFile` can overwrite an unrelated file without an HTTP conflict, so its internal torrent list or an assumed 409 is insufficient. The added guard was verified with a real decoy file using Oberiz Rust code.
 
-La API no ofrece una operación atómica «renombrar sin reemplazar». No se debe
-compartir un destino entre torrents que gestionan los mismos archivos ni ejecutar
-otros organizadores sobre esas rutas simultáneamente. Cambios externos entre la
-comprobación y el renombrado o entradas ocultas no expuestas por la API son límites
-del diseño sin acceso al sistema de archivos. No se promete detección universal.
+The API has no atomic “rename without replacement” operation. Do not share a destination among torrents managing the same files or run other organizers on those paths concurrently. External changes between checking and renaming, and hidden entries not exposed by the API, are limitations of the design without filesystem access. Universal detection is not promised.
 
-## Archivo y recuperación
+## Archiving and recovery
 
-Por defecto se conserva el `.torrent` original, su hash, destino en qBittorrent,
-índices/tamaños y correspondencias de nombres en `torrent_archives`, dentro de
-SQLite. Las copias normales de la base de datos incluyen estos datos; no hacen
-falta copias de vídeos ni acceso SMB. Las claves privadas del tracker contenidas
-en un `.torrent` también son secretos: proteger las copias de seguridad.
+By default, the original `.torrent`, hash, qBittorrent destination, file indices/sizes, and name mappings are retained in SQLite `torrent_archives`. Normal database backups include them; video backups or SMB access are unnecessary. Private tracker keys inside a `.torrent` are also secrets: protect backups.
 
-El renombrado necesita ese archivo aunque se desactive la conservación opcional.
-Este archivo no sustituye una copia de la sesión/configuración completa de
-qBittorrent: no conserva estadísticas, colas ni todas sus preferencias por torrent.
-Antes de reanudar una recuperación hay que revisar también la selección y
-prioridades de archivos, categorías y límites en qBittorrent.
-Si la exportación o su validación fallan, no empieza el renombrado ni se da por
-completado el trabajo para la limpieza automática.
+Renaming requires this archive even if optional retention is disabled. It does not replace a complete qBittorrent session/configuration backup: statistics, queues, and all per-torrent preferences are not retained. Before resuming recovery, review file selection/priorities, categories, and qBittorrent limits. If export or validation fails, renaming does not begin and the job is not marked complete for automatic cleanup.
 
-**Descargas y recuperación → Recuperar detenido** requiere confirmación y:
+**Downloads and recovery → Recover stopped** requires confirmation and:
 
-- Rechaza modificar un torrent ya presente en qBittorrent.
-- Comprueba la identidad del `.torrent` (recuperación v1/híbrida; v2 pura requiere
-  recuperación manual por ahora).
-- Lo añade con `paused=true` y `stopped=true`, gestión automática desactivada,
-  sin omitir la comprobación y conservando la disposición original.
-- Aplica los nombres registrados a través de qBittorrent y solicita un recheck.
-- No llama a start/resume. El usuario revisa y reanuda en qBittorrent.
-- No aplica limpieza de compartición a una recuperación detenida. Solo vuelve
-  a evaluarla tras observar que el usuario la ha reanudado para compartir.
+- refuses to modify a torrent already present in qBittorrent;
+- verifies `.torrent` identity (v1/hybrid recovery; pure v2 currently requires manual recovery);
+- adds it with `paused=true` and `stopped=true`, automatic management disabled, checking not skipped, and the original layout preserved;
+- applies recorded names through qBittorrent and requests a recheck;
+- never calls start/resume: users review and resume in qBittorrent;
+- does not apply sharing cleanup to stopped recovery. It is reconsidered only after observing that the user resumed seeding.
 
-Los registros de importación antiguos y sus `.torrent` externos se conservan,
-pero no se convierten automáticamente en recuperaciones remotas: falta una
-correspondencia fiable entre el antiguo destino local y el del cliente. La UI
-no ofrece el antiguo reseed que copiaba archivos; esos casos se recuperan
-manualmente en qBittorrent. Los registros con archivo remoto no se eliminan
-desde la limpieza de registros obsoletos.
+Old import records and external `.torrent` files are preserved but are not automatically converted into remote recoveries: reliable mappings between legacy local and client destinations are missing. The UI no longer offers legacy reseeding that copied files; recover these cases manually in qBittorrent. Records with a remote archive are not deleted by obsolete-record cleanup.
 
-## Actualización segura
+## Safe upgrade
 
-La migración 0022 conserva historial, archivos indexados, carpetas y ajustes
-antiguos necesarios para compatibilidad/rollback. El arranque crea primero una
-copia SQLite coherente en `data/backups/oberiz-before-storage-simplification-*.sqlite3`
-si ya existe una base anterior. Si la copia falla, no se aplica la transición.
-Después se elimina únicamente la antigua configuración de credenciales SMB;
-no se desconectan montajes del sistema operativo ni se toca el NAS.
+Migration 0022 preserves history, indexed files, folders, and legacy settings needed for compatibility/rollback. Startup first creates a consistent SQLite backup at `data/backups/oberiz-before-storage-simplification-*.sqlite3` if an older database exists. If backup fails, the transition does not proceed. Only legacy SMB credentials configuration is subsequently removed; OS mounts are not disconnected and the NAS is untouched.
 
-Las políticas siguen siendo una función separada. Las políticas antiguas de
-«quitar torrent y original» se convierten en «quitar torrent conservando archivos».
-El borrado manual desde Descargas permite eliminar también los archivos mediante
-una casilla desmarcada por defecto y una confirmación con aviso permanente.
-qBittorrent ejecuta esa orden incluso sin acceso de Oberiz al NAS. Las políticas
-automáticas y el rechazo de releases siguen conservando los archivos.
+Policies remain a separate feature. Legacy “remove torrent and original” policies become “remove torrent, keep files.” Manual deletion in Downloads allows file deletion through an unchecked checkbox and a confirmation with a persistent warning. qBittorrent executes that command even without Oberiz NAS access. Automatic policies and release rejection still preserve files.
 
-Los campos y el endpoint de sugerencias de correspondencias antiguos se mantienen
-temporalmente por compatibilidad; este último devuelve una lista vacía y no
-consulta discos ni qBittorrent. No hay configuración ni uso de traducción de
-rutas en el procesamiento nuevo de descargas.
+Legacy fields and the mapping-suggestions endpoint remain temporarily for compatibility. The endpoint returns an empty list and does not query disks or qBittorrent. New download processing neither configures nor uses path translation.
 
-## Verificación y límites
+## Verification and limitations
 
-Pruebas con SQLite de prueba, archivos sintéticos, clientes simulados y HTTP
-loopback. No se ha accedido al NAS ni se han tocado torrents del usuario.
-El emisor JavaScript existente de Cinetta se ha revisado y sus pruebas pasan;
-no se modifica Cinetta ni se confirma que el envío esté habilitado en la instancia
-instalada del usuario.
+Tests use test SQLite, synthetic files, simulated clients, and loopback HTTP. No NAS or user torrents were accessed. The existing Cinetta JavaScript sender was reviewed and its tests passed; this does not modify Cinetta or confirm that sending is enabled in the installed user instance.
 
-También se ha probado qBittorrent real **v5.2.3**, en un perfil aislado, con WebUI
-solo loopback, credenciales efímeras y un torrent privado de 8 KiB sin trackers:
-renombrado, exportación con hash conservado, retirada sin borrar datos, recuperación
-detenida, recheck al 100 % y rechazo de una colisión mediante el guard real de Rust.
-Prueba reproducible: `node scripts/test-qbittorrent-isolated.mjs <ruta-absoluta-qbittorrent>`.
-Evidencia privada: `backend/backups/storage-simplification-20261015/real-qbt-9RfBU6/result.json`.
-El proceso aislado se cerró al terminar. La integración con la instalación del NAS
-y la activación de inventario en Cinetta se dejan a la configuración del usuario.
+Real **qBittorrent v5.2.3** was also tested with an isolated profile, loopback-only WebUI, ephemeral credentials, and a private 8 KiB trackerless torrent: renaming, export preserving the hash, removal preserving data, stopped recovery, 100% recheck, and collision rejection through the real Rust guard.
 
-Referencias: [API oficial qBittorrent](https://github.com/qbittorrent/qBittorrent/wiki/WebUI-API-(qBittorrent-5.0)),
-[implementación oficial de los controladores](https://github.com/qbittorrent/qBittorrent/blob/master/src/webui/api/torrentscontroller.cpp).
+Reproduce with `node scripts/test-qbittorrent-isolated.mjs <absolute-qbittorrent-path>`.
+Private evidence: `backend/backups/storage-simplification-20261015/real-qbt-9RfBU6/result.json`.
+The isolated process was closed afterward. NAS installation integration and Cinetta inventory activation remain user configuration tasks.
+
+References: [official qBittorrent API](https://github.com/qbittorrent/qBittorrent/wiki/WebUI-API-(qBittorrent-5.0)), [official controller implementation](https://github.com/qbittorrent/qBittorrent/blob/master/src/webui/api/torrentscontroller.cpp).

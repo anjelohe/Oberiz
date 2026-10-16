@@ -1,42 +1,42 @@
-# Oberiz — API e integración
+# Oberiz — API and integration
 
-## Alcance actual
+## Current scope
 
-Oberiz expone una API interna para su interfaz y una **Public API v1** para clientes externos. La API v1 permite registrar y consultar peticiones; no pretende todavía ser una compatibilidad completa con Radarr, Sonarr, Overseerr o Seerr.
+Oberiz exposes an internal API for its interface and a **Public API v1** for external clients. API v1 registers and retrieves requests; it does not yet aim to provide complete compatibility with Radarr, Sonarr, Overseerr, or Seerr.
 
-## Activación y autenticación
+## Activation and authentication
 
-Activa **Public API v1** y genera una clave desde Settings. Todas las llamadas requieren `X-Api-Key`:
+Enable **Public API v1** and generate a key in Settings. All calls require `X-Api-Key`:
 
 ```http
-X-Api-Key: obrz_tu_clave
+X-Api-Key: obrz_your_key
 ```
 
-No se utiliza `Authorization: Bearer` en la implementación actual.
+The current implementation does not use `Authorization: Bearer`.
 
-## Endpoints públicos actuales
+## Current public endpoints
 
-| Método | Ruta | Descripción |
+| Method | Path | Description |
 | --- | --- | --- |
-| `GET` | `/api/v1/status` | Estado y versión de Oberiz. |
-| `GET` | `/api/v1/quality-profiles` | Perfiles de calidad activos para clientes nativos, con `request_quality` (`standard` o `4k`). |
-| `GET` | `/api/v1/requests` | Últimas 250 peticiones. |
-| `POST` | `/api/v1/requests` | Crea una petición o reaplica una ampliación de temporadas de un cliente nativo. |
-| `GET` | `/api/v1/requests/{id}` | Detalle y estado calculado de una petición. |
+| `GET` | `/api/v1/status` | Oberiz status and version. |
+| `GET` | `/api/v1/quality-profiles` | Active quality profiles for native clients, with `request_quality` (`standard` or `4k`). |
+| `GET` | `/api/v1/requests` | Latest 250 requests. |
+| `POST` | `/api/v1/requests` | Create a request or reapply an expanded season selection from a native client. |
+| `GET` | `/api/v1/requests/{id}` | Request details and computed status. |
 
-## Crear una petición
+## Creating a request
 
-Para Cinetta, `client_name: "cinetta"` y `client_request_id` identifican una solicitud de forma estable. Un reintento sano devuelve la existente; una serie que llegue de nuevo con `requested_seasons` actualiza esa selección en Oberiz para poder añadir temporadas posteriores sin crear otra serie. Esta operación no ejecuta el ciclo global: procesa únicamente ese medio.
+For Cinetta, `client_name: "cinetta"` and `client_request_id` provide a stable request identity. A normal retry returns the existing request. Resubmitting a series with `requested_seasons` updates that selection in Oberiz, allowing later seasons to be added without creating a duplicate series. This operation processes only that media item, not a global automation cycle.
 
-Los estados locales de Cinetta no son órdenes destructivas para Oberiz. No existe un endpoint implícito que borre o cancele torrents al cambiar una tarjeta a pendiente; una futura pausa o cancelación remota deberá ser explícita.
+Local Cinetta states are not destructive commands to Oberiz. Changing a card to pending does not implicitly delete or cancel torrents. Any future remote pause or cancellation must be explicit.
 
 ```http
 POST /api/v1/requests
-X-Api-Key: obrz_tu_clave
+X-Api-Key: obrz_your_key
 Content-Type: application/json
 ```
 
-Película mínima:
+Minimal movie request:
 
 ```json
 {
@@ -45,7 +45,7 @@ Película mínima:
 }
 ```
 
-Serie con perfil y modo de monitorización:
+Series with a profile and monitoring mode:
 
 ```json
 {
@@ -60,74 +60,74 @@ Serie con perfil y modo de monitorización:
 }
 ```
 
-Campos admitidos:
+Supported fields:
 
-- `media_type`: `movie` o `series`.
-- `tmdb_id`: identificador TMDB obligatorio.
-- `quality_profile_id`: opcional; se usa el perfil predeterminado si falta.
-- `client_name` y `client_request_id`: identifican una petición en el cliente. Juntos hacen el alta idempotente: un reintento devuelve la misma petición de Oberiz.
-- `monitored`: opcional; por defecto `true`.
-- `monitor_mode`: opcional para series; por defecto `all`.
-- `requested_seasons`: opcional para series; lista de números de temporada que se deben monitorizar de forma exacta.
-- `monitor_future_seasons`: opcional para series; mantiene el seguimiento de episodios que se emitan en el futuro sin activar las temporadas pasadas no seleccionadas.
-- `requested_by`: texto opcional de auditoría.
+- `media_type`: `movie` or `series`.
+- `tmdb_id`: required TMDB identifier.
+- `quality_profile_id`: optional; the default profile is used when omitted.
+- `client_name` and `client_request_id`: identify the request in the client. Together they make creation idempotent: a retry returns the same Oberiz request.
+- `monitored`: optional; defaults to `true`.
+- `monitor_mode`: optional for series; defaults to `all`.
+- `requested_seasons`: optional for series; the exact list of season numbers to monitor.
+- `monitor_future_seasons`: optional for series; tracks future episodes without enabling unselected past seasons.
+- `requested_by`: optional audit text.
 
-Tras crear la petición, Oberiz actualiza metadata y programa un ciclo de automatización en segundo plano.
+After creation, Oberiz updates metadata and schedules an automation cycle in the background.
 
-## Estados de petición
+## Request states
 
-Los estados actuales se calculan a partir de la biblioteca y los trabajos de descarga:
+Current states are computed from the library and download jobs:
 
 ```text
 movie:  available | downloading | searching
 series: available | downloading | searching | monitoring
 ```
 
-Una petición sin medio asociado se muestra como `pending`. Estos estados no incluyen aún métricas de progreso, calidad o velocidad; los clientes que las necesiten deben consultar la API interna de Oberiz o esperar a una ampliación de la API v1.
+A request without linked media is shown as `pending`. These states do not yet include progress, quality, or speed metrics. Clients requiring them must use the internal Oberiz API or wait for an API v1 extension.
 
-## Routing de descargas
+## Download routing
 
-El cliente externo no decide rutas, categorías ni etiquetas. Oberiz resuelve el Quality Profile efectivo y aplica:
+External clients do not select paths, categories, or tags. Oberiz resolves the effective Quality Profile and applies:
 
-- categoría de qBittorrent;
-- plantilla de tags;
-- perfil de idioma y reglas de aceptación;
-- política de upgrades y cutoff.
+- qBittorrent category;
+- tag template;
+- language profile and acceptance rules;
+- upgrade and cutoff policy.
 
-Para clientes nativos, cada perfil lleva además `request_quality`: `standard` o `4k`. Se configura con el check **Perfil 4K para peticiones API** en Profiles. Cinetta filtra primero por tipo (película o serie) y por esta marca: si queda un perfil lo envía directamente; si quedan varios permite elegir solo entre esos perfiles.
+For native clients, each profile also has `request_quality`: `standard` or `4k`. Configure it using **4K profile for API requests** in Profiles. Cinetta first filters by media type and this flag: if one profile remains it submits it directly; if several remain, users can choose only among those profiles.
 
-La categoría y los tags se verifican después de añadir el torrent. `qb_hash` es la correlación principal entre Oberiz y qBittorrent.
+The category and tags are verified after adding the torrent. `qb_hash` is the main correlation between Oberiz and qBittorrent.
 
-## Cinetta y compatibilidad
+## Cinetta and compatibility
 
-Cinetta usa exclusivamente esta API nativa. Consulta perfiles autenticados, conserva el identificador remoto y deja que Oberiz determine rutas, categorías, tags e importación.
+Cinetta uses only this native API. It retrieves authenticated profiles, retains the remote identifier, and lets Oberiz determine paths, categories, tags, and import handling.
 
-La compatibilidad Radarr/Sonarr permanece independiente y solo se activa mediante `overseerr.compat_enabled`. Sus rutas `/radarr/api/v3/*` y `/sonarr/api/v3/*` existen para clientes como Overseerr; no condicionan la API nativa.
+Radarr/Sonarr compatibility is independent and enabled only through `overseerr.compat_enabled`. Its `/radarr/api/v3/*` and `/sonarr/api/v3/*` routes support clients such as Overseerr; they do not determine the native API.
 
-Para Overseerr se configura la misma instancia dos veces:
+For Overseerr, configure the same instance twice:
 
 ```text
 http://host:2032/radarr  → Movies
 http://host:2032/sonarr  → Series
 ```
 
-La capa expone perfiles, carpeta raíz, idiomas, tags, lookup y alta de películas/series. Sonarr resuelve el identificador TVDB de una serie a TMDB dentro de Oberiz. Esta compatibilidad está validada para el flujo de solicitud de Overseerr, pero no pretende replicar toda la API de Radarr/Sonarr.
+The layer exposes profiles, a root folder, languages, tags, lookup, and movie/series creation. Sonarr resolves a series TVDB identifier to TMDB within Oberiz. Compatibility has been validated for the Overseerr request workflow but does not replicate the full Radarr/Sonarr API.
 
-Una clave compartida puede utilizarse durante la configuración inicial; en una instalación expuesta o con varios clientes se recomienda regenerarla cuando termine la prueba y, en una evolución posterior, usar claves revocables por integración.
+A shared key can be used during initial setup. For an exposed installation or multiple clients, regenerate it after testing; a future improvement is revocable per-integration keys.
 
-## Diagnóstico local
+## Local diagnostics
 
-`GET /api/diagnostics` es un endpoint local de solo lectura para soporte. No requiere la clave pública y no devuelve secretos. Incluye versión, sistema, estado de SQLite, configuración de servicios, indexadores, automatización y errores recientes.
+`GET /api/diagnostics` is an internal, read-only support endpoint. It does not require the public API key and does not return secrets. It includes version, system, SQLite status, service configuration, indexers, automation, and recent errors.
 
-## Backup local
+## Local backup
 
-La interfaz de Settings consume estas rutas locales, sin exponerlas por la API pública:
+The Settings interface uses these internal routes; they are not exposed through the public API:
 
-- `GET /api/backups`: lista los snapshots disponibles.
-- `POST /api/backups`: crea un snapshot SQLite autocontenido y consistente con WAL.
-- `GET /api/backups/{filename}/download`: descarga una copia local.
-- `POST /api/backups/upload`: incorpora un archivo SQLite como backup restaurable.
-- `DELETE /api/backups/{filename}`: elimina una copia local.
-- `POST /api/backups/{filename}/restore`: restaura un snapshot compatible tras confirmación explícita de la interfaz.
+- `GET /api/backups`: list available snapshots.
+- `POST /api/backups`: create a self-contained, WAL-consistent SQLite snapshot.
+- `GET /api/backups/{filename}/download`: download a local backup.
+- `POST /api/backups/upload`: upload a SQLite file as a restorable backup.
+- `DELETE /api/backups/{filename}`: delete a local backup.
+- `POST /api/backups/{filename}/restore`: restore a compatible snapshot after explicit UI confirmation.
 
-Los backups se guardan en la carpeta `backups` del directorio desde el que se inicia Oberiz. El programador opcional crea copias cada 1–720 horas y conserva solo el número de copias configurado. La restauración reemplaza datos de Oberiz —incluidos ajustes e historial— y no toca biblioteca multimedia ni torrents externos.
+Backups are stored in the `backups` folder under the directory from which Oberiz starts. The optional scheduler creates backups every 1–720 hours and retains the configured number. Restoration replaces Oberiz data, including settings and history, and does not touch media libraries or external torrents. Current security settings and connections are preserved by the v1.0.4 restore policy.
