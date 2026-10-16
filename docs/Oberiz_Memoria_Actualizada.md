@@ -2,6 +2,15 @@
 
 ## v1.0.4 rebuild authorized — October 16, 2026
 
+Execution confirmed: code commit `3a1377c` pushed to main, annotated v1.0.4 tag
+updated atomically with an expected-old-value lease. GitHub started
+[release rebuild 38942564841](https://github.com/anjelohe/Oberiz/actions/runs/38942564841)
+and [CI 38942564996](https://github.com/anjelohe/Oberiz/actions/runs/38942564996),
+both in progress at verification. The existing release carries an English rebuild
+notice until the workflow replaces its assets and release notes. No installer
+completion or local deployment is claimed. This receipt is a documentation-only
+follow-up on main; it does not move the release tag again.
+
 The user explicitly requests republishing the shared-inventory changes as the
 existing v1.0.4, updating memory and project documentation. This supersedes the
 local-only publication restriction below. Commit the changes, move only the
