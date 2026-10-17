@@ -90,6 +90,10 @@ export function Settings(){
         movie_library_paths:data!.movie_library_paths,
         series_library_paths:data!.series_library_paths,
         library_source:data!.library_source,
+        missing_metadata_days:data!.missing_metadata_days,
+        missing_completed_days:data!.missing_completed_days,
+        inventory_check_hours:data!.inventory_check_hours,
+        inventory_full_days:data!.inventory_full_days,
         missing_reports_enabled:data!.missing_reports_enabled,
         pause_on_stale_inventory:data!.pause_on_stale_inventory,
         library_scan_enabled:data!.library_scan_enabled,
@@ -408,6 +412,13 @@ export function Settings(){
         <section className="settings-section card settings-full">
           <div className="settings-title"><div><h3>{t('Missing content reports')}</h3><span>{t('Read-only reports from Cinetta, separate from the managed library.')}</span></div></div>
           <p className="settings-help">{t('Reports use the last inventory Cinetta sent to Oberiz. Updating a report does not request a new sync or require another API key.')}</p>
+          <div className="settings-path-grid">
+            <label>{t('Metadata refresh interval (days)')}<input type="number" min={1} max={365} value={data.missing_metadata_days??7} onChange={e=>setData({...data,missing_metadata_days:Number(e.target.value)})}/></label>
+            <label>{t('Finished series refresh interval (days)')}<input type="number" min={7} max={365} value={data.missing_completed_days??90} onChange={e=>setData({...data,missing_completed_days:Number(e.target.value)})}/></label>
+            <label>{t('Inventory check interval (hours)')}<input type="number" min={1} max={168} value={data.inventory_check_hours??1} onChange={e=>setData({...data,inventory_check_hours:Number(e.target.value)})}/></label>
+            <label>{t('Full inventory reconciliation (days)')}<input type="number" min={1} max={365} value={data.inventory_full_days??7} onChange={e=>setData({...data,inventory_full_days:Number(e.target.value)})}/></label>
+          </div>
+          <p className="settings-help">{t('Intervals apply when checking reports or synchronizing Cinetta. Cached metadata is reused; finished series are checked less often. Updated Cinetta sender required for incremental inventory.')}</p>
           <label className="toggle-row"><input type="checkbox" checked={data.missing_reports_enabled??false} onChange={e=>setData({...data,missing_reports_enabled:e.target.checked})}/>{t('Allow integrations to read and refresh missing reports')}</label>
           <p className="settings-help">{t('Disabled by default. Uses the existing Oberiz API key; local report buttons do not need this external permission.')}</p>
         </section>

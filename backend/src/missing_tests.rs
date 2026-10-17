@@ -2,6 +2,125 @@ use super::*;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+#[tokio::test]
+async fn metadata_cache_survives_clients_expires_and_uses_longer_finished_series_interval() {
+    let (sources, server, calls) = providers().await;
+    let first = sources.metadata("/movie/10").await.unwrap();
+    assert_eq!(sources.clone().metadata("/movie/10").await.unwrap(), first);
+    assert_eq!(calls.lock().await.len(), 1);
+    sqlx::query("UPDATE missing_metadata_cache SET fetched_at=unixepoch()-8*86400")
+        .execute(&sources.db)
+        .await
+        .unwrap();
+    sources.metadata("/movie/10").await.unwrap();
+    assert_eq!(calls.lock().await.len(), 2);
+    sources.metadata("/tv/20").await.unwrap();
+    sqlx::query("UPDATE missing_metadata_cache SET final_series=1,fetched_at=unixepoch()-8*86400 WHERE cache_key LIKE '%/tv/20'").execute(&sources.db).await.unwrap();
+    sources.metadata("/tv/20").await.unwrap();
+    assert_eq!(calls.lock().await.len(), 3);
+    sqlx::query("UPDATE missing_metadata_cache SET fetched_at=unixepoch()-91*86400 WHERE cache_key LIKE '%/tv/20'").execute(&sources.db).await.unwrap();
+    sources.metadata("/tv/20").await.unwrap();
+    assert_eq!(calls.lock().await.len(), 4);
+    server.abort();
+    sqlx::query("UPDATE missing_metadata_cache SET fetched_at=unixepoch()-8*86400")
+        .execute(&sources.db)
+        .await
+        .unwrap();
+    assert_eq!(sources.metadata("/movie/10").await.unwrap(), first);
+    assert!(
+        sources
+            .stale_metadata
+            .load(std::sync::atomic::Ordering::Relaxed)
+    );
+}
+
+#[tokio::test]
+async fn metadata_cache_single_flight_and_incremental_inventory_avoid_repeat_provider_calls() {
+    let (sources, server, calls) = providers().await;
+    let (a, b) = tokio::join!(sources.metadata("/movie/10"), sources.metadata("/movie/10"));
+    assert_eq!(a.unwrap(), b.unwrap());
+    assert_eq!(calls.lock().await.len(), 1);
+    let mut first = report(&filters("collections", None), "cache_first");
+    calculate(
+        &sources,
+        &filters("collections", None),
+        "2026-10-17",
+        &mut first,
+    )
+    .await
+    .unwrap();
+    assert_eq!(first["totals"]["movies"], 1);
+    let count = calls.lock().await.len();
+    let mut changed = sources.clone();
+    changed
+        .inventory
+        .items
+        .push(json!({"type":"movie","tmdb_id":11}));
+    let mut next = report(&filters("collection_one", Some(30)), "cache_next");
+    calculate(
+        &changed,
+        &filters("collection_one", Some(30)),
+        "2026-10-17",
+        &mut next,
+    )
+    .await
+    .unwrap();
+    assert_eq!(next["totals"]["movies"], 0);
+    assert_eq!(calls.lock().await.len(), count);
+    server.abort();
+}
+
+#[tokio::test]
+async fn refresh_intervals_are_validated_before_other_settings_are_saved() {
+    let state = state().await;
+    let Json(defaults) = settings::get_settings(State(state.clone())).await.unwrap();
+    assert_eq!(
+        (
+            defaults.missing_metadata_days,
+            defaults.missing_completed_days,
+            defaults.inventory_check_hours,
+            defaults.inventory_full_days
+        ),
+        (7, 90, 1, 7)
+    );
+    let request = settings::UpdateSettingsRequest {
+        missing_metadata_days: Some(0),
+        tmdb_api_key: Some("must-not-save".into()),
+        ..Default::default()
+    };
+    assert!(
+        settings::update_settings(State(state.clone()), Json(request))
+            .await
+            .is_err()
+    );
+    assert!(
+        settings::get_value(&state.db, "tmdb.api_key")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let request = settings::UpdateSettingsRequest {
+        missing_metadata_days: Some(14),
+        missing_completed_days: Some(180),
+        inventory_check_hours: Some(6),
+        inventory_full_days: Some(30),
+        ..Default::default()
+    };
+    settings::update_settings(State(state.clone()), Json(request))
+        .await
+        .unwrap();
+    let Json(saved) = settings::get_settings(State(state)).await.unwrap();
+    assert_eq!(
+        (
+            saved.missing_metadata_days,
+            saved.missing_completed_days,
+            saved.inventory_check_hours,
+            saved.inventory_full_days
+        ),
+        (14, 180, 6, 30)
+    );
+}
+
 #[test]
 fn episode_ranges_are_bounded_without_integer_overflow() {
     assert_eq!(bounded_episode_end(i64::MAX, Some(i64::MAX)), i64::MAX);
@@ -225,6 +344,10 @@ async fn providers() -> (
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     (
         Sources {
+            db: state().await.db,
+            metadata_days: 7,
+            completed_days: 90,
+            stale_metadata: Default::default(),
             client: reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
                 .timeout(Duration::from_secs(5))

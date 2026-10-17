@@ -84,6 +84,10 @@ pub struct ReportedRoot {
 #[derive(Debug, Deserialize)]
 pub struct LibraryReport {
     #[serde(default)]
+    pub sync: Option<InventorySync>,
+    #[serde(default)]
+    pub collections: Vec<ReportedCollection>,
+    #[serde(default)]
     pub movies: Vec<ReportedMovie>,
     #[serde(default)]
     pub episodes: Vec<ReportedEpisode>,
@@ -95,6 +99,25 @@ pub struct LibraryReport {
     /// Without confirmation reports are additive, even for a single omission.
     #[serde(default)]
     pub allow_large_removal: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct InventorySync {
+    pub revision: String,
+    pub base_revision: Option<String>,
+    pub full: bool,
+}
+#[derive(Debug, Deserialize)]
+pub struct ReportedCollection {
+    pub id: i64,
+    pub name: String,
+    pub parts: Vec<CollectionPart>,
+}
+#[derive(Debug, Deserialize)]
+pub struct CollectionPart {
+    pub id: i64,
+    pub title: String,
+    pub release_date: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -138,6 +161,20 @@ pub async fn report(
 ) -> Result<Json<LibraryReportResult>, Error> {
     validate(&report)?;
     let _guard = LOCK.lock().await;
+    if let Some(sync) = &report.sync {
+        let current: Option<String> =
+            sqlx::query_scalar("SELECT revision FROM inventory_sync_state WHERE id=1")
+                .fetch_optional(&state.db)
+                .await
+                .map_err(internal)?;
+        if !sync.full
+            && (current.is_none()
+                || (current.as_deref() != sync.base_revision.as_deref()
+                    && current.as_deref() != Some(&sync.revision)))
+        {
+            return Err((StatusCode::CONFLICT, "inventory_revision_mismatch".into()));
+        }
+    }
     let _media_guard = crate::importer::MEDIA_OPERATION_GATE.lock().await;
     if !crate::importer::external_mode(&state).await? {
         return Err((
@@ -149,6 +186,34 @@ pub async fn report(
 }
 
 fn validate(report: &LibraryReport) -> Result<(), Error> {
+    if report.sync.as_ref().is_some_and(|s| {
+        s.revision.len() != 64
+            || !s.revision.bytes().all(|b| b.is_ascii_hexdigit())
+            || s.base_revision
+                .as_ref()
+                .is_some_and(|r| r.len() != 64 || !r.bytes().all(|b| b.is_ascii_hexdigit()))
+            || (!s.full && report.allow_large_removal)
+    }) {
+        return Err((StatusCode::BAD_REQUEST, "Invalid inventory revision".into()));
+    }
+    let parts: usize = report.collections.iter().map(|c| c.parts.len()).sum();
+    if report.collections.len() > 2000
+        || parts > 20000
+        || report.collections.iter().any(|c| {
+            c.id <= 0
+                || c.name.len() > 960
+                || c.parts.iter().any(|p| {
+                    p.id <= 0
+                        || p.title.len() > 960
+                        || p.release_date.as_ref().is_some_and(|d| d.len() > 10)
+                })
+        })
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Invalid collection metadata".into(),
+        ));
+    }
     if report.movies.len() + report.episodes.len() > MAX_ITEMS || report.roots.len() > MAX_ROOTS {
         return Err((StatusCode::PAYLOAD_TOO_LARGE, "Too many files".into()));
     }
@@ -494,6 +559,65 @@ async fn apply(state: &AppState, report: LibraryReport) -> Result<LibraryReportR
     sqlx::query("INSERT INTO settings(key,value) VALUES('library.last_external_report',strftime('%Y-%m-%dT%H:%M:%SZ','now')) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
         .execute(&mut *tx).await.map_err(internal)?;
     cache_received_inventory(&mut tx, &report).await?;
+    if let Some(sync) = &report.sync {
+        sqlx::query("INSERT INTO inventory_sync_state VALUES(1,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision")
+            .bind(&sync.revision).execute(&mut *tx).await.map_err(internal)?;
+    }
+    // Seed known collection metadata once. Repeated inventory deliveries must
+    // not make old metadata look freshly fetched or overwrite a newer TMDB row.
+    for collection in &report.collections {
+        let mut value = serde_json::json!({"name":collection.name,"parts":collection.parts.iter().map(|p| serde_json::json!({"id":p.id,"title":p.title,"release_date":p.release_date})).collect::<Vec<_>>()});
+        let collection_key = format!(
+            "https://api.themoviedb.org/3|es-ES|/collection/{}",
+            collection.id
+        );
+        if let Some(existing) = sqlx::query_scalar::<_, String>(
+            "SELECT data_json FROM missing_metadata_cache WHERE cache_key=?",
+        )
+        .bind(&collection_key)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(internal)?
+            && let Ok(mut existing) = serde_json::from_str::<serde_json::Value>(&existing)
+            && let Some(parts) = existing["parts"].as_array_mut()
+        {
+            for part in value["parts"].as_array().into_iter().flatten() {
+                if !parts.iter().any(|known| known["id"] == part["id"]) {
+                    parts.push(part.clone());
+                }
+            }
+            // Merge newly known members without erasing provider data or
+            // extending freshness merely because inventory was delivered again.
+            if existing.to_string().len() <= 4 * 1024 * 1024 {
+                sqlx::query("UPDATE missing_metadata_cache SET data_json=? WHERE cache_key=?")
+                    .bind(existing.to_string())
+                    .bind(&collection_key)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(internal)?;
+            }
+            value = existing;
+        }
+        sqlx::query("INSERT OR IGNORE INTO missing_metadata_cache(cache_key,data_json,fetched_at,accessed_at) VALUES(?,?,unixepoch(),unixepoch())")
+            .bind(format!("https://api.themoviedb.org/3|es-ES|/collection/{}",collection.id)).bind(value.to_string()).execute(&mut *tx).await.map_err(internal)?;
+        for part in &collection.parts {
+            sqlx::query("INSERT OR IGNORE INTO missing_metadata_cache(cache_key,data_json,fetched_at,accessed_at) VALUES(?,?,unixepoch(),unixepoch())")
+                .bind(format!("https://api.themoviedb.org/3|es-ES|/movie/{}",part.id)).bind(serde_json::json!({"belongs_to_collection":{"id":collection.id,"name":collection.name}}).to_string()).execute(&mut *tx).await.map_err(internal)?;
+        }
+    }
+    loop {
+        let (count, bytes): (i64, i64) = sqlx::query_as(
+            "SELECT count(*),COALESCE(sum(length(data_json)),0) FROM missing_metadata_cache",
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(internal)?;
+        if count <= 20000 && bytes <= 128 * 1024 * 1024 {
+            break;
+        }
+        sqlx::query("DELETE FROM missing_metadata_cache WHERE cache_key IN (SELECT cache_key FROM missing_metadata_cache ORDER BY accessed_at,cache_key LIMIT 100)")
+            .execute(&mut *tx).await.map_err(internal)?;
+    }
     tx.commit().await.map_err(internal)?;
 
     // Inventory is informational only: no deletion proposals or filename-based
@@ -995,6 +1119,8 @@ mod tests {
             movies: vec![],
             episodes: vec![],
             roots: vec![],
+            sync: None,
+            collections: Vec::new(),
             allow_large_removal: false,
         }
     }
@@ -1254,6 +1380,8 @@ mod tests {
                     file: file("/tv/Silo/S01E02.mkv"),
                 }],
                 roots: vec![],
+                sync: None,
+                collections: Vec::new(),
                 allow_large_removal: false,
             },
         )
@@ -1282,6 +1410,8 @@ mod tests {
                 movies: vec![],
                 episodes: vec![],
                 roots: vec![],
+                sync: None,
+                collections: Vec::new(),
                 allow_large_removal: false,
             },
         )
@@ -1305,6 +1435,8 @@ mod tests {
                 movies: vec![movie(603, "/media/Matrix (1999)/Matrix.720p.mkv", 720)],
                 episodes: vec![],
                 roots: vec![],
+                sync: None,
+                collections: Vec::new(),
                 allow_large_removal: false,
             },
         )
@@ -1327,6 +1459,8 @@ mod tests {
                 ],
                 episodes: vec![],
                 roots: vec![],
+                sync: None,
+                collections: Vec::new(),
                 allow_large_removal: false,
             },
         )
@@ -1353,6 +1487,8 @@ mod tests {
                 movies: many,
                 episodes: vec![],
                 roots: vec![],
+                sync: None,
+                collections: Vec::new(),
                 allow_large_removal: false,
             },
         )
@@ -1364,6 +1500,8 @@ mod tests {
                 movies: vec![],
                 episodes: vec![],
                 roots: vec![],
+                sync: None,
+                collections: Vec::new(),
                 allow_large_removal: false,
             },
         )
@@ -1380,6 +1518,8 @@ mod tests {
                     path: "/media".into(),
                     available: true,
                 }],
+                sync: None,
+                collections: Vec::new(),
                 allow_large_removal: true,
             },
         )
@@ -1423,6 +1563,8 @@ mod tests {
                     movies: vec![],
                     episodes,
                     roots: vec![],
+                    sync: None,
+                    collections: Vec::new(),
                     allow_large_removal: false,
                 },
             )
@@ -1452,6 +1594,8 @@ mod tests {
                     available: true,
                 },
             ],
+            sync: None,
+            collections: Vec::new(),
             allow_large_removal: false,
         };
         apply(&state, library()).await.unwrap();
@@ -1494,6 +1638,80 @@ mod tests {
             last_component("/downloads/Film.2020.2160p/").as_deref(),
             Some("Film.2020.2160p")
         );
+    }
+
+    #[tokio::test]
+    async fn incremental_revisions_heartbeats_and_collection_metadata_are_safe() {
+        let state = state().await;
+        crate::settings::set_value(&state.db, "library.source", "cinetta")
+            .await
+            .unwrap();
+        async fn submit(state: AppState, value: serde_json::Value) -> Result<(), Error> {
+            let authorization = AuthorizedInventory {
+                _permit: REPORT_SLOTS.clone().acquire_owned().await.unwrap(),
+            };
+            super::report(
+                State(state),
+                authorization,
+                Json(serde_json::from_value(value).unwrap()),
+            )
+            .await
+            .map(|_| ())
+        }
+        let a = "a".repeat(64);
+        let b = "b".repeat(64);
+        assert_eq!(
+            submit(
+                state.clone(),
+                serde_json::json!({"sync":{"revision":a,"base_revision":null,"full":false}})
+            )
+            .await
+            .unwrap_err()
+            .0,
+            StatusCode::CONFLICT
+        );
+        submit(state.clone(),serde_json::json!({"movies":[{"tmdb_id":12345,"path":"/media/unknown.mkv"}],"sync":{"revision":a,"base_revision":null,"full":true},"collections":[{"id":30,"name":"Collection","parts":[{"id":12345,"title":"Movie","release_date":"2020-01-01"}]}]})).await.unwrap();
+        let before: String =
+            sqlx::query_scalar("SELECT items_json FROM received_library_inventory")
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+        assert_eq!(submit(state.clone(),serde_json::json!({"sync":{"revision":b,"base_revision":"c".repeat(64),"full":false}})).await.unwrap_err().0,StatusCode::CONFLICT);
+        submit(
+            state.clone(),
+            serde_json::json!({"sync":{"revision":a,"base_revision":a,"full":false}}),
+        )
+        .await
+        .unwrap();
+        let after: String = sqlx::query_scalar("SELECT items_json FROM received_library_inventory")
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+        assert_eq!(before, after, "Heartbeat must not clear inventory");
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM missing_metadata_cache")
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+        assert_eq!(count, 2, "Collection and movie membership are reused");
+        submit(state.clone(),serde_json::json!({"movies":[{"tmdb_id":23456,"path":"/media/new.mkv"}],"sync":{"revision":b,"base_revision":a,"full":false}})).await.unwrap();
+        let cached: String =
+            sqlx::query_scalar("SELECT items_json FROM received_library_inventory")
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&cached)
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .len(),
+            2
+        );
+        let revision: String = sqlx::query_scalar("SELECT revision FROM inventory_sync_state")
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+        assert_eq!(revision, b);
     }
 
     #[tokio::test]

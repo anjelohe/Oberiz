@@ -4,6 +4,8 @@
 #[path = "missing_tests.rs"]
 mod tests;
 use crate::{AppState, settings};
+#[path = "missing_metadata_cache.rs"]
+mod metadata_cache;
 use axum::{
     Json,
     extract::{Query, State},
@@ -376,6 +378,10 @@ fn page_report(mut report: Value, page: usize) -> Result<Value> {
 
 #[derive(Clone)]
 struct Sources {
+    db: sqlx::SqlitePool,
+    metadata_days: u64,
+    completed_days: u64,
+    stale_metadata: std::sync::Arc<std::sync::atomic::AtomicBool>,
     client: reqwest::Client,
     inventory: Inventory,
     tmdb_base: String,
@@ -416,13 +422,27 @@ impl Sources {
             .build()
             .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "http_client_error"))?;
         Ok(Self {
+            db: state.db.clone(),
+            metadata_days: settings::get_value(&state.db, "missing.metadata_days")
+                .await
+                .map_err(db_error)?
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(7)
+                .clamp(1, 365),
+            completed_days: settings::get_value(&state.db, "missing.completed_days")
+                .await
+                .map_err(db_error)?
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(90)
+                .clamp(7, 365),
+            stale_metadata: Default::default(),
             client,
             inventory,
             tmdb_base: "https://api.themoviedb.org/3".into(),
             tmdb_key,
         })
     }
-    async fn metadata(&self, path: &str) -> Result<Value> {
+    async fn fetch_metadata(&self, path: &str) -> Result<Value> {
         // TMDB answers 429 when briefly over its rate limit; waiting a little
         // (as it asks) keeps a large check from turning into a partial one.
         for attempt in 1..=3u64 {
@@ -733,6 +753,9 @@ async fn calculate(s: &Sources, f: &Filters, today: &str, report: &mut Value) ->
                 groups.push(json!({"type":"collection","tmdb_id":id,"tvdb_id":null,"title":format!("{} · {}",title(&details["name"],"Collection"),part+1),"items":chunk}));
             }
         }
+    }
+    if s.stale_metadata.load(std::sync::atomic::Ordering::Relaxed) {
+        warnings.insert("metadata_stale".into());
     }
     report["state"] = json!(if !warnings.is_empty() {
         "partial"

@@ -1,5 +1,50 @@
 # Oberiz — Project memory
 
+## v1.0.5 publication authorized — October 17, 2026
+
+User explicitly requests publishing Oberiz as v1.0.5. Product versions, README,
+Compose, OpenAPI, workflow default and English release notes are updated.
+Includes persistent metadata caching, configurable intervals and the incremental
+inventory receiver. Cinetta sender sources remain separate and are not published
+from this repository. Older senders remain supported; incremental transport needs
+the updated sender. No installed-service deployment or qBittorrent restart.
+The local-only restriction in earlier October 17 notes is superseded for this
+Oberiz publication only. New tag v1.0.5; existing v1.0.4 is not moved again.
+
+Prepublication dependency check discovered RUSTSEC-2026-0367/0368/0369 for zip
+0.6.6. Oberiz does not use the affected automatic extract/permission APIs, but
+the dependency was upgraded to 9.0.4 and tests adapted to its filename API.
+New dependency MSRVs remain compatible with the pinned Rust 1.90 Docker builder.
+OSV rechecked 250 active versions with no advisories; npm reports zero vulnerabilities.
+
+Final v1.0.5 local verification after the ZIP upgrade: 129 unit tests passed,
+one optional live test ignored, two migration tests passed, strict Clippy and
+formatting passed. All five frontend suites and the production build passed.
+New annotated v1.0.5 publication triggers full Windows/Linux/Docker release
+generation; generated installers must not be considered ready until that
+workflow completes successfully. Existing installed services are not updated.
+
+## Configurable caching and incremental inventory — October 17, 2026
+
+User authorized local implementation in Oberiz and Cinetta. Defaults: metadata
+7 days, ended/canceled series 90 days, periodic inventory check 1 hour, full
+reconciliation 7 days; all editable in Settings and validated before saving.
+Persistent bounded compact metadata cache, single-flight provider fetches, stale
+fallback warning. Cinetta reuses existing collection data and sends changed paths
+with acknowledged revision checkpoints; unchanged checks are small heartbeats.
+Mismatches trigger full reconciliation, offline/empty-root safeguards remain.
+See [implementation and limits](Oberiz_Incremental_Inventory.md). Local sources in
+both projects changed; mobile sources untouched. Not published, no version/tag
+change and no installed-service or qBittorrent restart. Local computations still
+walk the selected scope and the sender still verifies files; do not claim that
+incremental transport removes all local work or NAS checks.
+
+Verification: 129 unit tests passed (one optional live test ignored), two migration
+tests, strict Clippy and formatting; five frontend suites and build passed.
+Cinetta: 18 inventory/delta tests passed, with synthetic files and loopback HTTP.
+First-use cache filling remains network-bound; no production performance or
+real NAS benchmark is claimed. Both source trees are left locally modified.
+
 ## v1.0.4 rebuild authorized — October 16, 2026
 
 Execution confirmed: code commit `3a1377c` pushed to main, annotated v1.0.4 tag

@@ -187,7 +187,7 @@ mod import_tests {
         archive
             .start_file(
                 "repo/definitions/v11/oversized.yml",
-                zip::write::FileOptions::default()
+                zip::write::SimpleFileOptions::default()
                     .compression_method(zip::CompressionMethod::Deflated),
             )
             .unwrap();
@@ -212,7 +212,7 @@ mod import_tests {
             ("repo/definitions/v11/broken.yml", "invalid: [".to_string()),
         ] {
             archive
-                .start_file(name, zip::write::FileOptions::default())
+                .start_file(name, zip::write::SimpleFileOptions::default())
                 .unwrap();
             archive.write_all(content.as_bytes()).unwrap();
         }
@@ -1184,7 +1184,7 @@ fn extract_v11(bytes: Vec<u8>, target: &FsPath) -> Result<(usize, Vec<String>), 
 
     for i in 0..archive.len() {
         let entry = archive.by_index(i).map_err(|e| e.to_string())?;
-        let name = entry.name().replace('\\', "/");
+        let name = entry.name().map_err(|e| e.to_string())?.replace('\\', "/");
 
         if !name.contains("/definitions/v11/") {
             continue;

@@ -16,6 +16,10 @@ pub(crate) fn hash_api_key(key: &str) -> String {
 
 #[derive(Debug, Serialize)]
 pub struct SettingsResponse {
+    pub missing_metadata_days: u64,
+    pub missing_completed_days: u64,
+    pub inventory_check_hours: u64,
+    pub inventory_full_days: u64,
     pub missing_reports_enabled: bool,
     pub library_source: String,
     pub pause_on_stale_inventory: bool,
@@ -66,6 +70,10 @@ pub struct SettingsResponse {
 
 #[derive(Debug, Deserialize, Default)]
 pub struct UpdateSettingsRequest {
+    pub missing_metadata_days: Option<u64>,
+    pub missing_completed_days: Option<u64>,
+    pub inventory_check_hours: Option<u64>,
+    pub inventory_full_days: Option<u64>,
     pub missing_reports_enabled: Option<bool>,
     pub library_source: Option<String>,
     pub pause_on_stale_inventory: Option<bool>,
@@ -363,6 +371,22 @@ pub async fn get_settings(
     let overseerr_compat_enabled = boolean(&state.db, "overseerr.compat_enabled", false).await?;
 
     Ok(Json(SettingsResponse {
+        missing_metadata_days: text(&state.db, "missing.metadata_days", "7")
+            .await?
+            .parse::<u64>()
+            .unwrap_or(7),
+        missing_completed_days: text(&state.db, "missing.completed_days", "90")
+            .await?
+            .parse::<u64>()
+            .unwrap_or(90),
+        inventory_check_hours: text(&state.db, "library.inventory_check_hours", "1")
+            .await?
+            .parse::<u64>()
+            .unwrap_or(1),
+        inventory_full_days: text(&state.db, "library.inventory_full_days", "7")
+            .await?
+            .parse::<u64>()
+            .unwrap_or(7),
         missing_reports_enabled: boolean(&state.db, "api.missing_reports_enabled", false).await?,
         library_source,
         pause_on_stale_inventory: boolean(&state.db, "library.pause_on_stale_inventory", false)
@@ -426,6 +450,30 @@ pub async fn update_settings(
     } else {
         None
     };
+    if payload
+        .missing_metadata_days
+        .is_some_and(|v| !(1..=365).contains(&v))
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if payload
+        .missing_completed_days
+        .is_some_and(|v| !(7..=365).contains(&v))
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if payload
+        .inventory_check_hours
+        .is_some_and(|v| !(1..=168).contains(&v))
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if payload
+        .inventory_full_days
+        .is_some_and(|v| !(1..=365).contains(&v))
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     // Reject invalid new library settings before persisting any other form field.
     if payload
         .library_source
@@ -532,6 +580,30 @@ pub async fn update_settings(
         )
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
+    if let Some(value) = payload.missing_metadata_days {
+        set_value(&state.db, "missing.metadata_days", &value.to_string())
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
+    if let Some(value) = payload.missing_completed_days {
+        set_value(&state.db, "missing.completed_days", &value.to_string())
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
+    if let Some(value) = payload.inventory_check_hours {
+        set_value(
+            &state.db,
+            "library.inventory_check_hours",
+            &value.to_string(),
+        )
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
+    if let Some(value) = payload.inventory_full_days {
+        set_value(&state.db, "library.inventory_full_days", &value.to_string())
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     }
     set_bool!(payload.library_scan_enabled, "library.scan_enabled");
     if let Some(interval) = payload.library_scan_interval_minutes {

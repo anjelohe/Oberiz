@@ -50,6 +50,7 @@ pub struct MediaRequestView {
 
 #[derive(Debug, Serialize)]
 pub struct PublicStatus {
+    pub inventory_sync: serde_json::Value,
     pub status: &'static str,
     pub version: &'static str,
 }
@@ -85,6 +86,12 @@ pub async fn status(
 ) -> Result<Json<PublicStatus>, (StatusCode, String)> {
     authorize(&state, &headers).await?;
     Ok(Json(PublicStatus {
+        inventory_sync: serde_json::json!({
+            "protocol":1,
+            "revision":sqlx::query_scalar::<_,String>("SELECT revision FROM inventory_sync_state WHERE id=1").fetch_optional(&state.db).await.map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR,"Inventory state unavailable".into()))?,
+            "check_hours":crate::settings::get_value(&state.db,"library.inventory_check_hours").await.ok().flatten().and_then(|v|v.parse::<u64>().ok()).unwrap_or(1).clamp(1,168),
+            "full_days":crate::settings::get_value(&state.db,"library.inventory_full_days").await.ok().flatten().and_then(|v|v.parse::<u64>().ok()).unwrap_or(7).clamp(1,365)
+        }),
         status: "ok",
         version: env!("CARGO_PKG_VERSION"),
     }))

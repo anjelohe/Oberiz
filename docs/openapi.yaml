@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Oberiz Public API v1
-  version: "1.0.4"
+  version: "1.0.5"
   license:
     name: AGPL-3.0-or-later
     url: https://www.gnu.org/licenses/agpl-3.0.html
@@ -153,13 +153,40 @@ paths:
                       path: {type: string, maxLength: 4096}
                       available: {type: boolean}
                 allow_large_removal: {type: boolean, default: false}
+                sync:
+                  type: object
+                  description: Optional protocol 1 checkpoint. Deltas never confirm removals; revision mismatches return 409.
+                  required: [revision, full]
+                  properties:
+                    revision: {type: string, pattern: '^[a-fA-F0-9]{64}$'}
+                    base_revision: {type: string, nullable: true, pattern: '^[a-fA-F0-9]{64}$'}
+                    full: {type: boolean}
+                collections:
+                  type: array
+                  maxItems: 2000
+                  description: Existing Cinetta metadata only. At most 20000 parts total; no images or extra connection required.
+                  items:
+                    type: object
+                    required: [id, name, parts]
+                    properties:
+                      id: {type: integer, minimum: 1}
+                      name: {type: string, maxLength: 960}
+                      parts:
+                        type: array
+                        items:
+                          type: object
+                          required: [id, title]
+                          properties:
+                            id: {type: integer, minimum: 1}
+                            title: {type: string, maxLength: 960}
+                            release_date: {type: string, nullable: true, maxLength: 10}
       responses:
         "200":
           description: Inventory accepted; no filesystem action performed.
         "400":
           description: Invalid JSON, paths, metadata, ranges or file identities.
         "409":
-          description: Select Cinetta as the inventory source; local scanning is selected.
+          description: Select Cinetta as the inventory source, or reconcile a mismatched incremental revision with a full report.
         "401":
           $ref: "#/components/responses/InvalidApiKey"
         "403":
@@ -382,7 +409,15 @@ components:
           enum: [ok]
         version:
           type: string
-          example: "1.1.0"
+          example: "1.0.5"
+        inventory_sync:
+          type: object
+          description: Capabilities and accepted checkpoint for the existing authenticated inventory sender.
+          properties:
+            protocol: {type: integer, enum: [1]}
+            revision: {type: string, nullable: true}
+            check_hours: {type: integer, minimum: 1, maximum: 168, default: 1}
+            full_days: {type: integer, minimum: 1, maximum: 365, default: 7}
 
     QualityRules:
       type: object

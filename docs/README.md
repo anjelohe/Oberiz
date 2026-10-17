@@ -1,5 +1,9 @@
 # Oberiz documentation
 
+- [Version 1.0.5](releases/v1.0.5.md): cached metadata, configurable intervals and incremental inventory support.
+
+- [Incremental inventory and metadata cache](Oberiz_Incremental_Inventory.md): local October 17 implementation, configurable intervals, wire protocol and limitations.
+
 - [Version 1.0.4](releases/v1.0.4.md): read-only missing content reports and a refreshed responsive interface.
 - [Missing content reports, local implementation](Oberiz_Faltantes_Contrato.md): Cinetta connection, permissions, comparison criteria, and isolated testing.
 - [Version 1.0.3](releases/v1.0.3.md): remote setup, confirmed manual deletion, optional inventory pause, and corrected version display.

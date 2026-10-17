@@ -1,5 +1,17 @@
 # Oberiz — Product plan
 
+## v1.0.5 publication — October 17, 2026
+
+User authorized publication of caching, configurable intervals and incremental
+receiver support. Cinetta sender deployment is separate. Release packages are
+built by GitHub Actions; local installation and qBittorrent remain untouched.
+
+## Local October 17 follow-up
+
+Implemented configurable cache and incremental inventory in Oberiz/Cinetta.
+See [design, intervals and limits](Oberiz_Incremental_Inventory.md). Pending real
+installation testing and explicit publication approval; no deployment performed.
+
 ## v1.0.4 rebuild: reuse received inventory
 
 Missing reports use the last Cinetta inventory already submitted through the

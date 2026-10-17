@@ -1,6 +1,6 @@
 [package]
 name = "oberiz"
-version = "1.0.4"
+version = "1.0.5"
 edition = "2024"
 license = "AGPL-3.0-or-later"
 
@@ -25,7 +25,7 @@ anyhow = "1"
 # defaults (charset detection, HTTP/2, system proxy env vars) that would
 # otherwise also be lost by turning default-features off.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "cookies", "multipart", "charset", "http2", "system-proxy"] }
-zip = { version = "0.6", default-features = false, features = ["deflate"] }
+zip = { version = "9.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 scraper = "0.27"
 regex = "1"
 url = "2"

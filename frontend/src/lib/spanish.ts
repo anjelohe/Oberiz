@@ -1,6 +1,11 @@
 // Interface copy only: media titles, paths, tracker definitions and protocol values are untouched.
 export const spanish: Record<string, string> = Object.fromEntries(String.raw`
 Missing content reports|Informes de contenido faltante
+Metadata refresh interval (days)|Renovación de metadatos (días)
+Finished series refresh interval (days)|Revisión de series finalizadas (días)
+Inventory check interval (hours)|Comprobación del inventario (horas)
+Full inventory reconciliation (days)|Reconciliación completa del inventario (días)
+Intervals apply when checking reports or synchronizing Cinetta. Cached metadata is reused; finished series are checked less often. Updated Cinetta sender required for incremental inventory.|Los intervalos se aplican al comprobar informes o sincronizar Cinetta. Se reutilizan los metadatos guardados y las series finalizadas se revisan con menor frecuencia. El inventario incremental requiere actualizar el emisor de Cinetta.
 Reports use the last inventory Cinetta sent to Oberiz. Updating a report does not request a new sync or require another API key.|Los informes usan el último inventario que Cinetta ha enviado a Oberiz. Actualizar un informe no solicita una nueva sincronización ni requiere otra clave API.
 No Cinetta inventory received yet. Enable inventory sending in Cinetta using the existing Oberiz API key.|Todavía no se ha recibido el inventario de Cinetta. Activa su envío en Cinetta usando la clave API de Oberiz que ya tienes.
 Read-only reports from Cinetta, separate from the managed library.|Informes de solo lectura desde Cinetta, separados de la biblioteca gestionada.
