@@ -25,7 +25,7 @@ For series, it manages seasons, episodes, monitoring and inherited profiles. Aut
 - Movies and series with TMDB metadata.
 - A real library with indexed files, availability, rescans and score-based upgrades.
 - Quality Profiles and Language Profiles, with default profiles per media type, cloning and independent episode/season-pack size limits for series.
-- Cardigann indexers, an upstream catalogue and local private definitions. Searches retry safely without a release year and with the original media title when needed; optional TVDB lookup supplies compatible series identifiers.
+- Cardigann indexers, an upstream catalogue and local private definitions. Titles containing punctuation are searched in both their original and punctuation-normalized forms, even when the first query has results; duplicate releases are merged before profile scoring. Searches retry safely without a release year and with the original media title when needed; optional TVDB lookup supplies compatible series identifiers.
 - qBittorrent integration: connection checks, real categories, profile tags, progress and torrent controls.
 - Manual release rejection: reject a result in the manual search, or an Oberiz-downloaded torrent in Downloads (which also removes it from qBittorrent), and neither automation, RSS nor the search will pick that release again for that title. Rejections can be undone.
 - Scheduled automation, optional qBittorrent naming, recoverable torrent archives and sharing policies that preserve downloaded files. No direct imports, copies, hardlinks, moves or managed SMB connections.

@@ -1,5 +1,36 @@
 # Oberiz — Project memory
 
+## v1.0.5 search rebuild authorized — October 17, 2026
+
+The user explicitly requested republishing v1.0.5 with the search-variant fix.
+This supersedes the local-only publication restriction below for these changes.
+Keep version 1.0.5, replace only its existing tag, and regenerate release packages
+through GitHub Actions. Public release notes remain English. No installed-service
+deployment, development backend restart, or qBittorrent restart is included.
+
+## Search variants — local follow-up, October 17, 2026
+
+Live read-only diagnosis against the user-authorized development instance and
+XBytes confirmed that `El cuervo: Salvación 2000` returned no results, whereas
+both `El cuervo Salvacion 2000` and `El cuervo Salvación 2000` returned the same
+WEB-DL release. The colon, not the accent, was isolated as the search difference.
+
+The user explicitly requested both spellings even if the first returns results,
+so better releases from the second spelling are not missed. Cardigann now merges
+original and punctuation-normalized queries before existing profile scoring.
+Unchanged spellings make one query. Unicode accents, years and episode markers
+are retained; punctuation becomes spaces. Each spelling retains the existing
+empty-result-only year fallback; original-language fallback remains empty-only.
+Extra query is paced, results deduplicated by details/download URL (or title and
+size when URLs are absent), and additional-query errors preserve original hits.
+Title/year/quality acceptance rules are unchanged. Five simulated HTTP/regression
+tests passed. No settings, private definition or user torrents changed; no GitHub
+publication, release/tag change or installed-service restart requested.
+
+Final verification: 134 backend unit tests passed, one optional live test ignored;
+formatting and strict Clippy passed. The running development backend has not been
+restarted, so it needs rebuilding/restarting before a live search uses this code.
+
 ## v1.0.5 publication authorized — October 17, 2026
 
 User explicitly requests publishing Oberiz as v1.0.5. Product versions, README,

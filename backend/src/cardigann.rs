@@ -9,7 +9,7 @@ use serde::Serialize;
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use sha1::{Digest, Sha1};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
     time::{Duration, Instant},
@@ -246,7 +246,7 @@ pub async fn search_indexer(
     }
     let client = build_authenticated_client(&def).await?;
 
-    let mut output = search_query_with_year_fallback(&def, &client, ctx, &ctx.keywords).await?;
+    let mut output = search_query_variants(&def, &client, ctx, &ctx.keywords).await?;
     if output.is_empty()
         && let Some(alternate) = ctx
             .alternate_keywords
@@ -259,10 +259,74 @@ pub async fn search_indexer(
             alternate_query = %alternate,
             "retrying empty indexer search with original title"
         );
-        output = search_query_with_year_fallback(&def, &client, ctx, alternate).await?;
+        output = search_query_variants(&def, &client, ctx, alternate).await?;
     }
     record_success(&def);
     Ok(output)
+}
+
+async fn search_query_variants(
+    def: &Definition,
+    client: &Client,
+    ctx: &SearchContext,
+    keywords: &str,
+) -> Result<Vec<ReleaseResult>, String> {
+    let mut output = search_query_with_year_fallback(def, client, ctx, keywords).await?;
+    if let Some(normalized) = without_query_punctuation(keywords) {
+        // A precise hit does not rule out better releases under the other
+        // spelling. Always query both distinct forms before profile scoring.
+        tokio::time::sleep(Duration::from_millis(350)).await;
+        match search_query_with_year_fallback(def, client, ctx, &normalized).await {
+            Ok(rows) => output.extend(rows),
+            Err(error) if output.is_empty() => return Err(error),
+            Err(_) => {
+                tracing::warn!(indexer = %def.name, "normalized query failed; preserving original search results")
+            }
+        }
+    }
+    deduplicate_releases(&mut output);
+    Ok(output)
+}
+
+fn without_query_punctuation(query: &str) -> Option<String> {
+    // Keep Unicode letters/accents, digits and episode markers. Replace
+    // separators with spaces rather than joining adjacent words.
+    static SEPARATORS: OnceLock<Regex> = OnceLock::new();
+    let separators =
+        SEPARATORS.get_or_init(|| Regex::new(r"[\p{P}\p{S}]+").expect("static regex is valid"));
+    let normalized = separators.replace_all(query, " ");
+    let normalized = normalized.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!normalized.is_empty() && normalized != query.split_whitespace().collect::<Vec<_>>().join(" "))
+        .then_some(normalized)
+}
+
+#[cfg(test)]
+#[path = "cardigann_search_variants_tests.rs"]
+mod search_variants_tests;
+
+fn deduplicate_releases(rows: &mut Vec<ReleaseResult>) {
+    let mut details = HashSet::new();
+    let mut downloads = HashSet::new();
+    let mut unnamed = HashSet::new();
+    rows.retain(|row| {
+        let detail = row.details_url.as_deref().filter(|v| !v.is_empty());
+        let download = row.download_url.as_deref().filter(|v| !v.is_empty());
+        let duplicate = detail.is_some_and(|v| details.contains(v))
+            || download.is_some_and(|v| downloads.contains(v));
+        if let Some(value) = detail {
+            details.insert(value.to_owned());
+        }
+        if let Some(value) = download {
+            downloads.insert(value.to_owned());
+        }
+        if duplicate {
+            return false;
+        }
+        if detail.is_none() && download.is_none() {
+            return unnamed.insert((row.title.clone(), row.size_bytes));
+        }
+        true
+    });
 }
 
 async fn search_query_with_year_fallback(

@@ -1,5 +1,17 @@
 # Oberiz — Product plan
 
+## v1.0.5 search rebuild — October 17, 2026
+
+User authorized republishing the existing v1.0.5 with the search fix and rebuilding
+packages. Keep public notes English and leave installed services untouched.
+
+## Local search follow-up
+
+Combine original and punctuation-normalized indexer searches even with initial
+hits, deduplicate, then apply unchanged profiles. Confirmed against the XBytes
+colon case and tested with local HTTP fixtures. Pending backend restart in the
+development instance. Publication approval was subsequently granted above.
+
 ## v1.0.5 publication — October 17, 2026
 
 User authorized publication of caching, configurable intervals and incremental
