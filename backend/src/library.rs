@@ -797,6 +797,9 @@ pub(crate) async fn ensure_discovered(
 ) -> Result<(), (StatusCode, String)> {
     let _media_guard = crate::importer::MEDIA_OPERATION_GATE.lock().await;
     if crate::importer::external_mode(state).await? {
+        if kind == "series" {
+            crate::external_library::reconcile_cached_series_locked(state, id).await?;
+        }
         if settings::get_value(&state.db, "library.pause_on_stale_inventory")
             .await
             .map_err(internal)?

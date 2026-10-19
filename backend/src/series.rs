@@ -879,6 +879,12 @@ async fn sync_series_metadata(
         }
     }
 
+    {
+        let _guard = crate::importer::MEDIA_OPERATION_GATE.lock().await;
+        if crate::importer::external_mode(state).await? {
+            crate::external_library::reconcile_cached_series_locked(state, series_id).await?;
+        }
+    }
     apply_monitor_mode_internal(state, series_id, &stored.monitor_mode).await?;
     Ok(())
 }
@@ -960,6 +966,10 @@ pub(crate) async fn apply_monitor_mode_internal(
         // shouldn't exist rather than the most expansive one.
         _ => {}
     }
+    // Newly discovered episodes inherit an explicitly selected full season,
+    // while individual episode overrides and future-only season rules survive.
+    sqlx::query("UPDATE series_episodes SET monitored=1 WHERE series_id=? AND monitor_override IS NULL AND season_id IN (SELECT id FROM series_seasons WHERE series_id=? AND monitor_override=1 AND monitored=1 AND follow_future_episodes=0)")
+        .bind(series_id).bind(series_id).execute(&state.db).await.map_err(internal)?;
     sqlx::query("UPDATE series_episodes SET monitored=(air_date IS NOT NULL AND air_date>=(SELECT COALESCE(follow_future_since,date('now','localtime')) FROM series_seasons WHERE id=season_id)) WHERE series_id=? AND monitor_override IS NULL AND season_id IN (SELECT id FROM series_seasons WHERE series_id=? AND follow_future_episodes=1 AND monitored=1)")
         .bind(series_id).bind(series_id).execute(&state.db).await.map_err(internal)?;
     Ok(())

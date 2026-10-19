@@ -1,5 +1,27 @@
 # Oberiz — Product plan
 
+## v1.0.6 — remote-test release
+
+Publication authorized October 19, 2026. Package selected-season monitoring and
+cached Cinetta episode binding for user-managed remote testing. Keep the separate
+overnight scheduler incident unconfirmed; no remote deployment is authorized.
+
+## Cached series inventory binding — October 19, 2026
+
+Reuse previously received Cinetta episode identities when series metadata creates
+managed rows and during acquisition preflight. Verify repeated binding is
+idempotent and does not update inventory freshness. The automation interval is
+a search interval, not a Cinetta filesystem rescan. Keep remote scheduler incident
+diagnosis separate from this reproduced availability defect. Local only.
+
+## Local requested-season fix — October 19, 2026
+
+Preserve already-aired episodes when accepting explicit seasons plus future
+seasons from Cinetta. Verify partial availability (one of six present), missing
+episode selection, refresh persistence, newly discovered episodes, and manual
+exclusions. Existing installations need the updated backend and affected requests
+reapplied; no live database edits or publication are performed here.
+
 ## v1.0.5 search rebuild — October 17, 2026
 
 User authorized republishing the existing v1.0.5 with the search fix and rebuilding

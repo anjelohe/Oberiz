@@ -1,5 +1,70 @@
 # Oberiz — Project memory
 
+## v1.0.6 publication authorized — October 19, 2026
+
+User requests a version bump and GitHub publication for remote testing. Publish
+the requested-season and cached-inventory binding fixes as v1.0.6, with English
+public notes and generated packages. This supersedes earlier local-only notes
+for these changes only. Do not modify existing release tags, deploy remotely,
+restart services, or claim the separate scheduler incident is resolved.
+
+Release verification: 138 backend tests passed and one optional live test was
+ignored. All five frontend regression suites and production build passed.
+Formatting passed; release CI repeats checks before publishing packages.
+
+## Cached inventory binding fix — October 19, 2026
+
+Reproduced the inventory-before-series acceptance bug with an in-memory fixture.
+Previously cached unmanaged episode identities were never rebound when TMDB later
+created the managed series/episode rows; an unchanged incremental heartbeat did
+not redeliver them, while a full report did. Added local cached-series binding
+after metadata synchronization and before automated acquisition in Cinetta mode.
+This creates availability links without accessing NAS paths, requesting a sync,
+refreshing inventory timestamps, or overwriting existing file quality records.
+Legacy compact identities lack quality metadata and remain unknown-quality.
+
+The configured 360-minute automation interval runs searches, not a fresh Cinetta
+scan. The binding step was absent from that path; it is now included. The
+scheduler sleeps the interval after a cycle completes. Remote overnight scheduler
+execution/interruption remains unverified without fresh authenticated status or
+runtime logs; do not claim it was transient or that a scheduler crash was proved.
+No deployment, service restart, GitHub publication, or version bump performed.
+
+## Local automation diagnosis — October 19, 2026
+
+Remote read-only inspection previously confirmed Reina roja (id 21) has six
+monitored missing episodes, Series 1080p permits packs/complete series, DivTeam
+and XBytes are not RSS-only, and stale-inventory acquisition pause is disabled.
+Automation status showed running=false with 11/37 items completed and current
+item Reina roja. This proves incomplete progress bookkeeping, not its cause.
+Do not report an indexer/profile/inventory cause as confirmed from those facts.
+
+A new isolated workflow diagnostic successfully runs the actual automation cycle:
+six aired missing Reina roja S02 episodes, simulated HTML indexer returning the
+same pack-title format, and a fake download client. Full-series attempt falls
+through to S02 and exactly one simulated grab succeeds. No user data or real
+tracker/download client is used. The basic full-series-to-season-pack path does
+not reproduce the remote failure. Scheduler task failure recovery and missing
+durable interruption diagnostics remain code-level weaknesses, not a confirmed
+root cause of the remote incident. No production fix or deployment performed.
+
+## Local requested-season correction — October 19, 2026
+
+Accepting explicit seasons plus future seasons incorrectly converted the selected
+seasons into future-only episodes, excluding already-aired episodes. Preserve
+explicit episode selections and let newly discovered episodes inherit full-season
+monitoring, without overriding manual episode exclusions. Future-only tracking
+outside the explicit seasons remains unchanged. Inventory availability is not
+reset: a season with one of six episodes present retains one available and five
+missing. Existing quality-upgrade and season-pack policies remain unchanged.
+Regression fixtures use an in-memory database only. No installed database repair,
+service restart, GitHub publication, or release change is included in this fix.
+
+Verification: 136 backend unit tests passed, one optional live test ignored;
+formatting and strict all-target/all-feature Clippy passed. The restricted test
+run could not use loopback sockets/temporary ACLs; rerunning with the required
+permissions passed. No real integration calls were needed for regression tests.
+
 ## v1.0.5 search rebuild authorized — October 17, 2026
 
 The user explicitly requested republishing v1.0.5 with the search-variant fix.

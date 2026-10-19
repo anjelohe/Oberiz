@@ -23,6 +23,132 @@ struct FakeClient {
     adds: AtomicUsize,
     downloads: PathBuf,
 }
+
+#[tokio::test]
+async fn diagnostic_series_automation_finds_season_pack_after_complete_series_miss() {
+    use axum::{extract::Query, response::Html};
+    use std::collections::HashMap;
+    let folder = Folder(std::env::temp_dir().join(format!(
+            "oberiz-series-diagnostic-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        )));
+    fs::create_dir_all(&folder.0).unwrap();
+    let client = Arc::new(FakeClient {
+        torrents: Mutex::new(vec![]),
+        fail_add: AtomicBool::new(false),
+        fail_list: AtomicBool::new(false),
+        adds: AtomicUsize::new(0),
+        downloads: folder.0.clone(),
+    });
+    let db = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    sqlx::migrate!("./migrations").run(&db).await.unwrap();
+    let state = AppState {
+        db,
+        http: reqwest::Client::builder().no_proxy().build().unwrap(),
+        automation_runtime: Default::default(),
+        download_client: client.clone(),
+        torrent_list_cache: Arc::new(Mutex::new(Some(crate::TorrentListCache {
+            fetched_at: std::time::Instant::now(),
+            torrents: vec![],
+        }))),
+        grab_lock: Arc::new(Mutex::new(())),
+    };
+    settings::set_value(&state.db, "library.source", "cinetta")
+        .await
+        .unwrap();
+    settings::set_value(&state.db, "import.keep_reseed_metadata", "false")
+        .await
+        .unwrap();
+    settings::set_value(
+        &state.db,
+        "paths.custom_indexers",
+        &folder.0.to_string_lossy(),
+    )
+    .await
+    .unwrap();
+    settings::set_value(
+        &state.db,
+        "paths.upstream_indexers",
+        &folder.0.to_string_lossy(),
+    )
+    .await
+    .unwrap();
+    sqlx::query("UPDATE quality_profiles SET language_profile_id=NULL,min_seeders=1,max_size_mb=5000,max_season_pack_size_mb=50000,upgrade_allowed=0,rules_json=? WHERE id=4")
+        .bind(r#"{"resolutions":{"1080P":10},"series_prefer_pack":true,"series_accept_complete":true}"#).execute(&state.db).await.unwrap();
+    sqlx::query("INSERT INTO series(id,tmdb_id,name,original_name,year,quality_profile_id,monitored,monitor_mode) VALUES(1,203667,'Reina roja','Reina roja',2024,4,1,'future')").execute(&state.db).await.unwrap();
+    sqlx::query("INSERT INTO series_seasons(id,series_id,season_number,name,episode_count,monitored) VALUES(1,1,2,'Loba Negra',6,1)").execute(&state.db).await.unwrap();
+    for ep in 1..=6 {
+        sqlx::query("INSERT INTO series_episodes(series_id,season_id,season_number,episode_number,name,air_date,monitored) VALUES(1,1,2,?,'Episode',date('now','-10 days'),1)").bind(ep).execute(&state.db).await.unwrap();
+    }
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let app = axum::Router::new().route("/search",axum::routing::get({let calls=calls.clone(); move |Query(q): Query<HashMap<String,String>>| {let calls=calls.clone(); async move {
+        calls.lock().await.push(q.get("q").cloned().unwrap_or_default());
+        Html("<table><tr class='release'><td><a class='title' href='/details/1'>Reina roja S02 1080p AMZN WEB-DL DD+ 5.1 H265 - TSeD</a><a class='download' href='magnet:?xt=urn:btih:3333333333333333333333333333333333333333'>Get</a></td></tr></table>")
+    }}}));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    fs::write(
+        folder.0.join("series-diagnostic.yml"),
+        format!(
+            r#"
+id: series-diagnostic
+name: Series diagnostic fixture
+links:
+  - http://{address}/
+search:
+  path: search
+  inputs:
+    q: "{{{{ .Keywords }}}}"
+  rows:
+    selector: tr.release
+  fields:
+    title:
+      selector: a.title
+    details:
+      selector: a.title
+      attribute: href
+    download:
+      selector: a.download
+      attribute: href
+    size:
+      text: 9 GB
+    seeders:
+      text: 18
+"#
+        ),
+    )
+    .unwrap();
+    sqlx::query("INSERT INTO indexer_configs(indexer_id,enabled,config_json) VALUES('series-diagnostic',1,'{}')").execute(&state.db).await.unwrap();
+    let summary = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        crate::automation::run_cycle(&state),
+    )
+    .await
+    .expect("automation cycle did not finish");
+    let errors: Vec<(String, Option<String>)> =
+        sqlx::query_as("SELECT status,last_error FROM series_target_state")
+            .fetch_all(&state.db)
+            .await
+            .unwrap();
+    assert_eq!(
+        summary.grabbed,
+        1,
+        "{summary:?}; {errors:?}; {:?}",
+        calls.lock().await
+    );
+    assert_eq!(client.adds.load(Ordering::SeqCst), 1);
+    assert!(calls.lock().await.iter().any(|q| q == "Reina roja S02"));
+    server.abort();
+}
 #[async_trait]
 impl DownloadClient for FakeClient {
     async fn list_torrents(

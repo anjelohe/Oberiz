@@ -712,6 +712,73 @@ async fn cache_received_inventory(
     Ok(())
 }
 
+/// Rebind previously received identities after TMDB creates local episode rows.
+/// Caller holds MEDIA_OPERATION_GATE; this never scans paths or refreshes the
+/// inventory receipt timestamp. Old compact caches have no quality metadata.
+pub(crate) async fn reconcile_cached_series_locked(state: &AppState, id: i64) -> Result<(), Error> {
+    let tmdb: i64 = sqlx::query_scalar("SELECT tmdb_id FROM series WHERE id=?")
+        .bind(id)
+        .fetch_one(&state.db)
+        .await
+        .map_err(internal)?;
+    let raw: Option<String> =
+        sqlx::query_scalar("SELECT items_json FROM received_library_inventory WHERE id=1")
+            .fetch_optional(&state.db)
+            .await
+            .map_err(internal)?;
+    let Some(raw) = raw else {
+        return Ok(());
+    };
+    let items: std::collections::BTreeMap<String, Vec<serde_json::Value>> =
+        serde_json::from_str(&raw).map_err(internal)?;
+    let mut tx = state.db.begin().await.map_err(internal)?;
+    for (path, identities) in items {
+        if !path.starts_with(PREFIX) {
+            continue;
+        }
+        for item in identities {
+            if item["type"] != "episode" || item["series_tmdb_id"].as_i64() != Some(tmdb) {
+                continue;
+            }
+            let (Some(season), Some(first)) = (
+                item["season_number"].as_i64(),
+                item["episode_number"].as_i64(),
+            ) else {
+                continue;
+            };
+            let last = item["episode_number_end"].as_i64().unwrap_or(first);
+            let episodes: Vec<i64> = sqlx::query_scalar("SELECT id FROM series_episodes WHERE series_id=? AND season_number=? AND episode_number BETWEEN ? AND ?")
+                .bind(id).bind(season).bind(first).bind(last).fetch_all(&mut *tx).await.map_err(internal)?;
+            if episodes.is_empty() {
+                continue;
+            }
+            sqlx::query("INSERT INTO media_files(media_type,media_id,path,quality_json,quality_score,file_exists,discovered_by,verified_at) VALUES('series',?,?,'{}',0,1,'cinetta',CURRENT_TIMESTAMP) ON CONFLICT(path) DO NOTHING")
+                .bind(id).bind(&path).execute(&mut *tx).await.map_err(internal)?;
+            let file: Option<i64> = sqlx::query_scalar("SELECT id FROM media_files WHERE path=? AND media_type='series' AND media_id=? AND file_exists=1")
+                .bind(&path).bind(id).fetch_optional(&mut *tx).await.map_err(internal)?;
+            if let Some(file) = file {
+                for episode in episodes {
+                    sqlx::query(
+                        "INSERT OR IGNORE INTO episode_files(episode_id,media_file_id) VALUES(?,?)",
+                    )
+                    .bind(episode)
+                    .bind(file)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(internal)?;
+                    sqlx::query("UPDATE series_episodes SET has_file=1 WHERE id=?")
+                        .bind(episode)
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(internal)?;
+                }
+            }
+        }
+    }
+    tx.commit().await.map_err(internal)?;
+    Ok(())
+}
+
 fn offline_roots<'a>(
     roots: &'a [ReportedRoot],
     previous: impl Iterator<Item = &'a String> + Clone,
@@ -1712,6 +1779,98 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(revision, b);
+    }
+
+    #[tokio::test]
+    async fn inventory_before_series_add_is_reused_without_file_redelivery() {
+        let state = state().await;
+        crate::settings::set_value(&state.db, "library.source", "cinetta")
+            .await
+            .unwrap();
+        let report = || {
+            let mut report = empty_report();
+            let mut item = episode(1, None, "/media/previously-known-show.mkv");
+            item.series_tmdb_id = 987654;
+            report.episodes.push(item);
+            report
+        };
+        apply(&state, report()).await.unwrap();
+        sqlx::query(
+            "INSERT INTO series(id,tmdb_id,name,year) VALUES(2,987654,'Newly accepted show',2024)",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO series_seasons(id,series_id,season_number,name) VALUES(2,2,1,'S1')",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO series_episodes(id,series_id,season_id,season_number,episode_number,name) VALUES(3,2,2,1,1,'E1')").execute(&state.db).await.unwrap();
+        // Unchanged inventory/heartbeat does not replay an existing cached file
+        // against a series that was accepted after that file arrived.
+        apply(&state, empty_report()).await.unwrap();
+        let before: bool = sqlx::query_scalar("SELECT has_file FROM series_episodes WHERE id=3")
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+        assert!(!before);
+        let cache: String =
+            sqlx::query_scalar("SELECT items_json FROM received_library_inventory WHERE id=1")
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+        assert!(cache.contains("987654"));
+        let received: String = sqlx::query_scalar(
+            "SELECT value FROM settings WHERE key='library.last_external_report'",
+        )
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+        crate::library::ensure_discovered(&state, "series", 2)
+            .await
+            .unwrap();
+        crate::library::ensure_discovered(&state, "series", 2)
+            .await
+            .unwrap();
+        let rebound: bool = sqlx::query_scalar("SELECT has_file FROM series_episodes WHERE id=3")
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+        assert!(
+            rebound,
+            "The automation preflight must reuse the cached identity"
+        );
+        let files: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM media_files WHERE media_type='series' AND media_id=2",
+        )
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+        assert_eq!(
+            files, 1,
+            "Repeated preflight must not duplicate file records"
+        );
+        let still_received: String = sqlx::query_scalar(
+            "SELECT value FROM settings WHERE key='library.last_external_report'",
+        )
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+        assert_eq!(
+            received, still_received,
+            "Local reuse must not pretend Cinetta synchronized again"
+        );
+        apply(&state, report()).await.unwrap();
+        let after: bool = sqlx::query_scalar("SELECT has_file FROM series_episodes WHERE id=3")
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+        assert!(
+            after,
+            "Redelivering the same file after accepting the series recognizes it"
+        );
     }
 
     #[tokio::test]

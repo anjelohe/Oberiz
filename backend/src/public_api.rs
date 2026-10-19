@@ -653,11 +653,8 @@ async fn apply_requested_seasons(
             .bind(series_id).bind(season).execute(&mut *tx).await.map_err(internal)?;
         sqlx::query("UPDATE series_episodes SET monitored=1,monitor_override=1,updated_at=CURRENT_TIMESTAMP WHERE series_id=? AND season_number=?")
             .bind(series_id).bind(season).execute(&mut *tx).await.map_err(internal)?;
-        if future_only {
-            sqlx::query("UPDATE series_seasons SET follow_future_episodes=1,follow_future_since=COALESCE((SELECT monitor_future_since FROM series WHERE id=series_id),date('now','localtime')) WHERE series_id=? AND season_number=?").bind(series_id).bind(season).execute(&mut *tx).await.map_err(internal)?;
-            sqlx::query("UPDATE series_episodes SET monitor_override=NULL,monitored=(air_date IS NOT NULL AND air_date>=date('now','localtime')) WHERE series_id=? AND season_number=?")
-                .bind(series_id).bind(season).execute(&mut *tx).await.map_err(internal)?;
-        }
+        // Explicit seasons include already-aired episodes. Following future
+        // seasons must not turn the requested season into future-only episodes.
     }
     if monitor_future {
         sqlx::query("UPDATE series_seasons SET monitor_override=NULL WHERE series_id=? AND season_number>0 AND monitor_override=0")
@@ -674,4 +671,94 @@ async fn apply_requested_seasons(
 
 fn internal<E: std::fmt::Display>(e: E) -> (StatusCode, String) {
     (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+}
+
+#[cfg(test)]
+mod requested_season_tests {
+    use super::*;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    async fn fixture() -> AppState {
+        let db = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&db).await.unwrap();
+        let state = AppState {
+            db,
+            http: reqwest::Client::new(),
+            automation_runtime: crate::automation::AutomationRuntime::default(),
+            download_client: Arc::new(crate::download_client::QBittorrentClient),
+            torrent_list_cache: Arc::new(Mutex::new(None)),
+            grab_lock: Arc::new(Mutex::new(())),
+        };
+        sqlx::query("INSERT INTO series(id,tmdb_id,name,original_name,monitor_mode) VALUES(1,1,'Requested show','Requested show','future')")
+            .execute(&state.db).await.unwrap();
+        for season in 1..=3 {
+            sqlx::query("INSERT INTO series_seasons(id,series_id,season_number,name,episode_count) VALUES(?,1,?,'Season',6)")
+                .bind(season).bind(season).execute(&state.db).await.unwrap();
+            for episode in 1..=6 {
+                sqlx::query("INSERT INTO series_episodes(series_id,season_id,season_number,episode_number,name,air_date,has_file) VALUES(1,?,?,?,'Episode',date('now','localtime',?),?)")
+                    .bind(season).bind(season).bind(episode)
+                    .bind(if season == 3 { "+30 days" } else { "-10 days" })
+                    .bind(season == 2 && episode == 1)
+                    .execute(&state.db).await.unwrap();
+            }
+        }
+        state
+    }
+
+    #[tokio::test]
+    async fn requested_season_and_future_preserve_partial_inventory() {
+        let state = fixture().await;
+        // Equivalent to Cinetta accepting season 2 and future seasons.
+        apply_requested_seasons(&state, 1, &[2], true)
+            .await
+            .unwrap();
+        for _ in 0..2 {
+            let counts: (i64, i64, i64) = sqlx::query_as("SELECT COUNT(*),SUM(has_file),SUM(monitored AND NOT has_file) FROM series_episodes WHERE series_id=1 AND season_number=2 AND monitored=1")
+                .fetch_one(&state.db).await.unwrap();
+            assert_eq!(counts, (6, 1, 5));
+            let monitored: Vec<(i32, i64)> = sqlx::query_as("SELECT season_number,SUM(monitored) FROM series_episodes WHERE series_id=1 GROUP BY season_number ORDER BY season_number")
+                .fetch_all(&state.db).await.unwrap();
+            assert_eq!(monitored, vec![(1, 0), (2, 6), (3, 6)]);
+            let seasons = series::season_availability(&state, 1).await.unwrap();
+            let second = seasons.iter().find(|s| s.season_number == 2).unwrap();
+            assert_eq!(second.available_episodes, 1);
+            assert_eq!(second.missing_aired_episodes, 5);
+            // Metadata refresh must not undo the accepted selection.
+            series::apply_monitor_mode_internal(&state, 1, "future")
+                .await
+                .unwrap();
+        }
+        // Episodes learned later inherit the full selected season, including
+        // unknown dates. A manual per-episode exclusion remains authoritative.
+        sqlx::query("INSERT INTO series_episodes(series_id,season_id,season_number,episode_number,name,air_date,monitor_override) VALUES(1,2,2,7,'New episode',NULL,NULL)")
+            .execute(&state.db).await.unwrap();
+        sqlx::query("UPDATE series_episodes SET monitored=0,monitor_override=0 WHERE series_id=1 AND season_number=2 AND episode_number=6")
+            .execute(&state.db).await.unwrap();
+        series::apply_monitor_mode_internal(&state, 1, "future")
+            .await
+            .unwrap();
+        let flags: Vec<(i32, bool)> = sqlx::query_as("SELECT episode_number,monitored FROM series_episodes WHERE series_id=1 AND season_number=2 AND episode_number>=6 ORDER BY episode_number")
+            .fetch_all(&state.db).await.unwrap();
+        assert_eq!(flags, vec![(6, false), (7, true)]);
+    }
+
+    #[tokio::test]
+    async fn explicit_season_without_future_does_not_follow_other_seasons() {
+        let state = fixture().await;
+        sqlx::query("UPDATE series SET monitor_mode='none' WHERE id=1")
+            .execute(&state.db)
+            .await
+            .unwrap();
+        apply_requested_seasons(&state, 1, &[2], false)
+            .await
+            .unwrap();
+        let monitored: Vec<(i32, i64)> = sqlx::query_as("SELECT season_number,SUM(monitored) FROM series_episodes WHERE series_id=1 GROUP BY season_number ORDER BY season_number")
+            .fetch_all(&state.db).await.unwrap();
+        assert_eq!(monitored, vec![(1, 0), (2, 6), (3, 0)]);
+    }
 }
