@@ -1,5 +1,26 @@
 # Oberiz — Product plan
 
+## v1.0.7 publication — October 19, 2026
+
+Release authorized: configurable daily cycles and persistent randomized plans.
+Update versions, release notes and memory, verify backend/frontend, then publish
+the new tag and generate packages. Remote deployment remains user-managed.
+
+## Local configurable daily automation
+
+Replace the interval input with daily cycle count (1–24), use saved randomized
+daily windows, and expose a default-on restart-persistence checkbox. Preserve
+legacy interval API compatibility. Test calendar boundaries, persistence,
+single-claim slots, settings changes and no catch-up bursts. Manual/on-add
+searches are additional. Local only; prohibited trackers must remain disabled.
+
+## Local restart-safe automation scheduling
+
+Persist next automatic execution across service restarts and power outages.
+Reserve deadlines before work and preserve manual execution. Test database reopen,
+repeated restarts, missed intervals, and interval changes. Local only; no release
+requested. This does not make automation permitted on trackers that prohibit it.
+
 ## v1.0.6 — remote-test release
 
 Publication authorized October 19, 2026. Package selected-season monitoring and

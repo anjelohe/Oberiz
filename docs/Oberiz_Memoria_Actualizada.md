@@ -1,5 +1,51 @@
 # Oberiz — Project memory
 
+## v1.0.7 publication authorized — October 19, 2026
+
+User explicitly requested version bump, documentation update and GitHub release.
+Publish daily randomized scheduling and its restart-persistence checkbox as 1.0.7.
+This supersedes prior local-only notes for these changes. Keep public text English,
+leave previous tags untouched and regenerate packages via GitHub Actions. No
+remote installation, restart, tracker configuration change or detection-evasion
+claim. Queries, matching, sessions and download routing remain unchanged.
+
+Verification for publication: 140 backend tests passed; one optional live test
+ignored. Formatting and strict all-target/all-feature Clippy passed. All five
+frontend suites and production build passed. OSV checked 250 active dependency
+versions with no advisories; npm reported zero vulnerabilities. Build retains
+the existing frontend chunk-size advisory (not an error).
+
+## Local daily randomized scheduling settings — October 19, 2026
+
+Supersedes the fixed-interval local schedule below. Settings → Automation now
+offers 1–24 search cycles per local calendar day and a default-on "Keep schedule
+after restart" checkbox. Each day's plan picks one random time in the middle
+half of each equal daily window, keeping cycles separated. Civil-day boundaries
+use the server timezone, including DST. Plans are stored and consumed before
+network work, preserved across restarts by default, and regenerated after a
+restart only when that checkbox is off. Regeneration does not search immediately.
+Missed cycles are not replayed; a long-running cycle may consume later missed
+slots. Manual/on-add searches are additional and are not a daily request cap.
+Daily count changes replace the plan. Existing interval settings remain readable
+for compatibility and derive the initial daily count (360 minutes → 4/day).
+Updated six-language UI and validation before writes. No new dependency, version
+bump, publication, remote change, or tracker configuration change. Random timing
+does not conceal automation or make it allowed on DivTeam; keep it disabled there.
+
+## Local restart-safe automation schedule — October 19, 2026
+
+User authorized persisting the automation deadline after discovering that power
+outages restarted searches immediately despite a 360-minute interval. Store the
+next execution and interval in SQLite settings, reserve the following execution
+before any automatic-cycle network work, and reset the wait after completion.
+Startup with no saved deadline waits one configured interval. Repeated restarts
+preserve the same deadline; long outages allow one due cycle, not catch-up bursts.
+Interval changes start a new wait. Explicit Run Now remains immediate but reserves
+the subsequent automatic run. On-add single-title searches remain unchanged.
+The scheduler checks its saved deadline/settings every 30 seconds; it does not
+query trackers during these checks. A failed schedule write skips automatic work.
+No publication, version bump, remote installation, or DivTeam configuration change.
+
 ## v1.0.6 publication authorized — October 19, 2026
 
 User requests a version bump and GitHub publication for remote testing. Publish

@@ -1,5 +1,8 @@
 // Interface copy only: media titles, paths, tracker definitions and protocol values are untouched.
 export const spanish: Record<string, string> = Object.fromEntries(String.raw`
+Search cycles per day|Ciclos de búsqueda al día
+Keep schedule after restart|Conservar la programación tras reiniciar
+Daily cycles use random times. Missed cycles are not replayed. Manual and on-add searches are additional.|Los ciclos diarios usan horarios aleatorios. Los ciclos perdidos no se recuperan. Las búsquedas manuales y al añadir contenido son adicionales.
 Missing content reports|Informes de contenido faltante
 Metadata refresh interval (days)|Renovación de metadatos (días)
 Finished series refresh interval (days)|Revisión de series finalizadas (días)

@@ -102,6 +102,8 @@ export function Settings(){
         upstream_indexers_path:data!.upstream_indexers_path,
         automation_enabled:data!.automation_enabled,
         automation_interval_minutes:data!.automation_interval_minutes,
+        automation_searches_per_day:data!.automation_searches_per_day,
+        automation_preserve_schedule:data!.automation_preserve_schedule,
         rss_enabled:data!.rss_enabled,
         rss_interval_minutes:data!.rss_interval_minutes,
         backup_enabled:data!.backup_enabled,
@@ -386,9 +388,11 @@ export function Settings(){
           <div className="settings-title"><div><h3>{t("Automation")}</h3><span>{t("Automatically search monitored media using its assigned profile.")}</span></div><span className="connection">{data.automation_enabled?t("● Enabled"):t("○ Disabled")}</span></div>
           <div className="form-grid automation-grid">
             <label className="toggle-row"><input type="checkbox" checked={data.automation_enabled} onChange={e=>setData({...data,automation_enabled:e.target.checked})}/> {t("Enable automatic searches")}</label>
-            <label>{t("Interval (minutes)")}<input type="number" min="5" max="1440" value={data.automation_interval_minutes} onChange={e=>setData({...data,automation_interval_minutes:Number(e.target.value)})}/></label>
+            <label>{t("Search cycles per day")}<input type="number" min="1" max="24" value={data.automation_searches_per_day} onChange={e=>setData({...data,automation_searches_per_day:Number(e.target.value)})}/></label>
+            <label className="toggle-row"><input type="checkbox" checked={data.automation_preserve_schedule} onChange={e=>setData({...data,automation_preserve_schedule:e.target.checked})}/> {t("Keep schedule after restart")}</label>
+            <p className="settings-help">{t("Daily cycles use random times. Missed cycles are not replayed. Manual and on-add searches are additional.")}</p>
           </div>
-          <div className="settings-actions"><span>{autoMessage}</span><button type="button" className="ghost-button" disabled={autoRunning} onClick={async()=>{try{setAutoRunning(true);setAutoMessage(t("Running automation and checking qBittorrent…"));await saveSettings({automation_enabled:data.automation_enabled,automation_interval_minutes:data.automation_interval_minutes});const r=await runAutomationNow();const status=await getAutomationStatus();setAutoMessage(tf("Completed · {0} missing · {1} searched · {2} grabbed · {3} skipped · {4} errors · {5} monitored", r.reconciled_missing, r.searched, r.grabbed, r.skipped, r.errors, status.monitored_movies+status.monitored_series)) }catch(e){setAutoMessage(e instanceof Error?e.message:String(e))}finally{setAutoRunning(false)}}}>{autoRunning?t("Running…"):t("Run Now")}</button></div>
+          <div className="settings-actions"><span>{autoMessage}</span><button type="button" className="ghost-button" disabled={autoRunning} onClick={async()=>{try{setAutoRunning(true);setAutoMessage(t("Running automation and checking qBittorrent…"));await saveSettings({automation_enabled:data.automation_enabled,automation_searches_per_day:data.automation_searches_per_day,automation_preserve_schedule:data.automation_preserve_schedule});const r=await runAutomationNow();const status=await getAutomationStatus();setAutoMessage(tf("Completed · {0} missing · {1} searched · {2} grabbed · {3} skipped · {4} errors · {5} monitored", r.reconciled_missing, r.searched, r.grabbed, r.skipped, r.errors, status.monitored_movies+status.monitored_series)) }catch(e){setAutoMessage(e instanceof Error?e.message:String(e))}finally{setAutoRunning(false)}}}>{autoRunning?t("Running…"):t("Run Now")}</button></div>
         </section>
         </div>
 

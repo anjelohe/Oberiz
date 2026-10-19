@@ -2,6 +2,9 @@ import { spanish } from './spanish'
 
 // Columns: English key | French | German | Italian | Portuguese (Portugal).
 const rows = String.raw`
+Search cycles per day|Cycles de recherche par jour|Suchläufe pro Tag|Cicli di ricerca al giorno|Ciclos de pesquisa por dia
+Keep schedule after restart|Conserver la programmation après redémarrage|Zeitplan nach Neustart beibehalten|Mantieni la pianificazione dopo il riavvio|Manter a programação após reiniciar
+Daily cycles use random times. Missed cycles are not replayed. Manual and on-add searches are additional.|Les cycles quotidiens utilisent des horaires aléatoires. Les cycles manqués ne sont pas rattrapés. Les recherches manuelles et à l’ajout sont supplémentaires.|Tägliche Läufe nutzen zufällige Uhrzeiten. Verpasste Läufe werden nicht nachgeholt. Manuelle Suchen und Suchen beim Hinzufügen sind zusätzlich.|I cicli giornalieri usano orari casuali. I cicli persi non vengono recuperati. Le ricerche manuali e all’aggiunta sono aggiuntive.|Os ciclos diários usam horários aleatórios. Os ciclos perdidos não são recuperados. As pesquisas manuais e ao adicionar são adicionais.
 Missing content reports|Rapports de contenu manquant|Berichte über fehlende Inhalte|Rapporti sui contenuti mancanti|Relatórios de conteúdo em falta
 Metadata refresh interval (days)|Actualisation des métadonnées (jours)|Metadaten aktualisieren (Tage)|Aggiornamento metadati (giorni)|Atualização de metadados (dias)
 Finished series refresh interval (days)|Vérification des séries terminées (jours)|Abgeschlossene Serien prüfen (Tage)|Verifica serie concluse (giorni)|Verificação de séries concluídas (dias)

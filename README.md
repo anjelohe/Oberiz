@@ -2,7 +2,7 @@
 
 Self-hosted media automation for movies and series. Oberiz brings metadata, indexers, quality profiles, searches, qBittorrent and the real library together in one application.
 
-**Version 1.0.6 — Requested seasons and cached inventory availability.** Explicitly selected seasons retain already-aired episodes, and previously received Cinetta episode identities are reused when a series is added and before automatic acquisition. See [release notes](docs/releases/v1.0.6.md) and [configuration](docs/Oberiz_Faltantes_Contrato.md).
+**Version 1.0.7 — Persistent daily search scheduling.** Configure daily search cycles with randomized, spaced execution times and optional schedule preservation across restarts. Search queries, matching rules and download routing are unchanged. See [release notes](docs/releases/v1.0.7.md) and [configuration](docs/Oberiz_Faltantes_Contrato.md).
 
 ## What it does
 
@@ -51,12 +51,12 @@ Every release provides ready-to-run packages. No Rust, Node.js or frontend build
 
 | Platform | Download | Starts with |
 | --- | --- | --- |
-| Docker | `ghcr.io/anjelohe/oberiz:v1.0.6` | `docker compose up -d` |
-| Linux x86_64 | `oberiz-1.0.6-linux-x86_64.tar.gz` | `sudo ./install.sh` |
-| Windows x86_64 (portable) | `oberiz-1.0.6-windows-x86_64.zip` | `Start-Oberiz.bat` |
-| Windows x86_64 (installer) | `oberiz-1.0.6-windows-x86_64-setup.exe` | Setup assistant |
+| Docker | `ghcr.io/anjelohe/oberiz:v1.0.7` | `docker compose up -d` |
+| Linux x86_64 | `oberiz-1.0.7-linux-x86_64.tar.gz` | `sudo ./install.sh` |
+| Windows x86_64 (portable) | `oberiz-1.0.7-windows-x86_64.zip` | `Start-Oberiz.bat` |
+| Windows x86_64 (installer) | `oberiz-1.0.7-windows-x86_64-setup.exe` | Setup assistant |
 
-The packages are available from the [v1.0.6 release](https://github.com/anjelohe/Oberiz/releases/tag/v1.0.6) once the release build finishes. The release workflow also builds and attaches the Windows package whenever a version is published.
+The packages are available from the [v1.0.7 release](https://github.com/anjelohe/Oberiz/releases/tag/v1.0.7) once the release build finishes. The release workflow also builds and attaches the Windows package whenever a version is published.
 
 ## Support Oberiz
 
@@ -78,7 +78,7 @@ docker compose up -d
 
 Open `http://localhost:2032`.
 
-`oberiz-data` stores the database, recovery archives and backups, while `oberiz-config` stores indexer definitions. Both survive container updates. Cinetta inventory requires no media mount. For optional local scanning in the new flow, uncomment the read-only `/media` mount and set `OBERIZ_MEDIA_PATH`. Wait for the v1.0.6 release build to finish before updating the pinned image.
+`oberiz-data` stores the database, recovery archives and backups, while `oberiz-config` stores indexer definitions. Both survive container updates. Cinetta inventory requires no media mount. For optional local scanning in the new flow, uncomment the read-only `/media` mount and set `OBERIZ_MEDIA_PATH`. Wait for the v1.0.7 release build to finish before updating the pinned image.
 
 The published Docker image is public and does not require a GitHub account. If GitHub ever returns a permissions error while pulling it, authenticate with `docker login ghcr.io -u anjelohe` and use a personal access token with the `read:packages` permission.
 
@@ -92,11 +92,11 @@ For an LXC without Docker, use the Linux package instead. It requires a distribu
 
 ## Linux installation
 
-The Linux package targets 64-bit Linux distributions using systemd. The binary is statically linked against musl rather than the build runner's glibc, so it carries no glibc version dependency to track; this removes the compatibility risk, though the resulting tarball itself hasn't been smoke-tested across a distribution matrix after the change. If you do hit a startup problem that looks library-related, the Docker image remains the alternative. Download `oberiz-1.0.6-linux-x86_64.tar.gz` from the release, extract it and run:
+The Linux package targets 64-bit Linux distributions using systemd. The binary is statically linked against musl rather than the build runner's glibc, so it carries no glibc version dependency to track; this removes the compatibility risk, though the resulting tarball itself hasn't been smoke-tested across a distribution matrix after the change. If you do hit a startup problem that looks library-related, the Docker image remains the alternative. Download `oberiz-1.0.7-linux-x86_64.tar.gz` from the release, extract it and run:
 
 ```bash
-tar -xzf oberiz-1.0.6-linux-x86_64.tar.gz
-cd oberiz-1.0.6-linux-x86_64
+tar -xzf oberiz-1.0.7-linux-x86_64.tar.gz
+cd oberiz-1.0.7-linux-x86_64
 sudo ./install.sh
 ```
 
@@ -106,13 +106,13 @@ The service uses the `oberiz` system account. Grant that account the required re
 
 ## Windows portable installation
 
-Download `oberiz-1.0.6-windows-x86_64.zip` from the release, extract it anywhere you want to keep Oberiz, then double-click `Start-Oberiz.bat`. It starts the included `Oberiz.exe` invisibly in the background and opens `http://127.0.0.1:2032`; no command window remains open.
+Download `oberiz-1.0.7-windows-x86_64.zip` from the release, extract it anywhere you want to keep Oberiz, then double-click `Start-Oberiz.bat`. It starts the included `Oberiz.exe` invisibly in the background and opens `http://127.0.0.1:2032`; no command window remains open.
 
 The `data` and `config` folders are created beside the executable, so the installation is portable and can be moved or backed up as one directory.
 
 ## Windows installer
 
-Download `oberiz-1.0.6-windows-x86_64-setup.exe` from the release and run it. The setup assistant installs Oberiz, creates Start Menu and optional desktop shortcuts, and offers to start it at the end. Oberiz then runs invisibly in the background, without a command window.
+Download `oberiz-1.0.7-windows-x86_64-setup.exe` from the release and run it. The setup assistant installs Oberiz, creates Start Menu and optional desktop shortcuts, and offers to start it at the end. Oberiz then runs invisibly in the background, without a command window.
 
 Application files are installed under `Program Files\Oberiz`. Your database, configuration and backups are stored separately in `%ProgramData%\Oberiz` (`%ProgramData%\Oberiz\data` for the database and backups, `%ProgramData%\Oberiz\config` for indexer definitions), so they survive application updates and uninstallation.
 
@@ -188,7 +188,7 @@ Public repository documentation, release notes, and project descriptions are mai
 
 Product documentation is stored in [`docs/README.md`](docs/README.md): technical state, API integration, importing, roadmap, RSS and version history. The release-selection rules are documented in [`docs/Oberiz_Perfiles_y_Puntuacion.md`](docs/Oberiz_Perfiles_y_Puntuacion.md).
 
-See the [v1.0.6 release notes](docs/releases/v1.0.6.md), [project state](docs/Oberiz_Memoria_Actualizada.md) and [new storage flow](docs/Oberiz_Almacenamiento_Simplificado.md). NAS permissions and mounts are not managed by Oberiz.
+See the [v1.0.7 release notes](docs/releases/v1.0.7.md), [project state](docs/Oberiz_Memoria_Actualizada.md) and [new storage flow](docs/Oberiz_Almacenamiento_Simplificado.md). NAS permissions and mounts are not managed by Oberiz.
 
 ## License
 

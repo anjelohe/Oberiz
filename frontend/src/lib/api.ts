@@ -206,6 +206,8 @@ export type Settings = {
   upstream_indexers_path: string;
   automation_enabled: boolean;
   automation_interval_minutes: number;
+  automation_searches_per_day: number;
+  automation_preserve_schedule: boolean;
   rss_enabled: boolean;
   rss_interval_minutes: number;
   backup_enabled:boolean;

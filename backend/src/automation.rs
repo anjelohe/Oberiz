@@ -1,3 +1,4 @@
+mod schedule;
 mod state;
 
 use axum::{Json, extract::State, http::StatusCode};
@@ -686,26 +687,79 @@ pub async fn run_now(
             "Automation is already running. Wait for the current cycle to finish.".into(),
         ));
     };
+    schedule::reserve(&state.db, automation_cycles_per_day(&state).await, None)
+        .await
+        .map_err(internal)?;
     let result = run_cycle(&state).await;
+    schedule::reserve(&state.db, automation_cycles_per_day(&state).await, None)
+        .await
+        .map_err(internal)?;
     Ok(Json(result))
+}
+
+async fn automation_cycles_per_day(state: &AppState) -> i64 {
+    let legacy = setting_u64(state, "automation.interval_minutes", 30)
+        .await
+        .unwrap_or(30)
+        .clamp(5, 1440);
+    setting_u64(
+        state,
+        "automation.searches_per_day",
+        (1440 / legacy).clamp(1, 24),
+    )
+    .await
+    .unwrap_or(4)
+    .clamp(1, 24) as i64
 }
 
 pub fn spawn_scheduler(state: AppState) {
     tokio::spawn(async move {
+        let mut startup = true;
         loop {
             let enabled = setting_bool(&state, "automation.enabled", false)
                 .await
                 .unwrap_or(false);
-            let interval = setting_u64(&state, "automation.interval_minutes", 30)
-                .await
-                .unwrap_or(30)
-                .clamp(5, 1440);
+            let cycles = automation_cycles_per_day(&state).await;
             if enabled {
                 let Some(_guard) = state.automation_runtime.begin() else {
-                    sleep(Duration::from_secs(interval * 60)).await;
+                    sleep(Duration::from_secs(30)).await;
                     continue;
                 };
+                let preserve = setting_bool(&state, "automation.preserve_schedule", true)
+                    .await
+                    .unwrap_or(true);
+                if startup
+                    && !preserve
+                    && let Err(error) =
+                        settings::set_value(&state.db, "automation.daily_plan", "").await
+                {
+                    tracing::error!(%error, "Cannot reset automation plan");
+                    drop(_guard);
+                    sleep(Duration::from_secs(30)).await;
+                    continue;
+                }
+                startup = false;
+                match schedule::claim_due(&state.db, cycles, None).await {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        drop(_guard);
+                        sleep(Duration::from_secs(30)).await;
+                        continue;
+                    }
+                    Err(error) => {
+                        tracing::error!(%error, "Cannot persist automation schedule; skipping cycle");
+                        drop(_guard);
+                        sleep(Duration::from_secs(30)).await;
+                        continue;
+                    }
+                }
                 let summary = run_cycle(&state).await;
+                if let Err(error) =
+                    schedule::reserve(&state.db, automation_cycles_per_day(&state).await, None)
+                        .await
+                {
+                    tracing::error!(%error, "Cannot persist next automation execution");
+                }
                 drop(_guard);
                 tracing::info!(
                     searched = summary.searched,
@@ -715,7 +769,7 @@ pub fn spawn_scheduler(state: AppState) {
                     "automation cycle completed"
                 );
             }
-            sleep(Duration::from_secs(interval * 60)).await;
+            sleep(Duration::from_secs(30)).await;
         }
     });
 }

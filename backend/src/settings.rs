@@ -46,6 +46,8 @@ pub struct SettingsResponse {
     pub upstream_indexers_path: String,
     pub automation_enabled: bool,
     pub automation_interval_minutes: u64,
+    pub automation_searches_per_day: u64,
+    pub automation_preserve_schedule: bool,
     pub rss_enabled: bool,
     pub rss_interval_minutes: u64,
     pub backup_enabled: bool,
@@ -99,6 +101,8 @@ pub struct UpdateSettingsRequest {
     pub upstream_indexers_path: Option<String>,
     pub automation_enabled: Option<bool>,
     pub automation_interval_minutes: Option<u64>,
+    pub automation_searches_per_day: Option<u64>,
+    pub automation_preserve_schedule: Option<bool>,
     pub rss_enabled: Option<bool>,
     pub rss_interval_minutes: Option<u64>,
     pub backup_enabled: Option<bool>,
@@ -416,6 +420,13 @@ pub async fn get_settings(
         upstream_indexers_path,
         automation_enabled,
         automation_interval_minutes,
+        automation_searches_per_day: get_value(&state.db, "automation.searches_per_day")
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .and_then(|v| v.parse().ok())
+            .unwrap_or((1440 / automation_interval_minutes.max(1)).clamp(1, 24)),
+        automation_preserve_schedule: boolean(&state.db, "automation.preserve_schedule", true)
+            .await?,
         rss_enabled,
         rss_interval_minutes,
         backup_enabled,
@@ -441,6 +452,12 @@ pub async fn update_settings(
     State(state): State<AppState>,
     Json(mut payload): Json<UpdateSettingsRequest>,
 ) -> Result<StatusCode, StatusCode> {
+    if payload
+        .automation_searches_per_day
+        .is_some_and(|v| !(1..=24).contains(&v))
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     let _media_guard = if payload.import_method.is_some()
         || payload.library_source.is_some()
         || payload.pause_on_stale_inventory.is_some()
@@ -624,6 +641,15 @@ pub async fn update_settings(
     set_text!(payload.upstream_indexers_path, "paths.upstream_indexers");
 
     set_bool!(payload.automation_enabled, "automation.enabled");
+    set_bool!(
+        payload.automation_preserve_schedule,
+        "automation.preserve_schedule"
+    );
+    if let Some(value) = payload.automation_searches_per_day {
+        set_value(&state.db, "automation.searches_per_day", &value.to_string())
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
     if let Some(value) = payload.automation_interval_minutes {
         set_value(
             &state.db,
