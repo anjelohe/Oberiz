@@ -454,14 +454,18 @@ pub async fn restore_backup(
         if current_tables != table_names(&mut connection, "restore").await? { return Err((StatusCode::CONFLICT, "This backup belongs to a different Oberiz database schema. Update Oberiz or choose a compatible backup.".to_owned())); }
         sqlx::query("BEGIN IMMEDIATE").execute(&mut *connection).await.map_err(internal)?;
         let security_settings = security_snapshot(&mut connection).await?;
+        // Tracker credentials are security state: keep the current ones so an
+        // old backup never revives keys that were rotated or removed. A fresh
+        // installation has none to protect, so then the backup's are restored.
+        let current_indexers: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM main.indexer_configs")
+            .fetch_one(&mut *connection).await.map_err(internal)?;
+        let restore_indexers = current_indexers == 0;
         for table in &current_tables {
-            // Tracker credentials and connection configuration are security
-            // state too; keep the current table rather than restoring secrets.
-            if table == "indexer_configs" { continue; }
+            if table == "indexer_configs" && !restore_indexers { continue; }
             sqlx::query(&format!("DELETE FROM {}", quoted(table))).execute(&mut *connection).await.map_err(internal)?;
         }
         for table in &current_tables {
-            if table == "auth_sessions" || table == "indexer_configs" {
+            if table == "auth_sessions" || (table == "indexer_configs" && !restore_indexers) {
                 // Session state is security state, not restorable data: a
                 // backup can hold a session that was later revoked by logout
                 // or a password change, and bringing it back would silently
