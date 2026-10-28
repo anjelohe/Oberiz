@@ -510,3 +510,52 @@ pub async fn restore_backup(
         message: "Backup restored successfully.",
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    async fn indexers(state: &AppState) -> Vec<String> {
+        sqlx::query_scalar("SELECT indexer_id FROM indexer_configs ORDER BY indexer_id")
+            .fetch_all(&state.db)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn restore_brings_back_indexers_only_when_none_are_configured() {
+        let root = std::env::temp_dir().join(format!("oberiz-restore-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        // Only this test reads OBERIZ_DATA_DIR (backup_directory).
+        unsafe { std::env::set_var("OBERIZ_DATA_DIR", &root) };
+        let url = format!("sqlite://{}?mode=rwc", root.join("oberiz.db").display());
+        let db = sqlx::sqlite::SqlitePoolOptions::new().max_connections(1).connect(&url).await.unwrap();
+        sqlx::migrate!("./migrations").run(&db).await.unwrap();
+        let state = AppState {
+            db,
+            http: reqwest::Client::new(),
+            automation_runtime: Default::default(),
+            download_client: Arc::new(crate::download_client::QBittorrentClient),
+            torrent_list_cache: Arc::new(Mutex::new(None)),
+            grab_lock: Arc::new(Mutex::new(())),
+        };
+        sqlx::query("INSERT INTO indexer_configs(indexer_id,enabled,config_json) VALUES('from-backup',1,'{}')")
+            .execute(&state.db).await.unwrap();
+        let backup = create_backup_file(&state).await.unwrap();
+
+        // Fresh installation: nothing to protect, so the backup's indexers return.
+        sqlx::query("DELETE FROM indexer_configs").execute(&state.db).await.unwrap();
+        restore_backup(State(state.clone()), Path(backup.filename.clone())).await.unwrap();
+        assert_eq!(indexers(&state).await, ["from-backup"]);
+
+        // Indexers already configured: the current ones are kept.
+        sqlx::query("UPDATE indexer_configs SET indexer_id='current'").execute(&state.db).await.unwrap();
+        restore_backup(State(state.clone()), Path(backup.filename)).await.unwrap();
+        assert_eq!(indexers(&state).await, ["current"]);
+
+        state.db.close().await;
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
