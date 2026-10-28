@@ -245,6 +245,10 @@ async fn run_server(
             ServeFile::new(static_directory.join("oberiz-logo-premium.png")),
         )
         .route_service(
+            "/oberiz-favicon.png",
+            ServeFile::new(static_directory.join("oberiz-favicon.png")),
+        )
+        .route_service(
             "/paypal-donate-qr.png",
             ServeFile::new(static_directory.join("paypal-donate-qr.png")),
         )
