@@ -950,6 +950,7 @@ status unavailable|estado no disponible
 ● Enabled|● Activado
 ● Monitored|● Monitorizado
 ● Not tested|● Sin probar
+● Disabled|● Desactivado
 ● Offline|● Desconectado
 ● Online|● En línea
 ⚠ Missing|⚠ Pendiente

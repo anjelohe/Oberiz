@@ -117,7 +117,52 @@ async fn create_backup_file(state: &AppState) -> Result<BackupFile, (StatusCode,
         .execute(&state.db)
         .await
         .map_err(internal)?;
+    store_custom_definitions(state, &path).await?;
     backup_info(&path)
+}
+
+/// Table inside a backup with the user's own indexer definitions (custom YAML files). They live
+/// in the config folder, not in the database, so a restore on a new installation lost them.
+const CUSTOM_TABLE: &str = "oberiz_backup_custom_indexers";
+
+async fn custom_folder(state: &AppState) -> Result<PathBuf, (StatusCode, String)> {
+    Ok(PathBuf::from(
+        crate::settings::get_value(&state.db, "paths.custom_indexers")
+            .await
+            .map_err(internal)?
+            .unwrap_or_else(crate::settings::default_custom_indexers_path),
+    ))
+}
+
+fn definition_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    (lower.ends_with(".yml") || lower.ends_with(".yaml"))
+        && name.len() <= 128
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        && !name.starts_with('.')
+}
+
+async fn store_custom_definitions(state: &AppState, backup: &FsPath) -> Result<(), (StatusCode, String)> {
+    use sqlx::Connection;
+    let folder = custom_folder(state).await?;
+    let mut files = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&folder) {
+        for entry in entries.flatten().take(500) {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !definition_name(&name) || !entry.file_type().is_ok_and(|t| t.is_file()) { continue; }
+            if let Ok(bytes) = std::fs::read(entry.path()) && bytes.len() <= 1024 * 1024 {
+                files.push((name, bytes));
+            }
+        }
+    }
+    let url = format!("sqlite://{}", backup.to_string_lossy());
+    let mut db = sqlx::SqliteConnection::connect(&url).await.map_err(internal)?;
+    sqlx::query(&format!("CREATE TABLE {CUSTOM_TABLE}(name TEXT PRIMARY KEY, content BLOB NOT NULL)")).execute(&mut db).await.map_err(internal)?;
+    for (name, bytes) in files {
+        sqlx::query(&format!("INSERT INTO {CUSTOM_TABLE}(name,content) VALUES(?,?)")).bind(name).bind(bytes).execute(&mut db).await.map_err(internal)?;
+    }
+    db.close().await.map_err(internal)?;
+    Ok(())
 }
 
 async fn apply_retention(state: &AppState) -> Result<(), (StatusCode, String)> {
@@ -368,10 +413,10 @@ async fn table_names(
 ) -> Result<Vec<String>, (StatusCode, String)> {
     let query = match schema {
         "main" => {
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name <> 'oberiz_backup_custom_indexers' ORDER BY name"
         }
         "restore" => {
-            "SELECT name FROM restore.sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            "SELECT name FROM restore.sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name <> 'oberiz_backup_custom_indexers' ORDER BY name"
         }
         _ => {
             return Err((
@@ -446,6 +491,8 @@ pub async fn restore_backup(
         "info",
     )
     .await;
+    // Read before holding a connection: the pool may have a single one.
+    let custom_dir = custom_folder(&state).await?;
     let mut connection = state.db.acquire().await.map_err(internal)?;
     let result = async {
         sqlx::query("PRAGMA foreign_keys = OFF").execute(&mut *connection).await.map_err(internal)?;
@@ -491,6 +538,15 @@ pub async fn restore_backup(
     if result.is_err() {
         let _ = sqlx::query("ROLLBACK").execute(&mut *connection).await;
     }
+    let mut recovered: Vec<(String, Vec<u8>)> = Vec::new();
+    if result.is_ok() {
+        let present: Option<String> = sqlx::query_scalar("SELECT name FROM restore.sqlite_master WHERE type='table' AND name='oberiz_backup_custom_indexers'")
+            .fetch_optional(&mut *connection).await.unwrap_or(None);
+        if present.is_some() {
+            recovered = sqlx::query_as("SELECT name, content FROM restore.oberiz_backup_custom_indexers LIMIT 500")
+                .fetch_all(&mut *connection).await.unwrap_or_default();
+        }
+    }
     let _ = sqlx::query("DETACH DATABASE restore")
         .execute(&mut *connection)
         .await;
@@ -498,6 +554,16 @@ pub async fn restore_backup(
         .execute(&mut *connection)
         .await;
     result?;
+    if !recovered.is_empty() {
+        let folder = custom_dir;
+        let _ = std::fs::create_dir_all(&folder);
+        for (name, bytes) in recovered {
+            let target = folder.join(&name);
+            if definition_name(&name) && bytes.len() <= 1024 * 1024 && !target.exists() {
+                let _ = std::fs::write(&target, bytes);
+            }
+        }
+    }
     history::record(
         &state.db,
         "backup_restored",
@@ -543,12 +609,19 @@ mod tests {
         };
         sqlx::query("INSERT INTO indexer_configs(indexer_id,enabled,config_json) VALUES('from-backup',1,'{}')")
             .execute(&state.db).await.unwrap();
+        // The user's own definitions (config folder, not database) travel inside the copy.
+        let custom = root.join("custom");
+        std::fs::create_dir_all(&custom).unwrap();
+        std::fs::write(custom.join("mine-custom.yml"), b"id: mine-custom\n").unwrap();
+        crate::settings::set_value(&state.db, "paths.custom_indexers", &custom.to_string_lossy()).await.unwrap();
         let backup = create_backup_file(&state).await.unwrap();
+        std::fs::remove_file(custom.join("mine-custom.yml")).unwrap();
 
         // Fresh installation: nothing to protect, so the backup's indexers return.
         sqlx::query("DELETE FROM indexer_configs").execute(&state.db).await.unwrap();
         restore_backup(State(state.clone()), Path(backup.filename.clone())).await.unwrap();
         assert_eq!(indexers(&state).await, ["from-backup"]);
+        assert_eq!(std::fs::read(custom.join("mine-custom.yml")).unwrap(), b"id: mine-custom\n", "custom definition recovered");
 
         // Indexers already configured: the current ones are kept.
         sqlx::query("UPDATE indexer_configs SET indexer_id='current'").execute(&state.db).await.unwrap();

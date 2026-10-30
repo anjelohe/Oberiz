@@ -157,7 +157,7 @@ export function Indexers(){
             <span><strong>{item.name}</strong><small>{item.language||'—'} · {item.source}</small></span>
           </button>
           <span><b className={`ix-type ${item.indexer_type==='private'?'private':'public'}`}>{typeLabel(item.indexer_type)}</b></span>
-          <span><b className={`ix-runtime ${item.last_status}`}>{item.last_status==='online'?t("● Online"):item.last_status==='offline'?t("● Offline"):t("● Not tested")}</b></span>
+          <span><b className={`ix-runtime ${item.enabled?item.last_status:'disabled'}`}>{!item.enabled?t("● Disabled"):item.last_status==='online'?t("● Online"):item.last_status==='offline'?t("● Offline"):t("● Not tested")}</b></span>
           <span className="ix-categories">{categoryGuess(item).map(c=><em key={c}>{c}</em>)}</span>
           <span>{item.priority}</span>
           <span>{relative(item.last_checked_at)}</span>
