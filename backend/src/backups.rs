@@ -138,28 +138,51 @@ fn definition_name(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     (lower.ends_with(".yml") || lower.ends_with(".yaml"))
         && name.len() <= 128
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
         && !name.starts_with('.')
 }
 
-async fn store_custom_definitions(state: &AppState, backup: &FsPath) -> Result<(), (StatusCode, String)> {
+async fn store_custom_definitions(
+    state: &AppState,
+    backup: &FsPath,
+) -> Result<(), (StatusCode, String)> {
     use sqlx::Connection;
     let folder = custom_folder(state).await?;
     let mut files = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&folder) {
         for entry in entries.flatten().take(500) {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if !definition_name(&name) || !entry.file_type().is_ok_and(|t| t.is_file()) { continue; }
-            if let Ok(bytes) = std::fs::read(entry.path()) && bytes.len() <= 1024 * 1024 {
+            if !definition_name(&name) || !entry.file_type().is_ok_and(|t| t.is_file()) {
+                continue;
+            }
+            if let Ok(bytes) = std::fs::read(entry.path())
+                && bytes.len() <= 1024 * 1024
+            {
                 files.push((name, bytes));
             }
         }
     }
     let url = format!("sqlite://{}", backup.to_string_lossy());
-    let mut db = sqlx::SqliteConnection::connect(&url).await.map_err(internal)?;
-    sqlx::query(&format!("CREATE TABLE {CUSTOM_TABLE}(name TEXT PRIMARY KEY, content BLOB NOT NULL)")).execute(&mut db).await.map_err(internal)?;
+    let mut db = sqlx::SqliteConnection::connect(&url)
+        .await
+        .map_err(internal)?;
+    sqlx::query(&format!(
+        "CREATE TABLE {CUSTOM_TABLE}(name TEXT PRIMARY KEY, content BLOB NOT NULL)"
+    ))
+    .execute(&mut db)
+    .await
+    .map_err(internal)?;
     for (name, bytes) in files {
-        sqlx::query(&format!("INSERT INTO {CUSTOM_TABLE}(name,content) VALUES(?,?)")).bind(name).bind(bytes).execute(&mut db).await.map_err(internal)?;
+        sqlx::query(&format!(
+            "INSERT INTO {CUSTOM_TABLE}(name,content) VALUES(?,?)"
+        ))
+        .bind(name)
+        .bind(bytes)
+        .execute(&mut db)
+        .await
+        .map_err(internal)?;
     }
     db.close().await.map_err(internal)?;
     Ok(())
@@ -543,8 +566,12 @@ pub async fn restore_backup(
         let present: Option<String> = sqlx::query_scalar("SELECT name FROM restore.sqlite_master WHERE type='table' AND name='oberiz_backup_custom_indexers'")
             .fetch_optional(&mut *connection).await.unwrap_or(None);
         if present.is_some() {
-            recovered = sqlx::query_as("SELECT name, content FROM restore.oberiz_backup_custom_indexers LIMIT 500")
-                .fetch_all(&mut *connection).await.unwrap_or_default();
+            recovered = sqlx::query_as(
+                "SELECT name, content FROM restore.oberiz_backup_custom_indexers LIMIT 500",
+            )
+            .fetch_all(&mut *connection)
+            .await
+            .unwrap_or_default();
         }
     }
     let _ = sqlx::query("DETACH DATABASE restore")
@@ -597,7 +624,11 @@ mod tests {
         // Only this test reads OBERIZ_DATA_DIR (backup_directory).
         unsafe { std::env::set_var("OBERIZ_DATA_DIR", &root) };
         let url = format!("sqlite://{}?mode=rwc", root.join("oberiz.db").display());
-        let db = sqlx::sqlite::SqlitePoolOptions::new().max_connections(1).connect(&url).await.unwrap();
+        let db = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .unwrap();
         sqlx::migrate!("./migrations").run(&db).await.unwrap();
         let state = AppState {
             db,
@@ -613,19 +644,39 @@ mod tests {
         let custom = root.join("custom");
         std::fs::create_dir_all(&custom).unwrap();
         std::fs::write(custom.join("mine-custom.yml"), b"id: mine-custom\n").unwrap();
-        crate::settings::set_value(&state.db, "paths.custom_indexers", &custom.to_string_lossy()).await.unwrap();
+        crate::settings::set_value(
+            &state.db,
+            "paths.custom_indexers",
+            &custom.to_string_lossy(),
+        )
+        .await
+        .unwrap();
         let backup = create_backup_file(&state).await.unwrap();
         std::fs::remove_file(custom.join("mine-custom.yml")).unwrap();
 
         // Fresh installation: nothing to protect, so the backup's indexers return.
-        sqlx::query("DELETE FROM indexer_configs").execute(&state.db).await.unwrap();
-        restore_backup(State(state.clone()), Path(backup.filename.clone())).await.unwrap();
+        sqlx::query("DELETE FROM indexer_configs")
+            .execute(&state.db)
+            .await
+            .unwrap();
+        let _ = restore_backup(State(state.clone()), Path(backup.filename.clone()))
+            .await
+            .unwrap();
         assert_eq!(indexers(&state).await, ["from-backup"]);
-        assert_eq!(std::fs::read(custom.join("mine-custom.yml")).unwrap(), b"id: mine-custom\n", "custom definition recovered");
+        assert_eq!(
+            std::fs::read(custom.join("mine-custom.yml")).unwrap(),
+            b"id: mine-custom\n",
+            "custom definition recovered"
+        );
 
         // Indexers already configured: the current ones are kept.
-        sqlx::query("UPDATE indexer_configs SET indexer_id='current'").execute(&state.db).await.unwrap();
-        restore_backup(State(state.clone()), Path(backup.filename)).await.unwrap();
+        sqlx::query("UPDATE indexer_configs SET indexer_id='current'")
+            .execute(&state.db)
+            .await
+            .unwrap();
+        let _ = restore_backup(State(state.clone()), Path(backup.filename))
+            .await
+            .unwrap();
         assert_eq!(indexers(&state).await, ["current"]);
 
         state.db.close().await;
